@@ -36,7 +36,9 @@
 ---@field kind "header"|"entry"
 ```
 
-- **排序**：状态严重度（conflicted > missing > modified > deleted > added > renamed > untracked > ignored）→ 再按 rel_path 字典序（vcs-helper `systems/init.lua` 的排序保留，但换成两级）。
+- **排序**：状态严重度 → 再按 `rel_path` 字典序。严重度直接取 `status_type.default_sign_priority`，所以「排前面的」与「sign 位保留的那个」永远一致（M3 实测修正：真实顺序是
+  `conflicted 100 > missing 90 > modified = typechange = replaced 50 > deleted = renamed 40 > added 30 > untracked 20 > obstructed 15 > switched 10 > external 5 > ignored 1`，
+  同级按路径；本节早先手写的顺序把 `added` 排在 `renamed` 前，与枚举不符，已按代码改正并有用例钉住）。
 - **分组**（config：`sidebar.group_by = "status"`，可选 `"none" | "status"`，初版只有这两档；后续可加 `"directory"` 树模式，oil-vcs-status `status_tree.lua` 是现成参考）：
   - git：`Staged`（upstream 非 nil 的条目）/ `Unstaged` / `Untracked` 三组；svn（无暂存区）：无分组或按状态种类分组 —— 由 renderer 按 `system.capabilities` / upstream 域是否全 nil 自适应（svn 天然单域）。
   - 分组标题行：`── Staged ──` 样式，用 `Comment` 高亮。
@@ -47,7 +49,8 @@
 <rel_path>                                  # 前导状态由 extmark sign 位承担
 ```
 
-- 重命名显示 `new (from old)`；`rel_path` 超过 `width - signcol` 截断头部（`…`）。
+- 重命名显示 `new (from old)`；`rel_path` 超过 `width - signcol` 时**截头留尾**（`…`）—文件名在路径末尾。
+  **但消息类文本反过来**：错误横幅与分组标题**截尾留头**（`fatal: not a git repository…`、`── Staged …`），因为它们的有效信息在开头（M3 审查的 major：把 66 字符的 `fatal: not a git repository (or any of the parent directories): .git` 按路径规则截断后只剩下括号里的尾巴）。两种方向都有用例。
 - 状态字符**不进行文本**，全部走 sign 位 —— 与 oil-vcs-status `add_symbol_to_buffer` 的方式一致：渲染即「设置行文本 + 两个 extmark」。
 
 ### 3.3 extmark 状态位
@@ -56,17 +59,19 @@
 - 每个条目行**两个 extmark**（oil-vcs-status `add_symbol_to_buffer` 同款）：
 
 ```lua
--- upstream 位（git 才有；svn 只画 local 位）
+-- index 位（git 才有；svn 只有 worktree 位）
 nvim_buf_set_extmark(buf, ns, row, 0, {
     sign_text = " " .. symbol,               -- sign_text 必须 1-2 字符，取 status_type 的 symbol
     sign_hl_group = "VcssignSign" .. Camel(type),   -- e.g. VcssignSignModified
-    priority = priority + 100,               -- upstream 位整体高于 local 位（列宽不足时保住）
+    priority = priority + 1000,              -- 见下：index 位整体高于 worktree 位
 })
--- local 位: priority = priority
+-- worktree 位: priority = priority
 ```
 
-**sign 列的实际排布（`screenstring` 实测，0.12.4）**：同色列中**priority 高的靠左**，列宽不足时**保留 priority 高的那个**。
-因此 upstream 位的偏移取 `+1000`（不是示意代码里的 `+100`）：本地状态里最高的 `conflicted = 100`，`+1000` 才能保证「有 index 位就一定有 index 位」这条不变量对**所有**组合成立。
+> 术语按 D11：`index`（暂存区，git 的 X 列）/ `worktree`（工作区，Y 列），不再叫 upstream/local。
+
+**sign 列的实际排布（`screenstring` 实测，0.12.4）**：同一列的多个 sign **priority 高的靠左**，列宽不足时**保留 priority 高的那个**。
+因此 index 位的偏移取 `+1000`：worktree 域里最高的 `conflicted = 100`，只有 `+1000` 才能让「有 index 位就一定显示 index 位」这条不变量对**所有**组合成立（`+100` 会被 `conflicted` 顶掉，这个错误在 M3 实现时被实测抓出来，并有用例钉住）。
 结果正好是 `git status --short` 的 XY 观感：index 在左、worktree 在右，窄列时留下的是已暂存状态。
 
 > 单列窗口（`sidebar.single_column`）**未实现**，见 §7：`yes:2` 是侧边栏的固定形态，单列只在用户自己覆盖 `signcolumn` 时出现。
@@ -99,7 +104,8 @@ nvim_buf_set_extmark(buf, ns, row, 0, {
 renderer.item_at(buf, row) → vcssign.RenderItem?   # extmark 或行模型反查
 ```
 
-- 行模型缓存在 `buf_states[bufnr] = { items = RenderItem[] }`（buffer-local 变量 `vim.b[bufnr].vcssign_items` 更简单，gitsigns 大量用 `vim.b[...]` 存 buffer 状态，采用后者）。
+- 行模型缓存在 buffer-local 变量 `vim.b[bufnr].vcssign_items`（gitsigns 大量用 `vim.b[...]` 存 buffer 状态，采用该形态）。
+  代价：读回要整表重建，所以 `entry_at` 返回的是 `StatusEntry` 的**副本**—M4 的动作层请按 `entry.path`/`entry.rel_path`（字符串，按值相等）判断文件，不要比较表身份。
 - keymap 与 actions（04）全部经此 API 取当前条目，**UI 层不接触任何 VCS 命令**。
 
 ## 5. keymap（keymap.lua）
@@ -123,11 +129,11 @@ renderer.item_at(buf, row) → vcssign.RenderItem?   # extmark 或行模型反�
 
 | # | 标准 | 用例 | 实测 |
 |---|------|------|------|
-| 1 | git 三组 + 两位 sign（含 rename 的 `R` 与 orig_path 提示） | `sidebar_spec` 「the list groups by status and puts the state characters in two columns」/ `renderer_spec` 「a file in both domains…」 | ✅ 屏幕单元格实测 `│ A M`（both.txt）、`│ A  `、`│ M  `、`│ U  `；rename 文本 `new (from old)` |
+| 1 | git 三组 + 两位 sign（rename 行显示 `new (from old)`；`R` 字符由 sign 位承担） | `sidebar_spec` 「the list groups by status and puts the state characters in two columns」/ `renderer_spec` 「a file in both domains…」 | ✅ 屏幕单元格实测 `│ A M`（both.txt）、`│ A  `、`│ M  `、`│ U  `；rename 文本 `new (from old)` |
 | 2 | svn 单域、无 Staged 分组 | `sidebar_spec` 「an svn working copy renders one flat list…」 | ✅ 只 entry 行、单列 sign |
 | 3 | 用户主题覆盖后跟随（`default=true`） | `renderer_spec` 「highlights are defined as defaults…」 | ✅ 用户 `fg` 存活，其余按文档链接 |
-| 4 | 连续刷新不闪、光标跟文件走 | `sidebar_spec` 「the cursor stays on its file when rows appear above it」 | ✅ 上方插行后（行号变了）光标仍在同一 rel_path |
-| 5 | dispose 后窗口关闭、缓冲区删除 | `sidebar_spec` 「a disposed repository takes its sidebar window and buffer with it」 | ✅ 窗口/缓冲区失效 + `fs_event` 回到 attach 前 |
+| 4 | 刷新后光标仍在同一文件上 | `sidebar_spec` 「the cursor stays on its file when rows appear above it」 | ✅ 上方插行后（行号变了）光标仍在同一 rel_path |
+| 5 | dispose 后窗口关闭、缓冲区删除（extmark 随 buffer 一起消失） | `sidebar_spec` 「a disposed repository takes its sidebar window and buffer with it」 | ✅ 窗口/缓冲区失效 + `fs_event` 回到 attach 前 |
 | 6 | 1000 行重渲染 < 50ms（宽松 < 200ms） | `renderer_spec` 「a thousand rows render well inside the debounce window」 | ✅ build ≈1.7ms + draw ≈5.3ms ≈ **7ms**（1003 行，三次采样 6.5/7.5/6.8） |
 
 额外（计划外但值得钉住）：窗口/缓冲区选项与 buffer name、toggle 三种语义与 buffer 复用、placeholder 三态（refreshing / 失败原因 / no changes）、按键真实按下（`feedkeys`）而非只测 `dispatch`、能力门先于动作层、keymap 覆盖与禁用。
@@ -164,3 +170,22 @@ renderer.item_at(buf, row) → vcssign.RenderItem?   # extmark 或行模型反�
 4. 条目级增量更新（现在每次全量 clear + 重画；1000 行 7ms，暂不需要）。
 5. 行文本截断策略可做成 config（当前固定「留尾」）。
 6. 单 sign 位的行：sign 落在**左列**（priority 顺序决定），与 porcelain 的固定 X/Y 列位不同—要严格对齐得插一个占位 sign，收益不抵复杂度，先记下。
+
+### 7.4 第二轮独立审查（M3 提交后）
+
+结论：**无 critical，1 major + 11 minor**，逐条核实后的处置：
+
+| 级别 | 发现 | 定论与动作 |
+|------|------|-----------|
+| major | 占位横幅复用「截头留尾」，把失败原因的开头裁掉（默认 40 列时 `fatal: not a git repository…` 只剩括号里的尾巴） | **成立，已修**：路径与消息分成 `keep_tail` / `keep_head` 两个函数；横幅与分组标题留头。用例「a failure banner keeps the words that explain the failure」按默认宽度钉住 |
+| minor | `_states` 只按 root 建键，而 bufname 含 system（同 root 双系统会互相顶掉） | **成立，已修**：键改成 `system .. '|' .. path_key(root)`，与 bufname 对齐；用例「two systems on one root get one sidebar each」 |
+| minor | `dispatch('close')` 直接 `nvim_win_close`，绕过 `sidebar.close` 留下失效的 `state.win` | **成立，已修**：改调 owner 的 `close`；断言加在按键用例里（`state.win == nil`） |
+| minor | `cursor_entry` 在侧边栏未显示时回退到「当前窗口光标的行号」，静默指向无关文件 | **成立，已修**：未显示就明确提示；并删掉 `sidebar.cursor_entry` 那份重复实现（只有 keymap 在用） |
+| minor | `draw` 的 `modifiable` 暂存/恢复没有异常保护 | **成立，已修**：`pcall(set_lines)` + 仅在 buffer 仍有效时恢复 + 重抛 |
+| minor | 三种 banner 都染 `VcssignError`（`no changes`/`refreshing…` 也是红的） | **成立，已修**：行模型加 `hl` 字段，只有失败横幅是 `VcssignError`，另两种是 `VcssignHeader`；用例断言两者不同 |
+| minor | resize 只挂 `VimResized`，手动 `:vertical resize` 触发的是 `WinResized` | **成立，已修**：两个事件都挂。**实测补充**：headless editor **根本不会发出**这两个事件（`vim.wait` 等不到，`vim.o.columns = 100` 也不发），所以用例断言「两个事件都注册」+ 用 `nvim_exec_autocmds` 驱动处理器验证重画 |
+| minor | 行模型放 `vim.b`：读回整表重建、`entry_at` 返回副本 | **保留（D25 声明的取舍）**：1000 行实测 7ms 在预算内；已在 §4 写明 M4 按 `path`/`rel_path` 值比较，别比表身份 |
+| minor | `BufWipeout` 回调与 `_forget` 两份清理逻辑 | **成立，已修**：抽出 `drop(state, delete_buffer)` 单一清理路径 |
+| minor | `M._by_buf` 从不读 | **成立，已删**（M4 需要时再按需加） |
+| minor | 文档与代码四处不符 | **成立，已修**：§3.1 严重度顺序（`renamed` 在 `added` 前）、§3.3 术语回到 index/worktree 且偏移改 `+1000`、§6 标准列措辞收敛到用例真正断言的范围、本文 §4 的返回副本语义；`00-overview.md` D6 的 bufname 补上 `<system>` |
+| minor | 测试卫生：全局高亮不复原、`reset()` 不是 finally、缺「动作抛异常」「模块加载失败」用例 | **成立，已修**：用例复原 `VcssignAdded`；sidebar_spec 的用例统一包 `guarded(fn)`（失败也清场）；补三条用例，并把「模块加载失败」与「功能未实现」在 `keymap.actions()` 里分开报告（后者原来会把真语法错吞成 not implemented） |

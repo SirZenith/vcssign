@@ -160,7 +160,7 @@ vcssign/
 | D3 | git 状态获取用 `git status --porcelain=v1 -z --untracked-files=all`（NUL 分隔） | 彻底绕开空格路径 / `core.quotepath` 引号问题；解析器按 `-z` 协议写（01） |
 | D4 | root 检测：git 用 `git rev-parse --show-toplevel`，svn 用 `svn info --show-item wc-root`，均带**关键字文件向上扫描的同步兜底** | 命令是权威（正确处理 worktree / `.git` 为文件的情况）；同步兜底覆盖命令不可用/首次快速探测 |
 | D5 | 每仓库一个 `Repo` 对象，状态缓存为 `path → {index, worktree}`（原计划写 `upstream/local`，见 D11）；FS 监听（去抖）只置脏，统一经 `refresh` 防抖管线拉取 | oil-vcs-status 的成熟模式；避免监听回调里直接跑命令造成风暴 |
-| D6 | 侧边栏 = 专属 nofile 缓冲区（`vcssign://<root>`）+ 可配置 `right/left/float` 窗口；每行**两个 extmark sign 位**（index/worktree）+ 行文本 | 双状态列与 oil-vcs-status 一致；extmark 比 `:sign` 好清理（一个 namespace `clear` 即可） |
+| D6 | 侧边栏 = 专属 nofile 缓冲区（`vcssign://<system>/<root>`）+ 可配置 `right/left/float` 窗口；每行**两个 extmark sign 位**（index/worktree）+ 行文本 | 双状态列与 oil-vcs-status 一致；extmark 比 `:sign` 好清理（一个 namespace `clear` 即可） |
 | D7 | 状态枚举以 oil-vcs-status 的 `StatusType` 为基础精简为「核心 + upstream 前缀」两族；svn 特有状态（replaced/missing/switched/external）单列 | 见 01 §2 统一映射表 |
 | D8 | 动作按 VCS 能力声明：适配器暴露 `capabilities = { stage=true, diff=true, commit=true … }`，UI/命令按能力启用 | svn 无暂存区；避免 UI 层 if git / if svn 散落 |
 | D9 | 按仓库并发刷新用「串行化队列 + 防抖」（gitsigns `throttle_async` 思路的回调简化版），`in_flight` 标志防重入 | 监听风暴 + 手动 refresh 同帧触发时不会并发跑同一 repo 的 status |
@@ -179,7 +179,7 @@ vcssign/
 | D22 | 引用取消分**三层**：`attach` 进入即递增自己 ref 的世代号（最新者胜）、每个释放路径（`detach`/`_remove`）逐 ref 递增、`dispose_all` 递增**模块级 epoch**（覆盖从未绑定的在飞引用）；回调两者都校验 | 检测是异步的：不递增的话，晚到的回调会把已释放的 ref 重新建仓（监听 + status 进程永久泄漏），或在 `dispose_all` 之后「复活」仓库（02 §7 二轮 major 2） |
 | D23 | `relpath` 对「路径 == 根」返回 `''` 而非 nil | 前缀（根 + 分隔符）天然比根长一字符，等值分支不显式处理的话 `active()` 在 cwd 即仓库根时解析不到（02 §7 二轮 major 1） |
 | D24 | sign 列排布按**实测**：priority 高的在最左，窄列时保留 priority 高的那个；upstream 位用 `+1000` 偏移（严格大于本地最高优先级 100） | 于是双列读起来就是 `git status --short` 的 XY（index 左、worktree 右），窄列留的是已暂存状态（03 §3.3、§7） |
-| D25 | 侧边栏行模型 `kind = header \| entry \| banner`，缓存在 `vim.b[bufnr].vcssign_items`；`item_at/entry_at` 用 **0 基行号**（与 extmark 行号一致） | keymap/actions 只能经这两个 API 取「当前是哪个文件」，UI 层因此完全不碰 VCS 命令（03 §4） |
+| D25 | 侧边栏行模型 `kind = header \| entry \| banner`，缓存在 `vim.b[bufnr].vcssign_items`；`item_at/entry_at` 用 **0 基行号**（与 extmark 行号一致） | keymap/actions 只能经这两个 API 取「当前是哪个文件」，UI 层因此完全不碰 VCS 命令；`entry_at` 返回副本，M4 按 `path`/`rel_path` 值比较（03 §4） |
 | D26 | keymap 只实现 UI 动作（`q`/`r`/`?`）；其余经 `keymap.dispatch(action, ctx)` 交给 `vcssign.actions`（延迟 `require`，M3 时不存在则明确提示）；能力门在 keymap **先**挡（INFO） | 单一入口让「真实按键」和「`:Vcssign`」走同一条路；UI 层不拼命令行；`open_tab` 复用 `open(entry, { tab = true })`，动作层只有一个入口 |
 | D27 | 侧边栏订阅**跟着缓冲区**（buffer 生命周期），不跟窗口 | 窗口隐藏时仓库消失（或 `dispose_all`）也能把窗口+缓冲区一并销毁；`close` 只关窗口、缓冲区复用，重开瞬时且不丢列表 |
 

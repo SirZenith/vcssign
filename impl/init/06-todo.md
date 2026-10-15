@@ -61,7 +61,7 @@
 - [x] 验收：02 §5.1–5.5 + §4，共 **18 个用例**（`test/repo_spec.lua`），含 `vim.uv.walk` 句柄清零断言
       —— 实测数据见本文件附录 C，审查修复见附录 D
 
-## M3 · 侧边栏 UI（03，P2）—— ✅ 已完成（107/107 spec 通过）
+## M3 · 侧边栏 UI（03，P2）—— ✅ 已完成（114/114 spec 通过，含审查修复）
 
 - [x] `lua/vcssign/config.lua`：`sidebar` 段（`position`/`width`/`group_by`/`keymaps`）（03 §2、§5）
 - [x] `lua/vcssign/sidebar/init.lua`：窗口/缓冲区生命周期（open/close/toggle/focus/close_all/forget_all、
@@ -76,7 +76,7 @@
       + capability 门控（svn 提示 `no staging area`，INFO）+ 动作交 04（M3 期缺模块则明确提示）（03 §5）
 - [x] 光标行恢复：按 rel_path 恢复（行号只作兜底）（03 §3.5）
 - [x] 验收：03 §6.1–6.6 全部通过（表格见 03 §6，`sidebar_spec` 用 `screenstring` 读真实屏幕断言）
-- [x] spec：`renderer_spec`（13，纯函数）+ `sidebar_spec`（13，真实仓库/窗口/按键）
+- [x] spec：`renderer_spec`（15，纯函数）+ `sidebar_spec`（18，真实仓库/窗口/按键）
 - [ ] backlog（明确不做）：`position = "float"`、`single_column`、`group_by = "directory"` 树模式、
       条目级增量更新（1000 行 7ms，全量重画足够）—见 03 §7.3
 
@@ -99,7 +99,7 @@
 - [x] `test/helpers.lua` 扩展：`scratch_dir` + `cleanup`（末尾清理）、`git_repo` / `svn_checkout` / `git_worktree`
       （**可变的临时仓库**，不碰 M1 断言依赖的共享 fixture）、`sh` / `write` / `wait_for` / `uv_count` / `with_repo`、
       `capture_notify`（含 `vim.schedule` 排空，否则 `log` 的 warn 会绕过桩）、`screen_line` / `screen_line_at`（读屏幕单元格）
-- [x] spec（M3 部分）：`renderer_spec`（13 用例，纯函数）+ `sidebar_spec`（13 用例，真实仓库/窗口/按键）
+- [x] spec（M3 部分）：`renderer_spec`（15 用例，纯函数）+ `sidebar_spec`（18 用例，真实仓库/窗口/按键）
 - [ ] spec（后续里程碑）：`actions_spec`（stage/unstage/commit 全链路，M4；**必须**在副本仓库上跑真实命令）
 - [ ] `stylua.toml` / `.luacheckrc` / `Makefile`（test/format/lint）（05 §4）
 - [ ] `doc/vcssign.txt` 初版手写（05 §5）
@@ -311,3 +311,43 @@ waiter 陈旧语义文档化、`!!`/`X`/`I` 前向兼容注释。`get_by_path` �
 - 全量 **107/107**（M1 53 + exec 7 + repo 21 + renderer 13 + sidebar 13），两遍幂等。
 - stderr 只剩 1 行预期 warn（M2 退避重试用例），其余全部被捕获或消除。
 - `git diff --check` 干净；`temp/` 只剩共享 fixture（`temp/_spec/` 由 `helpers.cleanup()` 清掉）。
+
+## 附录 G · M3 独立代码审查（code-reviewer）与修复
+
+范围 `cab8f47^..62b8005`，结论 **无 critical，1 major + 11 minor**；逐条核实后全部处置
+（定论表在 `03-sidebar-ui.md` §7.4，此处只记最值得记住的）：
+
+1. **major（已修）**：占位横幅沿用了「截头留尾」——那是给路径写的规则（文件名在尾部），
+   但错误消息的有效信息在**开头**。默认 40 列下
+   `fatal: not a git repository (or any of the parent directories): .git`（66 字符，预算 35）
+   会只剩括号里的尾巴。现在路径 `keep_tail` / 消息与标题 `keep_head`，并有用例。
+2. **minor（已修）**：`_states` 只按 root 建键、bufname 却带 system → 同 root 双系统会互相顶掉。
+   键改成 `system|root` 与 bufname 对齐。
+3. **minor（已修）**：`dispatch('close')` 自己 `nvim_win_close`，绕过 owner 留下失效的 `state.win`
+   （当前无害，M4 直接读 `state.win` 就会踩）。改调 `sidebar.close`。
+4. **minor（已修）**：侧边栏未显示时 `cursor_entry` 回退到「当前窗口光标行」，会静默指到无关文件
+   → 未显示就明确提示；顺手删掉 `sidebar.cursor_entry` 那份重复实现。
+5. **minor（已修）**：三种 banner 都染红（`no changes` 也是红的）→ 行模型加 `hl`，只有失败是
+   `VcssignError`。
+6. **minor（已修）**：resize 只挂 `VimResized`，而手动 `:vertical resize` 发的是 `WinResized`
+   （0.9+）→ 两个都挂。
+7. 保留的取舍：行模型放 `vim.b`（读回整表重建、`entry_at` 返回副本）——1000 行 7ms 在预算内，
+   已在 03 §4 写明 M4 按 `path`/`rel_path` 值比较；单 sign 行落在左列（03 §7.3 #6）同理保留。
+8. 文档与代码四处不符（严重度顺序把 `added` 写在 `renamed` 前、§3.3 术语与 `+100` 偏移、§6 标准列
+   拔高、D6 bufname 少 `<system>`）全部按代码改正；§6 的措辞收敛到用例真正断言的范围。
+
+### 复查新增的用例（+7）
+
+| 用例 | 钉住什么 |
+|------|----------|
+| renderer: `a failure banner keeps the words that explain the failure` | 消息留头 + 只有失败染红（major 的回归用例） |
+| renderer: `the severity order is the one the plan documents` | 13 个状态的顺序字面钉住（文档与代码再也不会各说各话） |
+| sidebar: `position = "left" …` | 左分屏：col 0、宽度、被编辑窗口的 buffer 不变 |
+| sidebar: `position = "float" …` | 明确 WARN 并回落右边缘（不是静默换行为） |
+| sidebar: `resizing the sidebar re-renders the truncated paths` | 两个事件都注册 + 处理器真的按新宽度重画 |
+| sidebar: `two systems on one root get one sidebar each` | 状态键与 bufname 一致 |
+| sidebar: `a failing or broken action layer is reported honestly` | 动作抛异常→ERROR；模块**加载失败**不再被吞成「未实现」 |
+
+另外：`sidebar_spec` 的 18 个用例统一包 `guarded(fn)`——失败也清场（原来 `reset()` 只在成功路径执行，
+一个失败会把残留留给下一个用例，级联失败最难读）；`renderer_spec` 的高亮用例跑完会把自己改过的全局
+高亮复原。
