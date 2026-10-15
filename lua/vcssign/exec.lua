@@ -142,7 +142,42 @@ function M.run(cmd, opts, cb)
     end
   end
 
-  local ok, proc = pcall(vim.system, cmd, { cwd = opts.cwd, text = true, env = env }, function(res)
+  ---@type vim.SystemObj?
+  local proc
+
+  local timeout = opts.timeout or config.get().exec_timeout_ms
+  if timeout and timeout > 0 then
+    -- Armed *before* the process is spawned, so that `finish` can always close
+    -- it.  The exit callback is not guaranteed to arrive after this function
+    -- returns (measured: a command that fails immediately, e.g. with an
+    -- invalid cwd, calls back from inside `vim.system`), and a timer armed
+    -- after that first `finish` had already run would sit armed until it fired
+    -- — a live handle for the next 15s for a command that has long answered.
+    timer = vim.uv.new_timer()
+    if timer then
+      timer:start(timeout, 0, function()
+        -- `finish` nils the upvalue, so work on a local copy: this defensive
+        -- branch would otherwise raise on a nil index instead of closing the
+        -- handle.
+        local t = timer
+        if finished then
+          if t and not t:is_closing() then
+            t:stop()
+            t:close()
+          end
+          return
+        end
+        if proc then
+          pcall(function()
+            proc:kill('sigterm')
+          end)
+        end
+        finish(string.format('timeout after %dms: %s', timeout, table.concat(cmd, ' ')), nil)
+      end)
+    end
+  end
+
+  local ok, started = pcall(vim.system, cmd, { cwd = opts.cwd, text = true, env = env }, function(res)
     ---@type vcssign.ExecResult
     local result = {
       cmd = cmd,
@@ -157,41 +192,14 @@ function M.run(cmd, opts, cb)
       finish(nil, result)
     end
   end)
+  proc = started
 
   if not ok then
     -- `vim.system` raises on spawn failure (e.g. the binary is missing)
-    -- instead of invoking the exit callback.
-    finish('spawn failed: ' .. tostring(proc), nil)
+    -- instead of invoking the exit callback.  `finish` closes the timeout
+    -- timer, armed above.
+    finish('spawn failed: ' .. tostring(started), nil)
     return
-  end
-
-  local timeout = opts.timeout or config.get().exec_timeout_ms
-  if timeout and timeout > 0 then
-    timer = vim.uv.new_timer()
-    if timer then
-      timer:start(timeout, 0, function()
-        -- `finish` nils the upvalue, so work on a local copy: this defensive
-        -- branch (unreachable with the current `vim.system` contract, see
-        -- below) would otherwise raise on a nil index instead of just closing
-        -- the handle.
-        local t = timer
-        if finished then
-          -- Unreachable with the current `vim.system` contract (the exit
-          -- callback is dispatched from a later loop iteration, so the timer
-          -- is always assigned before the first `finish`), but leaking a
-          -- handle here would be silent if that ever changed.
-          if t and not t:is_closing() then
-            t:stop()
-            t:close()
-          end
-          return
-        end
-        pcall(function()
-          proc:kill('sigterm')
-        end)
-        finish(string.format('timeout after %dms: %s', timeout, table.concat(cmd, ' ')), nil)
-      end)
-    end
   end
 end
 
