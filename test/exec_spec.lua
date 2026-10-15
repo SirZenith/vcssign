@@ -109,6 +109,72 @@ return {
     end,
   },
   {
+    name = 'no run leaves a timeout timer armed',
+    fn = function()
+      -- The timeout timer is armed *before* the process is spawned, so that
+      -- `finish` can always close it.  The other order leaks an armed handle
+      -- whenever the exit callback arrives before the timer exists (measured
+      -- with a command that fails immediately) — and the leak is only visible
+      -- as a live `uv_timer_t`, which is what this asserts, on each of the four
+      -- ways a run can end.
+      local function timers()
+        return helpers.uv_count('timer')
+      end
+      ---@param cmd string[]
+      ---@param opts table
+      local function run(cmd, opts)
+        local before = timers()
+        helpers.wait(function(cb)
+          exec.run(cmd, opts, cb)
+        end)
+        eq(timers(), before, 'no timer left for: ' .. table.concat(cmd, ' '))
+      end
+
+      run({ 'git', '--version' }, { cwd = helpers.plugin_root })
+      -- spawn failure (the cwd does not exist) …
+      run({ 'git', '--version' }, { cwd = helpers.plugin_root .. '/no-such-directory' })
+      -- … a missing binary (vim.system raises) …
+      run({ 'vcssign-not-a-binary' }, { cwd = helpers.plugin_root })
+      -- … and a command the timeout has to kill.
+      local sleep_cmd = vim.fn.executable('sleep') == 1 and { 'sleep', '5' }
+        or { 'cmd', '/c', 'ping -n 6 127.0.0.1 > nul' }
+      local saved = config.get().exec_timeout_ms
+      config.setup({ exec_timeout_ms = 1 })
+      run(sleep_cmd, { cwd = helpers.plugin_root })
+      config.setup({ exec_timeout_ms = saved })
+    end,
+  },
+  {
+    name = 'a synchronous exit callback still leaves no timer armed',
+    fn = function()
+      -- This is the shape that actually bit us: `vim.system`'s exit callback
+      -- can run *before* `exec.run` returns (seen with a command that fails
+      -- immediately), and a timeout timer armed after the spawn is then never
+      -- closed — a live, armed `uv_timer_t` for the whole timeout window.
+      --
+      -- The stub hands the callback over synchronously, which is exactly that
+      -- situation, so the invariant "the timer exists before the spawn can call
+      -- back" is what gets pinned here (the four ordinary endings are covered by
+      -- the case above).
+      local real_system = vim.system
+      local before = helpers.uv_count('timer')
+      vim.system = function(cmd, opts, on_exit)
+        local proc = real_system(cmd, opts, on_exit)
+        if on_exit then
+          on_exit({ code = 0, signal = 0, stdout = 'stub', stderr = '' })
+        end
+        return proc
+      end
+      -- (`called`, not `ok`: `ok` is the assertion helper.)
+      local called, err = pcall(helpers.wait, function(cb)
+        exec.run({ 'git', '--version' }, { cwd = helpers.plugin_root }, cb)
+      end)
+      vim.system = real_system
+      ok(called, tostring(err))
+      eq(helpers.uv_count('timer'), before, 'no armed timeout timer survived')
+    end,
+  },
+  {
     name = 'split_nul / split_lines / first_line',
     fn = function()
       eq(exec.split_nul('a\0b\0c\0'), { 'a', 'b', 'c' })

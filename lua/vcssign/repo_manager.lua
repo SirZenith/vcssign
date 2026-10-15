@@ -220,14 +220,46 @@ function M.attach(ref, path, cb)
 end
 
 --- Reference used by the explicit-command layer (`:Vcssign`, the public API).
+---
 --- A command is a deliberate request to *use* a repository, so the reference is
 --- not released again: the repository (and its watcher) stays for the session,
---- which is what the user asked for.  One reference per path, so two commands
---- for two files in the same repository do not cancel each other's detection.
----@param path string
+--- which is what the user asked for.  One reference per *repository* (not per
+--- queried path), so asking twice does not accumulate references and two
+--- commands for two files never cancel each other's detection.
+---@param root string
 ---@return string
-local function cmd_ref(path)
-  return 'cmd:' .. base.path_key(base.normalize(path))
+local function cmd_ref(root)
+  return 'cmd:' .. base.path_key(base.normalize(root))
+end
+
+--- Hold a reference to a repository that is already tracked.
+---
+--- For consumers that outlive whatever attached the repository: the sidebar's
+--- buffer survives its window (`bufhidden = hide`), so the user may have closed
+--- the last file of the repository while still looking at its list.  D18 names
+--- `sidebar` as a reference holder for exactly this reason.
+---
+--- No detection and no command: the caller already has the repository.
+---@param ref string
+---@param repo vcssign.Repo
+---@return boolean held  false when the repository is no longer tracked
+function M.hold(ref, repo)
+  if M._by_root[base.path_key(repo.root)] ~= repo then
+    return false
+  end
+  if M._by_ref[ref] == repo then
+    return true
+  end
+  -- A reference that currently points somewhere else is rebound, not leaked;
+  -- its in-flight detection is cancelled for the same reason `attach` cancels.
+  M._gen[ref] = (M._gen[ref] or 0) + 1
+  local previous = M._by_ref[ref]
+  if previous then
+    M:_unbind(ref, previous)
+  end
+  repo.refs[ref] = true
+  M._by_ref[ref] = repo
+  return true
 end
 
 --- Repository for `path`, detecting and attaching it when nothing has yet.
@@ -241,8 +273,11 @@ function M.ensure(path, cb)
   -- A path is not optional here: `base.normalize(nil)` silently produces a
   -- relative path against whatever the cwd happens to be (measured: the
   -- string `v:/null`), and every layer above would then be working on a
-  -- directory nobody asked about.
-  assert(type(path) == 'string' and path ~= '', 'vcssign.repo_manager.ensure: a path is required')
+  -- directory nobody asked about.  An empty string is a caller mistake too,
+  -- but one that can come from user input, so it goes back the normal way.
+  if type(path) ~= 'string' or path == '' then
+    return cb('no path given')
+  end
   local abs = base.normalize(path)
   -- Which repository does the file belong to?  The marker scan answers "the
   -- nearest one", and that matters when a repository is nested inside another
@@ -251,21 +286,22 @@ function M.ensure(path, cb)
   -- back the outer repository for a file that belongs to the inner one — and
   -- every action would then run against the wrong tree.
   local detection = registry.detect(abs)
-  local repo = detection and M.get(detection.root) or nil
-  if repo then
-    -- Already tracked (by a buffer, a sidebar, or an earlier command): asking
-    -- again must not pile up references.
-    return cb(nil, repo)
-  end
-  if not detection then
+  local root = detection and detection.root or abs
+  local repo = detection and M.get(root) or nil
+  if not repo and not detection then
     -- No marker nearby: fall back to an attached repository containing the
     -- path (a working copy whose marker sits further up, say).
     repo = M.get_by_path(abs)
-    if repo then
-      return cb(nil, repo)
-    end
   end
-  M.attach(cmd_ref(abs), abs, cb)
+  if repo then
+    -- Already tracked (by a buffer, a sidebar, or an earlier command).  The
+    -- reference is taken anyway: D29 promises an explicit command uses this
+    -- repository for the rest of the session, and it keeps the repository
+    -- alive if the buffer that attached it goes away right afterwards.
+    M.hold(cmd_ref(repo.root), repo)
+    return cb(nil, repo)
+  end
+  M.attach(cmd_ref(root), abs, cb)
 end
 
 --- Release a reference.  The last reference disposes the repository; any

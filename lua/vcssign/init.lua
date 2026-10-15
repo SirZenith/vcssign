@@ -13,6 +13,7 @@ local config = require('vcssign.config')
 local log = require('vcssign.log')
 local manager = require('vcssign.repo_manager')
 local renderer = require('vcssign.sidebar.renderer')
+local registry = require('vcssign.vcs')
 local sidebar = require('vcssign.sidebar')
 local base = require('vcssign.vcs.base')
 
@@ -23,6 +24,10 @@ local M = {}
 M.cli = require('vcssign.cli')
 
 --- Configure the plugin and start the lifecycle autocmds.
+---
+--- Options are merged over the *defaults* (not over a previous call), so
+--- calling `setup()` twice with different tables does not accumulate: the last
+--- call wins for every key it mentions.
 ---@param opts? vcssign.Config
 ---@return table M
 function M.setup(opts)
@@ -51,14 +56,34 @@ local function with_repo(path, fn)
   local target = path or current_path()
   manager.ensure(target, function(err, repo)
     if not repo then
-      if not (err and err:find('attach cancelled', 1, true)) then
-        log.notify('no repository found for ' .. target)
-      end
-      return
+      -- Same wording and level as `:Vcssign` (one implementation): a missing
+      -- repository is an answer, an environmental failure is an error.
+      return M.cli.report_no_repo(target, err)
     end
     fn(repo)
   end)
 end
+
+--- The repository that owns `path`, preferring the nearest marker.
+---
+--- Same rule as the command layer's `ensure` (D29), so a nested repository is
+--- not answered with its parent's cache — and a path that belongs to a
+--- repository nobody tracks yet resolves to nil, which is what makes the
+--- warm-up below possible.
+---@param abs string
+---@return vcssign.Repo?
+local function repo_for(abs)
+  local detection = registry.detect(abs)
+  if detection then
+    return manager.get(detection.root)
+  end
+  return manager.get_by_path(abs)
+end
+
+--- Paths whose warm-up is still in flight: a caller polling a cold path in a
+--- loop should not spawn one detection per call.
+---@type table<string, true>
+local warming = {}
 
 --- Open the sidebar for the repository containing `path`.
 ---@param path string?  defaults to the current buffer's file, then the cwd
@@ -92,33 +117,51 @@ function M.refresh(path)
   end)
 end
 
+--- Warm the cache for `abs` up in the background, once at a time.
+---@param abs string
+local function warm_up(abs)
+  if warming[abs] then
+    return
+  end
+  warming[abs] = true
+  -- One shared reference, deliberately: a read-only peek should not pin a
+  -- repository (and its watcher) per path — that is what `ensure` is for.  The
+  -- side effect is that warming a second repository releases the first one if
+  -- nothing else holds it; integrations can `detach('get_status')` themselves.
+  manager.attach('get_status', abs, function(err)
+    warming[abs] = nil
+    log.debug('get_status(%s): %s', abs, err or 'attached')
+  end)
+end
+
 --- The cached status of one file, or nil when there is nothing to report yet.
 ---
---- Never blocks: an unattached path is looked up in the background so a later
---- call can answer.  The reference is kept under a stable name (`get_status`)
---- so repeated calls do not accumulate repositories; integrations that want to
---- stop pinning one can `require('vcssign.repo_manager').detach('get_status')`.
+--- Never blocks: a path whose repository is not tracked yet is looked up in the
+--- background, so a later call can answer.
 ---@param path string?  defaults to the current buffer's file
 ---@return vcssign.FileStatus?
 function M.get_status(path)
-  local target = base.normalize(path or current_path())
-  local repo = manager.get_by_path(target)
+  local abs = base.normalize(path or current_path())
+  local repo = repo_for(abs)
   if not repo then
-    manager.attach('get_status', target, function(err)
-      log.debug('get_status(%s): %s', target, err or 'attached')
-    end)
+    warm_up(abs)
     return nil
   end
-  return repo:get_status(target)
+  return repo:get_status(abs)
 end
 
---- Every status entry of the repository containing `path` (as the sidebar
---- shows them), or an empty list.  Same non-blocking rule as `get_status`.
+--- Every status entry of the repository containing `path` (as the sidebar shows
+--- them), or an empty list.  Same non-blocking rule as `get_status`.
 ---@param path string?
 ---@return vcssign.StatusEntry[]
 function M.get_entries(path)
-  local repo = manager.get_by_path(base.normalize(path or current_path()))
-  return repo and repo:entries() or {}
+  local abs = base.normalize(path or current_path())
+  local repo = repo_for(abs)
+  if not repo then
+    warm_up(abs)
+    return {}
+  end
+  return repo:entries()
 end
 
 return M

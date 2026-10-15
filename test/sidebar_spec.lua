@@ -272,7 +272,18 @@ return {
       ok(helpers.uv_count('fs_event') > before, 'the repository is being watched')
       local _, bufnr, win = open_sidebar(repo)
 
-      manager.detach('spec:sidebar-dispose') -- last holder: the repo goes away
+      -- The sidebar holds a reference of its own (D18): releasing the spec's
+      -- reference is not enough to take the repository away, because the list
+      -- the user is looking at still needs it.  Before M4 this was the other
+      -- way round, and closing the last file of a repository silently tore down
+      -- the sidebar the user was reading.
+      manager.detach('spec:sidebar-dispose')
+      eq(manager.count(), 1, 'the sidebar keeps its repository alive')
+      ok(sidebar.state(repo) ~= nil)
+
+      -- Only the session teardown takes it away — and then the window, buffer,
+      -- subscriptions and watcher all go with it.
+      manager.dispose_all()
       helpers.wait_for(function()
         return sidebar.state(repo) == nil
       end, 'the sidebar to be forgotten')

@@ -49,7 +49,7 @@ local REQUIRES = {
   vcs_registry_spec = { 'git', 'svn' },
   repo_spec = { 'git', 'svn' },
   sidebar_spec = { 'git', 'svn' },
-  autocmds_spec = { 'git', 'svn' },
+  autocmds_spec = { 'git' },
   actions_spec = { 'git', 'svn', 'svnadmin' },
   cli_spec = { 'git', 'svn', 'svnadmin' },
 }

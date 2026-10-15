@@ -78,6 +78,25 @@ local function default_target()
   return uv.cwd() or '.'
 end
 
+--- The repository a sidebar entry came from.
+---
+--- Identity, not "deepest": `entry.rel_path` is relative to the root that
+--- listed the row, so when a repository is nested inside another *attached*
+--- one, the deepest repository containing `entry.path` is often not the one
+--- that rendered the row (the outer list shows a nested checkout as a single
+--- `?? inner/` row).  Handing a path relative to the outer root to the inner
+--- repository would stage or diff the wrong tree — or nothing at all.
+---@param entry vcssign.StatusEntry
+---@return vcssign.Repo?
+local function repo_of(entry)
+  for _, repo in ipairs(manager.all()) do
+    if base.path_key(base.abspath(repo.root, entry.rel_path)) == base.path_key(entry.path) then
+      return repo
+    end
+  end
+  return nil
+end
+
 --- Resolve a target into the repository that owns it plus the file's path.
 ---@param target vcssign.StatusEntry|string|nil
 ---@return vcssign.Target?, string? err
@@ -86,7 +105,7 @@ local function resolve(target)
   if type(target) == 'table' then
     -- A sidebar entry: it already carries the paths, and the entry itself is
     -- what the user pointed at (so its status is the one to reason about).
-    local repo = manager.get_by_path(target.path)
+    local repo = repo_of(target)
     if not repo then
       return nil, string.format('no repository for %s', target.rel_path)
     end
@@ -126,12 +145,25 @@ end
 --- hide` would leave the list orphaned in no window at all).
 ---@return integer?
 local function editor_window()
+  ---@param win integer
+  ---@return boolean
+  local function usable(win)
+    -- A floating window (a picker, a hover, our own future float) is not "the
+    -- editor", and neither is a terminal, a quickfix list or another plugin's
+    -- sidebar: `:edit` there would be a surprise.
+    if vim.api.nvim_win_get_config(win).relative ~= '' then
+      return false
+    end
+    local buf = vim.api.nvim_win_get_buf(win)
+    return vim.bo[buf].buftype == '' and vim.bo[buf].filetype ~= 'vcssign'
+  end
+
   local current = vim.api.nvim_get_current_win()
-  if vim.bo[vim.api.nvim_win_get_buf(current)].filetype ~= 'vcssign' then
+  if usable(current) then
     return current
   end
   for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
-    if vim.bo[vim.api.nvim_win_get_buf(win)].filetype ~= 'vcssign' then
+    if usable(win) then
       return win
     end
   end
@@ -160,19 +192,27 @@ function M.open(target, opts)
   end
 
   local escaped = vim.fn.fnameescape(t.path)
+  ---@type boolean, any
+  local ok, err
   if opts and opts.tab then
-    vim.cmd('tabedit ' .. escaped)
-    return
+    ok, err = pcall(vim.cmd, 'tabedit ' .. escaped)
+  else
+    local win = editor_window()
+    if win == nil then
+      -- Nothing but sidebars (and other non-ordinary windows) on screen: give
+      -- the file a window of its own rather than taking the sidebar's.
+      ok, err = pcall(vim.cmd, 'vsplit ' .. escaped)
+    else
+      vim.api.nvim_set_current_win(win)
+      ok, err = pcall(vim.cmd, 'edit ' .. escaped)
+    end
   end
-  local win = editor_window()
-  if win == nil then
-    -- Only sidebars are on screen: give the file a window of its own rather
-    -- than taking the sidebar's.
-    vim.cmd('vsplit ' .. escaped)
-    return
+  if not ok then
+    -- `:vsplit` fails for want of room (E36), and this runs inside an async
+    -- command callback: an uncaught error would surface as "Error in callback"
+    -- instead of as an answer to the key the user pressed.
+    fail(tostring(err))
   end
-  vim.api.nvim_set_current_win(win)
-  vim.cmd('edit ' .. escaped)
 end
 
 -- ▏ diff ─────────────────────────────────────────────────────────────────────
@@ -210,7 +250,10 @@ end
 local function show_diff(t, text)
   local bufnr = diff_buffer(t)
   vim.bo[bufnr].modifiable = true
-  local ok, err = pcall(vim.api.nvim_buf_set_lines, bufnr, 0, -1, false, vim.split(text, '\n', { plain = true }))
+  -- `trimempty` drops the empty line a trailing newline would add (a diff
+  -- ends with one); empty *context* lines inside the diff are kept.
+  local lines = vim.split(text, '\n', { plain = true, trimempty = true })
+  local ok, err = pcall(vim.api.nvim_buf_set_lines, bufnr, 0, -1, false, lines)
   if vim.api.nvim_buf_is_valid(bufnr) then
     -- Read-only, for the sidebar's reason: an accidental edit would make
     -- the buffer lie about the diff it is supposed to be showing.
@@ -233,7 +276,12 @@ local function show_diff(t, text)
   local opts = config.get().diff.mode == 'split'
       and { split = 'below', height = math.max(10, math.floor(vim.o.lines / 2)) }
     or { split = 'right', width = math.max(40, math.floor(vim.o.columns / 2)) }
-  local win = vim.api.nvim_open_win(bufnr, true, opts)
+  -- Same reason as `open`: opening a window can fail (no room), and that must
+  -- arrive as a message rather than as an error inside a callback.
+  local opened, win = pcall(vim.api.nvim_open_win, bufnr, true, opts)
+  if not opened then
+    return fail(tostring(win))
+  end
   vim.wo[win].wrap = false
   vim.wo[win].foldenable = false
   vim.api.nvim_win_set_cursor(win, { 1, 0 })
@@ -361,6 +409,13 @@ function M.commit(target, opts)
   local repo = t.repo
   if not repo.system.capabilities.commit then
     return refuse('%s: commit is not supported', repo.system.name)
+  end
+  local stat = uv.fs_stat(t.path)
+  if stat and stat.type ~= 'file' then
+    -- svn lists directories (`svn status` reports the directory itself), and
+    -- `svn commit -- <dir>` commits the whole subtree by default: refusing is
+    -- friendlier than committing more than the row the user pointed at.
+    return info('%s is not a file: commit its files one by one', t.rel_path)
   end
   local status = t.status
   if status == nil then

@@ -24,8 +24,11 @@ local function reset()
     vim.cmd('only')
   end
   -- Drop whatever buffer the previous case left behind (a diff view, say):
-  -- "nothing was opened" is only meaningful from a known starting point.
+  -- "nothing was opened" is only meaningful from a known starting point.  The
+  -- cwd matters too: one case moves it, and relative paths everywhere else
+  -- would quietly mean something else.
   vim.cmd('silent! enew!')
+  vim.cmd('cd ' .. vim.fn.fnameescape(helpers.plugin_root))
 end
 
 --- Clean up whether the case passed or failed: a failing case would otherwise
@@ -86,44 +89,10 @@ local function wait_for_domain(repo, rel, domain, want)
   end, string.format('%s to report %s = %s', rel, domain, want))
 end
 
---- Collect the notifications `fn` produces, waiting for them when the action
---- answers asynchronously (every VCS command does).
----
---- Not `helpers.capture_notify`, which only hands the list back once `fn`
---- returns: here the *case* has to wait for the answer, so the list must be
---- visible from inside `fn`.
----@param fn function
----@param is_done? fun(seen: vcssign.CapturedNotify[]): boolean  when given, the
----        case waits for a notification instead of assuming one already arrived
----@return vcssign.CapturedNotify[]
-local function collect(fn, is_done)
-  local real = vim.notify
-  local seen = {} ---@type vcssign.CapturedNotify[]
-  vim.notify = function(message, level)
-    seen[#seen + 1] = { message = message, level = level or vim.log.levels.INFO }
-  end
-  local ok, err = pcall(fn)
-  if ok then
-    if is_done then
-      if not vim.wait(5000, function()
-        return is_done(seen)
-      end, 10) then
-        vim.notify = real
-        error('timeout waiting for a notification', 2)
-      end
-    else
-      vim.wait(50, function()
-        return false
-      end)
-    end
-  end
-  vim.notify = real
-  if not ok then
-    error(err, 0)
-  end
-  return seen
-end
-
+-- `helpers.capture_notify` with the optional wait predicate: the VCS answers
+-- asynchronously, so a case has to wait for its notification while the stub
+-- is still in place.
+local collect = helpers.capture_notify
 --- Run `fn` with notifications swallowed.
 ---
 --- The *setup* of a case (staging a file before testing a commit, say) produces
@@ -615,6 +584,138 @@ return {
         return entry_of(repo, 'only.txt') ~= nil
       end, 'the only repository to be refreshed')
       vim.fn.delete(elsewhere, 'rf')
+    end),
+  },
+  {
+    name = 'an entry is acted on in the repository that listed it',
+    fn = guarded(function()
+      reset()
+      -- A repository inside a repository (submodule, vendored checkout, or
+      -- simply a test repository — which is how this was found).  The outer
+      -- `git status -uall` lists the inner checkout as one directory row.
+      local outer = helpers.git_repo('actions-nested-outer')
+      local inner = helpers.git_repo('actions-nested-outer/inner')
+      local outer_repo = attach_ready('spec:actions-outer', outer)
+      local inner_repo = attach_ready('spec:actions-inner', inner .. '/base.txt')
+      helpers.wait_for(function()
+        return entry_of(outer_repo, 'inner/') ~= nil
+      end, 'the outer repository to list the nested checkout')
+
+
+      -- The row belongs to the outer repository: its `rel_path` is relative to
+      -- the outer root, and handing that to the inner repository (which is what
+      -- "deepest attached repository containing the path" does) would act on a
+      -- file that does not exist there.
+      local row = entry(outer_repo, 'inner/')
+      helpers.write(outer .. '/brand-new.txt', 'untracked\n')
+      actions.refresh(row)
+      helpers.wait_for(function()
+        return entry_of(outer_repo, 'brand-new.txt') ~= nil
+      end, 'the outer repository to be refreshed')
+      eq(entry_of(outer_repo, 'inner/') ~= nil, true, 'and the row is still there')
+      -- The inner repository was not refreshed by that action.
+      eq(entry_of(inner_repo, 'brand-new.txt'), nil)
+    end),
+  },
+  {
+    name = 'open gives the file a window of its own when only sidebars are on screen',
+    fn = guarded(function()
+      reset()
+      local repo, dir = modified_repo('actions-open-only-sidebar')
+      local win = sidebar.open(repo)
+      local sidebar_buf = vim.api.nvim_win_get_buf(win)
+      eq(#vim.api.nvim_tabpage_list_wins(0), 2, 'the sidebar split the editor window')
+      -- Collapse to the sidebar alone: there is no ordinary window left.
+      vim.cmd('only')
+      eq(#vim.api.nvim_tabpage_list_wins(0), 1)
+      eq(vim.api.nvim_get_current_buf(), sidebar_buf)
+
+      actions.open(entry(repo, 'base.txt'))
+      eq(#vim.api.nvim_tabpage_list_wins(0), 2, 'a window was created for the file')
+      ok(same_path(vim.api.nvim_buf_get_name(0), dir .. '/base.txt'))
+      ok(win_of(sidebar_buf) ~= nil, 'the sidebar is still on screen')
+    end),
+  },
+  {
+    name = 'a diff the VCS refuses is reported, not swallowed',
+    fn = guarded(function()
+      reset()
+      local dir = helpers.svn_repo('actions-diff-error')
+      -- An unversioned file: svn lists it as `?`, and `svn diff` on it fails.
+      helpers.write(dir .. '/loose.txt', 'loose\n')
+      local repo = attach_ready('spec:actions-diff-error', dir)
+      helpers.wait_for(function()
+        return entry_of(repo, 'loose.txt') ~= nil
+      end, 'the unversioned file to be listed')
+
+      local windows = #vim.api.nvim_tabpage_list_wins(0)
+      local seen = collect(function()
+        actions.diff(entry(repo, 'loose.txt'))
+      end, function(s)
+        return #s > 0
+      end)
+      eq(seen[1].level, vim.log.levels.ERROR)
+      ok(seen[1].message:find('vcssign: ', 1, true) == 1, seen[1].message)
+      eq(#vim.api.nvim_tabpage_list_wins(0), windows, 'and no empty diff window was left behind')
+    end),
+  },
+  {
+    name = 'commit refuses a directory row instead of committing a whole subtree',
+    fn = guarded(function()
+      reset()
+      -- svn lists directories as entries, and `svn commit -- <dir>` commits
+      -- everything under it — more than the row the user pointed at.
+      local dir = helpers.svn_repo('actions-commit-dir')
+      -- A directory that is itself scheduled for addition is what makes svn
+      -- list a directory row (adding a *file* with `--parents` schedules only
+      -- the file, measured).
+      helpers.sh({ 'svn', 'mkdir', '--parents', '-q', dir .. '/newdir' })
+      local repo = attach_ready('spec:actions-commit-dir', dir)
+      helpers.wait_for(function()
+        return entry_of(repo, 'newdir') ~= nil
+      end, 'the directory row to be listed')
+
+      local seen
+      with_input('should not happen', function()
+        seen = collect(function()
+          actions.commit(entry(repo, 'newdir'))
+        end)
+      end)
+      ok(seen[1].message:find('is not a file', 1, true), seen[1].message)
+      -- Nothing was committed.
+      ok(helpers.sh({ 'svn', 'log', '-l', '1', dir }):find('r1', 1, true), 'still at r1')
+    end),
+  },
+  {
+    name = 'a commit that is asked to use the buffer prompt says so and falls back',
+    fn = guarded(function()
+      reset()
+      local repo, dir = modified_repo('actions-commit-buffer-input')
+      quiet(function()
+        actions.stage(entry(repo, 'base.txt'))
+        wait_for_domain(repo, 'base.txt', 'index', 'modified')
+      end)
+      with_config({ commit = { message_input = 'buffer' } }, function()
+        local seen
+        with_input('fallback still works', function()
+          -- Wait for the *commit* answer, not for the first notification: the
+          -- unimplemented-mode warning arrives before it.
+          seen = collect(function()
+            actions.commit(entry(repo, 'base.txt'))
+          end, function(s)
+            for _, notification in ipairs(s) do
+              if notification.message:find('committed', 1, true) then
+                return true
+              end
+            end
+            return false
+          end)
+        end)
+        -- The warning about the unimplemented mode, then the normal answer.
+        ok(seen[1].message:find('not implemented', 1, true), seen[1].message)
+        eq(seen[1].level, vim.log.levels.WARN)
+        eq(helpers.sh({ 'git', '-C', dir, 'log', '-1', '--format=%s' }):gsub('%s+$', ''), 'fallback still works')
+      end)
     end),
   },
   {

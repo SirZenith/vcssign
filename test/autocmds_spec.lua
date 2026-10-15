@@ -58,36 +58,10 @@ local function attached(dir)
   return manager.get_by_path(dir) ~= nil
 end
 
---- Collect notifications produced while `fn` runs (they are routed through
---- `vim.notify`, and a case that makes a hook raise would otherwise print to
---- stderr — which the suite keeps clean so a real warning stands out).
----@param fn function
----@param is_done? fun(seen: vcssign.CapturedNotify[]): boolean
----@return vcssign.CapturedNotify[]
-local function collect(fn, is_done)
-  local real = vim.notify
-  local seen = {} ---@type vcssign.CapturedNotify[]
-  vim.notify = function(message, level)
-    seen[#seen + 1] = { message = message, level = level or vim.log.levels.INFO }
-  end
-  local ok, err = pcall(fn)
-  if ok and is_done and not vim.wait(5000, function()
-    return is_done(seen)
-  end, 10) then
-    vim.notify = real
-    error('timeout waiting for a notification', 2)
-  elseif ok then
-    vim.wait(50, function()
-      return false
-    end)
-  end
-  vim.notify = real
-  if not ok then
-    error(err, 0)
-  end
-  return seen
-end
-
+-- `helpers.capture_notify` with the optional wait predicate: the VCS answers
+-- asynchronously, so a case has to wait for its notification while the stub
+-- is still in place.
+local collect = helpers.capture_notify
 ---@param opts table
 ---@param fn function
 local function with_config(opts, fn)
@@ -163,16 +137,19 @@ return {
       local file = vim.fn.tempname() .. '.txt'
       vim.fn.mkdir(vim.fs.dirname(file), 'p')
       vim.fn.writefile({ 'hello' }, file)
-      vim.cmd('edit ' .. vim.fn.fnameescape(file))
-      -- Detection is asynchronous (two VCS probes here), so wait for it to
-      -- come up empty rather than for a wall-clock guess.
-      local bufnr = vim.api.nvim_get_current_buf()
-      helpers.wait_for(function()
-        return autocmds._attached[bufnr] == nil
-      end, 'the detection to come up empty')
+      local bufnr = vim.fn.bufnr(file)
+      local seen = collect(function()
+        vim.cmd('edit ' .. vim.fn.fnameescape(file))
+        -- Detection is asynchronous (two VCS probes here), so wait for it to
+        -- come up empty rather than for a wall-clock guess.
+        helpers.wait_for(function()
+          return autocmds._attached[bufnr] == nil
+        end, 'the detection to come up empty')
+      end)
       eq(manager.count(), 0)
       -- And nothing was said about it either: most files are not in a
       -- repository, and a notification per file would be unusable.
+      eq(#seen, 0, 'no message about a file that is simply not in a repository')
       vim.fn.delete(file)
     end),
   },
@@ -231,6 +208,17 @@ return {
         return attached(dir)
       end, 'the cwd repository to be attached')
       eq(manager.get_by_path(dir).root:lower(), dir:lower(), 'the repository of the new cwd')
+
+      -- `:lcd` fires the same event but does not change the *global* directory,
+      -- so it must not rebind the reference to an unrelated repository.
+      local elsewhere = vim.fn.tempname()
+      vim.fn.mkdir(elsewhere, 'p')
+      vim.cmd('lcd ' .. vim.fn.fnameescape(elsewhere))
+      vim.wait(100, function()
+        return false
+      end)
+      eq(manager.get(dir) ~= nil, true, 'a window-local cwd change is ignored')
+      vim.cmd('cd ' .. vim.fn.fnameescape(dir))
 
       -- Moving out again releases the 'cwd' reference (attach detaches a
       -- reference whose detection comes up empty), and the next directory
@@ -315,6 +303,32 @@ return {
       eq(sidebar.count(), 0, 'no sidebars')
       eq(helpers.uv_count('fs_event'), 0, 'no watch handles')
       eq(helpers.uv_count('timer'), 0, 'and no timers')
+    end),
+  },
+  {
+    name = 'teardown survives a sidebar that is the last window',
+    fn = guarded(function()
+      reset()
+      autocmds.setup()
+      local dir = repo_dir('autocmd-last-window')
+      edit_file(dir)
+      helpers.wait_for(function()
+        return attached(dir)
+      end, 'the repository to be attached')
+      local repo = manager.get_by_path(dir)
+      sidebar.open(repo)
+      helpers.wait_for(function()
+        return sidebar.open_count() == 1
+      end, 'the sidebar to open')
+      -- Closing the last window raises (E444): the teardown must not let that
+      -- stop it from releasing the watchers.
+      vim.cmd('only')
+      eq(#vim.api.nvim_tabpage_list_wins(0), 1)
+
+      vim.api.nvim_exec_autocmds('VimLeavePre', {})
+      eq(manager.count(), 0, 'the repositories still went')
+      eq(sidebar.count(), 0, 'and the sidebar state with them')
+      eq(helpers.uv_count('fs_event'), 0, 'no watcher was left behind')
     end),
   },
   {

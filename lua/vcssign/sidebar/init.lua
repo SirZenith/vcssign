@@ -9,6 +9,7 @@
 local config = require('vcssign.config')
 local keymap = require('vcssign.sidebar.keymap')
 local log = require('vcssign.log')
+local manager = require('vcssign.repo_manager')
 local renderer = require('vcssign.sidebar.renderer')
 local base = require('vcssign.vcs.base')
 
@@ -201,18 +202,33 @@ end
 
 --- Drop every trace of a sidebar.  The one place that knows the order in which
 --- subscriptions, maps and windows have to go.
+--- The manager reference a sidebar holds while its buffer exists (D18): the
+--- buffer outlives its window, so the user may well have closed the last file
+--- of the repository while the list is still on screen.
+---@param repo vcssign.Repo
+---@return string
+local function ref_of(repo)
+  return 'sidebar:' .. state_key(repo)
+end
+
 ---@param state vcssign.SidebarState
 ---@param delete_buffer boolean  false from `BufWipeout`, where the buffer is
 ---        already going away (deleting it again would re-enter)
 local function drop(state, delete_buffer)
+  -- Subscriptions first: that is what makes the rest re-entrant-safe (the
+  -- repository may be released — and disposed — by the line below).
   unsubscribe(state)
+  manager.detach(ref_of(state.repo))
   if state.win ~= nil and vim.api.nvim_win_is_valid(state.win) then
-    vim.api.nvim_win_close(state.win, true)
+    -- `pcall`: closing the *last* window raises (E444), and on a teardown path
+    -- that would abort the rest of the cleanup.  The buffer is deleted below
+    -- either way, which is what actually makes the window go.
+    pcall(vim.api.nvim_win_close, state.win, true)
   end
   state.win = nil
   M._states[state_key(state.repo)] = nil
   if delete_buffer and vim.api.nvim_buf_is_valid(state.bufnr) then
-    vim.api.nvim_buf_delete(state.bufnr, { force = true })
+    pcall(vim.api.nvim_buf_delete, state.bufnr, { force = true })
   end
 end
 
@@ -246,6 +262,8 @@ local function create(repo)
     unsubscribe = {},
   }
   M._states[state_key(repo)] = state
+  -- Held from here until `drop`, i.e. exactly as long as the buffer exists.
+  manager.hold(ref_of(repo), repo)
 
   -- The buffer is the unit of subscription, so dropping it must drop them —
   -- otherwise a `:bwipeout` would leave listeners pointing at a dead buffer.
