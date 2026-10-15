@@ -1,30 +1,32 @@
 # 05 · 测试仓库（temp/）、测试脚手架、lint / CI / 文档（P4，与 01–03 并行推进）
 
 > 用户已指定：测试用的 git / svn 仓库放在**当前项目目录下的 `temp/`**。
-> 本次规划会话处于只读沙箱（bash 全被拦截），无法实际创建 `temp/`，
-> 因此本文件给出**幂等的仓库生成脚本**作为 M0 步骤，任何环境跑一次即可复现。
+> **落地状态**：`scripts/make_test_repos.sh` 已实现并实测——从零 `rm -rf temp` 重建、连续跑两次（幂等）、
+> 全 44 个 spec 通过。本文件 §2 的代码块是**设计草稿**，以脚本为准；下面用「实测校正」标注与原草稿不一致的地方。
 
-## 0. 前置（build 阶段第 0 步，涉及 impl/ 之外，需切 build agent 或用户手动）
+## 0. 前置（已完成）
 
-1. 在仓库根 `.gitignore` 追加：
+1. `.gitignore` 追加（**用户已完成并验证生效**）：
    ```
    /temp/
-   deps/
-   .nvimlog
+   /deps/
+   /.nvimlog
    ```
-   （`impl/` 目录是否入库由用户决定——建议入库，作为规划文档。）
-2. `git worktree add` 等 fixture 依赖已就绪即可开始。
+2. 环境：git 2.55.0.windows.2、svn 1.14.5 + svnadmin、nvim 0.12.4（`vim.system` / `vim.uv` 均可用）。
 
 ## 1. 交付物
 
-| 文件 | 职责 |
-|------|------|
-| `scripts/make_test_repos.sh` | 幂等生成 `temp/` 下全部测试仓库 |
-| `scripts/run_tests.sh` | headless nvim 跑 test spec |
-| `test/preload.lua` | spec 前置 require（参考 gitsigns `test/preload.lua`） |
-| `test/helpers.lua` | 断言 / 等待异步收敛 / 仓库 fixture 操作 |
-| `test/vcs_git_spec.lua` … | 按 00 §3 列表的 spec |
-| `stylua.toml` / `.luacheckrc` / `Makefile` | 工程工具链（gitsigns 同款） |
+| 文件 | 职责 | 状态 |
+|------|------|------|
+| `scripts/make_test_repos.sh` | 幂等生成 `temp/` 下全部测试仓库 | ✅ |
+| `scripts/run_tests.sh` | headless nvim 跑 test spec | ✅ |
+| `test/run.lua` | 轻量 runner（TAP 输出 + 非 0 退出码 + svn 缺失 SKIP） | ✅（取代原计划的 `test/preload.lua`） |
+| `test/helpers.lua` | fixture 路径 / 断言 / 异步阻塞等待 | ✅ |
+| `test/status_type_spec.lua`、`config_spec.lua` | 枚举与配置不变量 | ✅ |
+| `test/vcs_git_spec.lua`、`vcs_svn_spec.lua`、`vcs_registry_spec.lua` | 01 的验收 spec | ✅（42 用例全绿） |
+| `test/repo_spec.lua` | 02 的验收 spec（运行时） | ✅（21 用例全绿） |
+| `test/exec_spec.lua` | `exec.run` 契约（**回调上下文**/错误结构/超时/spawn 失败） | ✅（7 用例全绿） |
+| `stylua.toml` / `.luacheckrc` / `Makefile` | 工程工具链（gitsigns 同款） | ⬜ M5 剩余 |
 
 ## 2. temp/ 测试仓库（scripts/make_test_repos.sh）
 
@@ -35,76 +37,157 @@
 ```sh
 git init -q temp/git-repo && cd temp/git-repo
 git config user.email t@t && git config user.name t
-git config core.quotepath on          # 刻意保留引号场景？不需要: 适配器加 -z,引号不会出现; 保留 off 更真实
 echo base > base.txt
-echo 中文测试 > "文件 名.txt"          # 空格 + 非 ASCII 路径用例
+echo old > old.txt
+echo 中文内容 > "文件 名.txt"
 git add -A && git commit -qm init
-# 工作区状态矩阵:
-echo mod > base.txt                    # modified (local M)
-echo new > new.txt                     # untracked (??)
-git add new.txt                        # added (upstream A) — staged
-git add base.txt                       # staged modify
-mkdir -p sub && echo x > sub/x.txt && git add sub/x.txt
-git mv "文件 名.txt" renamed.txt       # staged rename (R)
-git rm -q --cached base.txt 2>/dev/null || true   # 交错组合按需
+# 工作区状态矩阵（全部可重复执行，除 rename 有存在性守卫）:
+echo mod > base.txt                     # worktree M
+echo new > new.txt                      # ?? (untracked)
+echo u > "untracked 名 .txt"            # ?? (空格 + 非 ASCII)
+echo staged > staged-add.txt && git add staged-add.txt   # index A
+echo sm > staged-mod.txt && git add staged-mod.txt && echo sm2 >> staged-mod.txt  # AM
+mkdir -p sub && echo x > sub/x.txt && git add sub/x.txt  # index A（子目录路径）
+git mv "文件 名.txt" renamed.txt        # index R + orig_path（需存在性守卫）
+rm old.txt                              # worktree D
 ```
 
-状态矩阵目标（spec 断言的期望集合）：
+状态矩阵目标（spec 断言的期望集合，与 `test/vcs_git_spec.lua` 一一对应）：
 
 | 状态 | 造法 |
 |------|------|
-| `local M` | 改工作区文件 |
-| `upstream A` | `git add` 新文件 |
-| `upstream M + local M` | add 后再改工作区 |
-| `upstream R`（rename + orig_path） | `git mv` |
+| `worktree M` | 改工作区文件 |
+| `worktree D` | 直接 `rm` 已版本化文件 |
+| `index A` | `git add` 新文件 |
+| `index A + worktree M`（AM） | add 后再改工作区 |
+| `index R`（rename + orig_path） | `git mv` |
 | `?? untracked`（含空格/中文路径） | 未 add 的新文件 |
-| `U conflicted` | `git merge` 制造冲突（单独一个 `temp/git-repo-conflict`，避免主 fixture 污染） |
+| `U conflicted`（UU） | `git merge` 制造冲突（单独一个 `temp/git-repo-conflict`，避免主 fixture 污染） |
 | worktree root 检测 | `git worktree add ../git-worktree -b wt`（01 §7 回归点） |
+
+> **实测校正**：
+> - 首版计划把「staged modify」用 `git add base.txt` 造，结果它与「worktree M」互相覆盖；
+>   已拆成独立文件（`base.txt` 保 M、`staged-mod.txt` 造 AM）。
+> - 初始提交的守卫不能只看 `temp/git-repo` 存不存在（重跑时会把脏状态提交进去），必须是 `[ ! -d temp/git-repo/.git ]`。
+> - `git init -b main` 要求 git ≥ 2.28（本机 2.55 ✓）。
 
 ### 2.2 `temp/svn-repo`
 
-svn 无「本地 init」，需要 `svnadmin`（环境有 svn 客户端，svnadmin 一般同装；脚本检测缺失则跳过并打印 SKIP 标记，spec 按标记跳过）：
+svn 无「本地 init」，需要 `svnadmin`（本机已确认有）。仓库 URL 用 `file:///D:/...`（三斜杠 + 盘符），
+由 `pwd -W`（MSYS）或 `pwd`（POSIX）生成：
 
 ```sh
 svnadmin create temp/svn-server
-svn mkdir -q --parents file:///"$PWD/temp/svn-server"/trunk -m init   # URL 形式 Windows 下用 file:///D:/... 三斜杠 + 盘符
-svn co -q file:///"$PWD/temp/svn-server"/trunk temp/svn-repo
-cd temp/svn-repo
-echo base > base.txt && svn add -q --force . && svn commit -qm init
+SVN_URL="$(svn_url temp/svn-server)/trunk"     # file:///D:/.../temp/svn-server/trunk
+svn mkdir -q --parents "$SVN_URL" -m init       # 已存在会报错，需先 svn ls 守卫
+svn co -q "$SVN_URL" temp/svn-repo
+# 初始提交: base.txt / old.txt / missing.txt / repl.txt 四个文件
 # 状态矩阵:
-echo mod > base.txt                    # M
-echo prop > prop.txt && svn add prop.txt   # A
-svn rm -q --keep-local old.txt         # ! missing (版本化文件被 rm) — 先 commit 一个 old.txt
-echo untracked > new.txt               # ?
-svn propset -q myprop v base.txt       # 属性修改 M(第2列)
+printf 'mod\n' > base.txt                       # M
+svn propset -q myprop v base.txt                # 第 2 列 M（属性修改）→ MM
+printf 'prop\n' > prop.txt && svn add -q --force --parents -- prop.txt   # A
+svn rm -q --keep-local old.txt                  # D
+rm -f missing.txt                               # !（版本化文件被 rm）
+printf 'new\n' > new.txt                        # ?
+svn rm -q --keep-local repl.txt && svn add -q --force repl.txt           # R（replaced）
+mkdir -p sub2 && printf 'q\n' > sub2/q.txt && svn add -q --force --parents -- sub2/q.txt  # A（目录 + 文件）
 ```
 
-状态矩阵目标：`M / A / D / ! / ? / 属性修改 / R(replaced)`（`svn rm` + `svn add` 制造）+ `--show-item wc-root` root 断言。
+状态矩阵目标：`M(MM) / A / D / ! / ? / 属性修改 / R(replaced) / 子目录` + `--show-item wc-root` root 断言。
 
-### 2.3 `temp/nested`（嵌套用例）
+> **实测校正**：
+> - `svn add dir/file.txt` 在 `dir` 未版本化时会报 `E200009`，**必须 `--parents`**。
+> - `svn add --force` 的语义已实测：已版本化 → 无操作；已调度删除 → 变 `R`；未版本化 → 变 `A`；重复执行幂等。
+>   因此**不要**用 `svn info` 做「是否已加入」的守卫（它对已调度删除的路径仍返回信息，会把 R 症状变成 D——本次真实踩到）。
+> - `svn rm --keep-local` 重复执行会报错，需先看 `svn status` 首列是不是 `D`/`R` 再决定。
+
+### 2.3 `temp/svn-conflict-a` + `temp/svn-conflict-b`（tree conflict 用例）
+
+wc A 本地编辑 f.txt，wc B 删除 f.txt 并提交，A 再 `svn update` → **真实 tree conflict**。
+真实输出（svn 1.14.5 实测）：
+
+```
+A  +  C f.txt
+      >   local file edit, incoming file delete or move upon update
+Summary of conflicts:
+  Tree conflicts: 1
+```
+
+价值：列 7 的 `C`、`^%s*>` 续行、`Summary of conflicts:` 尾行全部用**真实输出**钉住（
+之前的单元用例是自己构造列宽，若列号写错也会全绿）。
+
+### 2.4 `temp/svn-switch`（switched 用例）
+
+服务端 `svn copy` 出一个 branch，再把 wc 的 `sub/` `svn switch` 过去 → 列 5 出现 `S`：
+
+```
+    S   sub
+```
+
+### 2.5 `temp/nested`（嵌套用例）
 
 `temp/nested` 为 git 仓库，其中 `inner/` checkout 了上面的 svn server（git 里 ignore 掉 `inner`）→ 01 §7.4 的系统切换用例。
 
-### 2.4 退出码矩阵
+### 2.6 退出码矩阵
 
 `temp/` 各仓库全部是「已知状态」的——spec 断言状态**集合与每条 path 域值**，而不是数量（增删 fixture 不破坏断言用「expected ⊆ actual」集合断言）。
 
 ## 3. spec 编写与运行
 
-风格对齐 gitsigns `test/`（`gs_helpers.lua` + `*_spec.lua` + `make test FILTER=`）：
+风格对齐 gitsigns `test/`（`gs_helpers.lua` + `*_spec.lua`）：
 
-- 不引入 gitsigns 用的 `nvim-test`（它克隆 nvim 二进制 + 依赖 bash 工具链，Windows 成本高）。初版自研轻量运行器：
-  - `scripts/run_tests.sh`：`nvim --headless -u test/minimal_init.lua -l test/preload.lua -c "lua run_spec('$1')"`；每个 spec 文件是一个返回 `{{name, fn}}` 列表的模块；preload 提供全局 `ok/eq/check(实际, 期望)` 断言收集器；结束时汇总 exit code。
-  - 输出 `TAP` 风格（`ok 1 - git parse: rename` / `not ok …`），exit code 非 0 即失败——CI 友好。
-- **异步等待**（02 的管线全是回调）：`helpers.wait_for(pred, timeout_ms)`（uv timer 轮询 20ms 间隔，gitsigns 测试里等待刷新收敛的同款思路）。
-- 每 spec 用例自带临时可写目录（复制 `temp/git-repo` → `temp/.work/<spec-name>`，结束后删除）——**fixture 只读，写入发生在副本**，保证矩阵可复现、多次运行幂等。
-- spec 清单（对应各计划文件的验收标准）：
-  - `vcs_git_spec`：01 §7.1 + `-z` 解析（空格/中文/rename orig_path）
-  - `vcs_svn_spec`：01 §7.2 + root `--show-item wc-root`、`<1.9` 降级用例（mock `svn --version` 输出）
-  - `repo_spec`：02 §5.1–5.5（去抖收敛、`.git/index` 监听、dispose 句柄清零——`vim.loop` 事件句柄计数）
-  - `renderer_spec`：03 §6 排序/分组/双 sign 位/extmark 清理（`nvim_buf_get_extmarks` 断言）
-  - `sidebar_spec`：04 §6 全链路（headless 下 `nvim_open_win` 浮窗路径跳过，right/left split 路径可测）
-  - `actions_spec`：stage/unstage/commit 全链路（副本仓库上真实跑命令）
+- 不引入 gitsigns 用的 `nvim-test`（它克隆 nvim 二进制 + 依赖 bash 工具链，Windows 成本高）。
+  自研轻量 runner（**已落地**）：
+  - 入口：`scripts/run_tests.sh [spec ...]` → `nvim --headless -u NONE -l test/run.lua`。
+  - `test/run.lua` 自己算插件根目录并把 `lua/?.lua`、`lua/?/init.lua`、`test/?.lua` 填进 `package.path`，
+    因此不依赖 cwd，也不需要 `minimal_init.lua`。
+  - 每个 spec 文件是一个 `require` 得到的**返回 `{{name, fn}}` 列表**的模块；断言失败即 `error`，
+    runner 用 `pcall` 捕获 → 打印 `not ok N - <spec>: <case>` + 缩进错误信息。
+  - 全局断言 `ok(cond, msg)` / `eq(actual, expected, msg)`（`vim.deep_equal` 比较）/ `check`（同 `ok`）。
+  - 缺外部命令时打印 `# SKIP <spec> (<bin> not found)` 且不计为失败（`REQUIRES` 表）；
+    `temp/` 不存在则直接退出 1。
+  - 最后打印 `1..N` 汇总，有失败即 `cq`（exit 1）——CI 友好。
+  - **结果写 stdout（`io.stdout:write`）而不是 `print`**：headless 下 `print` 走 **stderr**，
+    会与插件自己的 `vim.notify` 日志粘成一行（实测把两条 `ok` 拼在一起，导致行数统计出错），
+    而且 `2>/dev/null` 会把结果一起丢掉。插件日志留在 stderr，结果留在 stdout。
+- **异步等待**：`helpers.wait(fn, timeout)`——阻塞式 `vim.wait`，把回调的 `cb(err, ...)` 收集后原样返回，
+  于是 spec 可以写成同步顺序代码。另有 `helpers.wait_for(pred, msg)` 用于「事后某个状态应出现」
+  的断言（如「缓存里应出现这个文件」）。
+- **可变的临时仓库**（M2 起）：`helpers.git_repo(name)` / `helpers.svn_checkout(name)` 在
+  `temp/_spec/<name>` 下现场建仓（`git init` 或 `svn co file:///.../svn-server/trunk`），
+  `helpers.cleanup()` 在 runner 末尾删除整个 `temp/_spec`。
+  **共享 fixture 仍是只读的**：M1 spec 断言它们精确的状态矩阵，若在 `temp/git-repo` 里
+  `git add` 一次，下一次跑套件就会失败。
+- **uv 句柄计数**：`helpers.uv_count('fs_event'|'timer')` 遍历 `vim.uv.walk`——02 §5.4 的
+  「dispose 后句柄清零」就是用它断言前后相等（比只查内部字段更接近真实泄漏）。
+- **回调里不要断言**：管线的 waiters/订阅者由 `pcall` 隔离（02 §3.3），断言会被当作
+  “callback failed” 记日志而**不会**让用例失败。spec 把结果写进变量、在用例体内断言。
+- spec 清单（对应各计划文件的验收标准，✅ = 已落地）：
+  - ✅ `status_type_spec`：枚举三件套不变量、未知状态的降级
+  - ✅ `config_spec`：list 整体替换（含嵌套层）、空表按 dict 合并、不污染 defaults
+  - ✅ `vcs_git_spec`：01 §7.1 + §7.3 + `-z` 解析（空格/中文/rename orig_path/缺 orig 容错）
+        + **stale marker 不当 root**（空 `.git` 目录、指向不存在 gitdir 的 `.git` 文件）
+  - ✅ `vcs_svn_spec`：01 §7.2 + §7.5 + 固定列解析（空格/中文路径真实输出、CRLF/孤立 CR、
+        **真实 tree conflict 的列 7 + 续行 + Summary 尾行**、**真实 switched 的列 5**）
+  - ✅ `vcs_registry_spec`：01 §7.4 嵌套切换、命令优先于 marker、
+        **无 marker 时逐系统探测的回落链（用 stub 模块真正走到 step 循环）**、最后错误透传、
+        确定性否定不被 marker 复活、config.systems 顺序
+  - ✅ `repo_spec`（21 用例）：02 §5.1–5.5 + §4 + §7 二轮回归 —— 缓存首刷、watcher 发现编辑（含子目录/撤销收敛/≤1s 延迟）、
+        10 次快写收敛到 ≤2 轮 `git status`（stub `exec.run` 计数）、同窗口多个 refresh cb、
+        `git add` → index 域翻转（普通仓库**与 linked worktree**）、marker 消失 → dispose + `uv_count` 前后相等、
+        失败保留缓存 + 单次 warn + 指数退避 + 重试自动恢复（含 `on_error`）、
+        引用计数/共享对象、attach↔detach 竞态不泄漏、dispose 后晚到结果无副作用、
+        排队 waiter 不挂起、Windows 大小写折叠、`active()`、
+        根目录自身映射回仓库、dispose_all 取消在飞 attach、防抖窗口内手动刷新不双跑
+  - ✅ `exec_spec`（7 用例）：**回调必须在主循环**（`in_fast_event()==false` 且回调里可 `nvim_buf_set_lines`）、
+        非零退出→`exit N: <首行 stderr>` 且保留 res、命令不存在→`spawn failed` 不抛异常、
+        超时→杀死且回调恰好一次、`timeout=0` 表示不超时、config 默认值、`split_nul/split_lines/first_line`
+  - ⬜ `vcs_svn_spec` 的 `<1.9` 降级用例（当前用真实 svn 1.14 只覆盖了 `--show-item` 可用路径）
+  - ⬜ git `unstage` 的旧版回退分支（需 git < 2.23，本机无法制造；仅对错误文案做了实测确认）
+  - ⬜ `Repo` 的 `refresh_now` 在 fast-event 上下文中被调用时的 `vim.schedule` 分支
+  - ⬜ `renderer_spec`：03 §6 排序/分组/双 sign 位/extmark 清理（`nvim_buf_get_extmarks` 断言）
+  - ⬜ `sidebar_spec`：04 §6 全链路（headless 下 `nvim_open_win` 浮窗路径跳过，right/left split 路径可测）
+  - ⬜ `actions_spec`：stage/unstage/commit 全链路（**必须**在副本仓库上真实跑命令）
 
 ## 4. lint / format / CI
 

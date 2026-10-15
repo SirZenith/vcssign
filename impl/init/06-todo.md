@@ -1,0 +1,264 @@
+# 06 · 总实施 TODO 清单
+
+> 本文是 `impl/init/` 系列的**执行总索引**：把 01–05 各计划文件的实现步骤
+> 汇总为一份可勾选的总清单。每项标注出处（计划文件 §节）。
+> 状态标记：`[ ]` 未开始 / `[~]` 进行中 / `[x]` 完成。
+
+## M0 · 环境与 fixture 准备（05 §0、§2）
+
+- [x] `.gitignore` 追加 `/temp/`、`deps/`、`.nvimlog`（用户已完成，实测生效）
+- [x] `temp/` 目录就位（用户已手动创建）
+- [x] 环境确认：git 2.55.0.windows.2、svn 1.14.5（≥1.9，`--show-item wc-root` 实测可用，svnadmin 实测可用）
+- [x] `temp/git-repo`：状态矩阵（local M / local D / `??` 含空格+中文路径 / upstream A / upstream M+local M / upstream R rename）—— 05 §2.1，实测见附录 A1
+- [x] `temp/git-repo-conflict`：merge 冲突（`UU conflict.txt`）—— 05 §2.1，实测见附录 A1
+- [x] `temp/git-worktree`：`git worktree add` 成功；`git rev-parse --show-toplevel` 返回 `D:/...` 正斜杠路径（实现需 `vim.fs.normalize`，但无需格式转换）—— 05 §2.1
+- [x] `temp/svn-server` + `temp/svn-repo`：file:// checkout（`file:///D:/...` 三斜杠+盘符实测有效）；状态矩阵 `MM / ! / ? / D / A / R` 全部命中—— 05 §2.2，实测见附录 A2
+- [x] `temp/nested`：git 仓库（`inner/` 已 ignore）内嵌 svn checkout；`svn info --show-item wc-root` 对两处 wc 均返回正确 root —— 05 §2.3
+- [x] `temp/svn-conflict-a` + `temp/svn-conflict-b`：**真实 tree conflict**（列 7 C + `>` 续行 + `Summary of conflicts:` 尾行）—— 05 §2.3
+- [x] `temp/svn-switch`：**真实 switched 子目录**（列 5 S）—— 05 §2.4
+- [x] 实测捕获：见附录 A1/A2/A3
+
+## M1 · VCS 抽象层（01，P0）—— ✅ 已完成（44/44 spec 通过）
+
+- [x] `lua/vcssign/status_type.lua`：统一状态枚举 + 默认符号/高亮/优先级三件套（01 §2）
+      兼 `camel/symbol/sign_hl_group/hl_group/sign_priority` 查询函式
+- [x] `lua/vcssign/vcs/base.lua`：`VcsSystem` 接口 + emmylua 元类型 + `unsupported()` 能力兼底
+      兼共享工具 `normalize/dirname_of/abspath/relpath/find_root_upwards/make_entry`（01 §3）
+- [x] `lua/vcssign/vcs/git.lua`：
+  - [x] root：`rev-parse --show-toplevel`（异步权威）+ `.git` 目录/文件同步兜底（01 §4.1）
+  - [x] status：`--porcelain=v1 -z --untracked-files=all`，NUL 解析 + rename 双段消费（01 §4.2）
+  - [x] stage/unstage/commit/diff 命令（unstage 自动回退 `reset HEAD --`）（01 §4.3）
+- [x] `lua/vcssign/vcs/svn.lua`：
+  - [x] root：`svn info --show-item wc-root` + `.svn` 同步兜底 + `<1.9` 懒降级 warn（01 §5.1）
+  - [x] status：固定列解析（第 9 列起）+ 列7 tree conflict/列2 属性修改/续行跳过（01 §5.2）
+  - [x] capabilities：`stage=false`，commit/diff 命令（01 §5.3）
+- [x] `lua/vcssign/vcs/init.lua`：registry + `detect`/`detect_async`，嵌套仓库取更深 root（01 §6）
+- [x] **额外前置（原属 M2，因适配器依赖而提前）**：`lua/vcssign/exec.lua`（`vim.system` 封装）、
+      `lua/vcssign/config.lua`（最小配置 + `merge`）
+- [x] 验收：01 §7.1–7.5 全部覆盖（`test/vcs_git_spec.lua` + `test/vcs_svn_spec.lua` +
+      `test/vcs_registry_spec.lua` + `status_type_spec` + `config_spec` = **53 用例，全绿**）
+- [x] 代码审查（独立 code-reviewer 两轮）发现的问题已修复—— 见本文件附录 B
+
+## M2 · 仓库运行时（02，P1）—— ✅ 已完成（67/67 spec 通过）
+
+- [x] `lua/vcssign/exec.lua`：`vim.system` 封装 + `LC_ALL=C`、MSYS noglob、超时、`split_nul/split_lines`（02 §2）
+      **已在 M1 落地**（适配器依赖）；`pcall` 包住 `vim.system`（命令不存在时会抛 ENOENT 而非回调，已实测）
+      + **M2 审查后修正：回调统一切回主循环**（`vim.system` 的退出回调本身就在 fast-event，实测）
+- [x] `lua/vcssign/log.lua`：分级日志（debug/info/warn/error），全部 `vim.schedule` → `vim.notify`
+      （uv 回调是 fast-event 上下文，直调 vim API 会报 E5560 —— 已实测）
+- [x] `lua/vcssign/util.lua`：`is_dir` / `subscribe` / `emit`（监听器异常隔离）
+- [x] `lua/vcssign/debounce.lua`：移植 gitsigns `debounce_trailing`（MIT 注明）+ `cancel()` + `vim.schedule` 修正（02 §6.5）
+- [x] `lua/vcssign/repo.lua`：
+  - [x] 状态缓存 `status/status_map` + `get_entry/get_status/entries`（02 §3.1；路径键 Windows 大小写折叠）
+  - [x] fs 监听：root + 直接子目录（非递归）+ **`metadata_path`**（非 Linux 递归；worktree 的 gitdir 由 `metadata_dir` 解析），句柄池化，回调只置脏（02 §3.2）
+  - [x] 刷新管线：防抖 + 防重入补跑 + map 剪裁（首轮必通知）+ 失败指数退避（02 §3.3）
+  - [x] `system.status` 调用本身 `pcall` + `done` 幂等闸（适配器抛异常不卡死管线）
+  - [x] 完成回调先查 `is_deleted`（命令飞行中被 dispose → 不产生任何副作用）
+  - [x] `dispose` 统一清理（句柄 stop+close，去抖/退避 timer 关闭，**在排 waiter 带 reason 释放**）
+- [x] `lua/vcssign/repo_manager.lua`：`attach(ref, path, cb)` / `detach(ref)` 引用计数、缓存快速路径、
+      `active/get_by_path`、`on_repo_attached/detached`、`dispose_all`（02 §4）
+      + **per-ref 世代号**防 attach↔detach 竞态泄漏引用
+- [x] 验收：02 §5.1–5.5 + §4，共 **18 个用例**（`test/repo_spec.lua`），含 `vim.uv.walk` 句柄清零断言
+      —— 实测数据见本文件附录 C，审查修复见附录 D
+
+## M3 · 侧边栏 UI（03，P2）
+
+- [ ] `lua/vcssign/sidebar/init.lua`：窗口管理（open/close/toggle、right/left、`signcolumn=yes:2`）（03 §2）
+- [ ] `lua/vcssign/sidebar/renderer.lua`：
+  - [ ] 排序（严重度→字典序）+ 分组（git 三组，svn 自适应单域）（03 §3.1）
+  - [ ] 双 extmark sign 位渲染 + namespace 全量重画 + 光标行恢复（03 §3.3、§3.5）
+  - [ ] 高亮组定义（default=true）（03 §3.4）
+  - [ ] `item_at` 光标行反查（03 §4）
+- [ ] `lua/vcssign/sidebar/keymap.lua`：默认键表 + capability 门控（03 §5）
+- [ ] 验收：03 §6.1–6.6
+
+## M4 · 命令与动作（04，P3）
+
+- [ ] `lua/vcssign/actions.lua`：open/diff/stage/unstage/commit/refresh，动作后强制 refresh（04 §2）
+- [ ] diff 展示：unified diff → nofile 缓冲区 `filetype=diff`（04 §2.1）
+- [ ] `lua/vcssign/cli.lua` + `plugin/vcssign.vim`：`:Vcssign` 子命令族 + customlist 补全（04 §3）
+- [ ] `lua/vcssign/autocmds.lua`：BufEnter/DirChanged/FocusGained/VimLeavePre + attach 去抖（04 §4）
+- [ ] 公共 API：`setup/refresh/open/close/toggle/get_status`（04 §5）
+- [ ] 验收：04 §6.1–6.6
+
+## M5 · 测试与工程化（05，P4，M1 起并行）
+
+- [x] `scripts/make_test_repos.sh`：幂等生成全部 fixture（已实测：从零重建 + 连续两次跑均正确）（05 §2）
+- [x] `scripts/run_tests.sh` + `test/run.lua` + `test/helpers.lua`：TAP 输出、exit code、svn 缺失 SKIP、
+      `helpers.wait` 阻塞式异步测试（取代计划里的 `preload.lua` + `wait_for`）（05 §3）
+- [x] spec（M1 部分）：`status_type_spec` / `config_spec` / `vcs_git_spec` / `vcs_svn_spec` / `vcs_registry_spec`（53 用例）
+- [x] spec（M2 部分）：`repo_spec`（18 用例）+ `exec_spec`（7 用例，固化「回调在主循环」契约）
+- [x] `test/helpers.lua` 扩展：`scratch_dir` + `cleanup`（末尾清理）、`git_repo` / `svn_checkout`
+      （**可变的临时仓库**，不碰 M1 断言依赖的共享 fixture）、`sh` / `write` / `wait_for` / `uv_count` / `with_repo`
+- [ ] spec（后续里程碑）：`renderer_spec` / `sidebar_spec` / `actions_spec`（05 §3 清单）
+- [ ] `stylua.toml` / `.luacheckrc` / `Makefile`（test/format/lint）（05 §4）
+- [ ] `doc/vcssign.txt` 初版手写（05 §5）
+- [ ] CI（backlog）：ubuntu+windows matrix
+
+## 里程碑依赖
+
+```
+M0 ─→ M1 ─→ M2 ─→ M3 ─→ M4
+       │
+       └───→ M5（fixture/spec 随 M1/M2/M3 同步落地）
+```
+
+## 附录 · 实测记录（2025-… 本会话，Windows / git 2.55.0.windows.2 / svn 1.14.5）
+
+### A1 · git `status --porcelain=v1 -z --untracked-files=all`（`temp/git-repo`）
+
+NUL 分隔（下文以换行代替 NUL 展示；中文路径按 UTF-8 原样传输，无需引号解码）：
+
+```
+ M base.txt
+ D old.txt
+ R  renamed.txt
+ 文件 名.txt          ← rename 条目的第二段（orig_path），紧跟新路径段之后，整体消费
+ A  staged-add.txt
+ AM staged-mod.txt
+ ?? new.txt
+ ?? untracked 名 .txt
+```
+
+要点确认：
+- rename 记录是**连续两段**（新路径 + orig_path），解析循环必须按 01 §4.2 的「双段消费」处理；
+- `core.quotepath` 引号转义**不会出现**在 `-z` 输出中（计划 D3 验证成立）；
+- 状态域实际形态：` M`（local M）、` D`（local D）、`R `（upstream R）、`A `、`AM`（upstream A + local M）、`??`（untracked）。
+
+冲突仓库 `temp/git-repo-conflict`：`UU conflict.txt`（upstream U + local U → conflicted）。
+
+`git rev-parse --show-toplevel`（`temp/git-worktree`）输出：`D:/Developer/nvim-plugins/vcssign/temp/git-worktree` —— 正斜杠绝对路径，直接可作 root 键（统一 `vim.fs.normalize`）。
+
+### A2 · `svn status`（`temp/svn-repo`）
+
+```
+MM      base.txt
+!       missing.txt
+?       new.txt
+D       old.txt
+A       prop.txt
+R       repl.txt
+```
+
+要点确认：
+- `MM` = 第 1 列 M（内容修改）+ 第 2 列 M（属性修改）—— 01 §5.2 的「列 1 主状态 + 列 2 属性补充」策略成立；
+- `!`（missing）、`R`（replaced，`svn rm --keep-local` + `svn add` 制得）按预期出现；
+- `svn info --show-item wc-root` 对 `svn-repo` 与 `nested/inner` 都返回正确绝对路径（svn ≥ 1.9 特性可用，D4 成立）；
+- file:// 仓库 URL 形态：`file:///D:/Developer/.../temp/svn-server/trunk`（三斜杠 + 盘符，`pwd -W` 可直接生成）。
+- **补充（M1 阶段）**：两处输出均为 **CRLF** 行尾；svn 路径用**反斜杠**且从**第 9 列**开始（`sub2\q.txt`、目录条目 `sub2` 与文件条目 `sub2/q.txt` 都出现）。
+
+### A3 · 其他实测结论（M1 阶段）
+
+| 结论 | 含义 |
+|------|------|
+| `vim.system` 在命令不存在时 **抛异常**（`ENOENT`）而非回调 | `exec.run` 必须 `pcall` 包住，否则插件会把错误抛到调用栈上 |
+| `t.local = 1` / `status.local` 是**语法错误** | 状态字段改名 `index` / `worktree`（D11） |
+| `vim.fs.normalize` 是**词法**归一化，**不补绝对路径** | 相对入口（`-l test/run.lua`）必须 `fnamemodify(p, ':p')` 后再 `normalize` |
+| `vim.fs.normalize(fnamemodify(p, ':p'))` 在 Windows 上 = 反斜杠→正斜杠 + 去尾分隔符 | 路径归一化无需手写处理 |
+| `svn status <target>` 打印**相对 cwd** 的路径 | 必须 `cwd = root` 且不传 target（D5 的 vcs-helper 缺陷根因） |
+| `svn add --force` 幂等（已版本化=无操作，已调度删除=变 R） | 不要用 `svn info` 做「是否已加入」守卫（会把 R 症状变成 D） |
+| `svn add dir/file.txt` 需 `--parents` | 否则 `E200009` |
+| 带冲突的工作副本末行会输出 `Summary of conflicts:` / `  Tree conflicts: 1` | 无冲突时不会有这两行；解析器必须「不认识的列字符即丢弃」而不是白名单匹配 |
+| `git notacommand` 的错误文案是 `git: 'x' is not a git command.` | 旧版 git 的 `restore` 走的是这条，而不是 `unknown option` |
+
+## 附录 B · M1 代码审查与修复（独立 code-reviewer 两轮）
+
+审查结论：无阻断性问题，主链路（root 检测、`-z` 双段解析、svn 固定列、状态归一化、回调唯一性）经
+静态核对 + Neovim runtime 源码交叉验证均正确。以下问题已全部修复并重跑 53 用例全绿：
+
+| 级别 | 问题 | 修复 |
+|------|------|------|
+| major | `unstage` 的旧版 git 回退是**死代码**（只匹配 `unknown option`，而旧版 git 报的是 `not a git command`） | 两个文案都匹配（小写归一） |
+| major | `detect_async` 无条件用 marker 结果兼底，会把 stale marker 复活成**幽灵仓库** | marker 必须真像仓库（`.git/HEAD` 存在 / `gitdir:` 目标存在）；另加「确定性否定」黑名单（`not a git repository` / `not a working copy` / `E155007`） |
+| major（测试） | 「marker 扫描不可见」的回落分支用例**根本没走到回落**（`svn-repo/sub2` 上层就有 `.svn`） | 重写为 stub 模块用例，真正走 `step()` 循环（成功/全失败/最后错误透传三个用例） |
+| major（测试） | svn 列 7/列 5/列 2 只有**自证式**单元用例（与解析器共享列宽假设） | 新增两个**真实** fixture：tree conflict（列 7）、switched（列 5）+ 真实空格/中文路径 |
+| minor | `vim.fs.normalize` 默认展开 `$VAR`，会改写含 `$HOME` 这类片段的真实路径 | `{ expand_env = false }` |
+| minor | `relpath` 对「仓库就是文件系统根 `D:/`」必然返回 nil（`normalize('D:/')` 保留尾分隔符，实测） | 前缀拼尾分隔符后再比长度 |
+| minor | svn 无反斜杠→正斜杠的**平台判定**，POSIX 上会改写合法文件名 `a\b.txt` | 仅 Windows 转换（用 `exec.is_windows`） |
+| minor | `split_lines` 只处理成对 CRLF，末行孤立 `\r` 会进路径 | 逐行去 `\r$` |
+| minor | `git.commit` 空文件列表会 `git commit -m msg --` → **提交整个索引** | 空列表直接报错；svn 同理 |
+| minor | git 的双段消费条件包含 `y == 'R'/'C'`（porcelain v1 的 Y 列不存在 R/C） | 只看 X 列 |
+| minor | `svn.commit` 返回的 `info` 是进度行 `Sending   x` 而非提交摘要 | 优先匹配 `Committed revision N` |
+| minor | `abspath` 每条目一次 `fnamemodify(':p')`（万级文件仓库开销可见） | 只用 `vim.fs.normalize(joinpath)`（root 已是绝对路径） |
+| minor | `config.merge` 嵌套层 list 会按下标合并；`vim.islist({})==true` 使 `{sidebar={}}` 整体替换 | 递归 merge + `is_dict` 判定（空表按 dict 处理） |
+| minor | svn 列 5 `X`（file external）未映射，条目被整条丢弃 | 补映射为 `external` |
+| minor（测试） | 全局单例（config / `registry.MODULES`）在断言失败时不恢复；`REQUIRES` 未覆盖 git；临时目录不清理 | `with_isolated_state` + `pcall`；`REQUIRES` 改为多值；临时目录用完删 |
+
+未修复（已知且已在 05 §3 标注为未覆盖）：svn `<1.9` 降级、git `unstage` 旧版分支（需 git < 2.23，
+本机无法制造，仅对错误文案做了实测）、`exec` 的超时/spawn 失败用例。
+
+审查提出的**契约级提醒**已写入设计文档：同步回调（能力不支持 / 空参数）会让 M2 的
+「调用后置标志」写法打穿，见 01 §3 的说明。
+
+## 附录 C · M2 实测记录（Windows 11 · nvim 0.12.4 · git 2.55 · svn 1.14.5）
+
+全部为探针脚本在本机的**直接观测**，非推断：
+
+| 观测 | 数值/结果 | 影响 |
+|------|-----------|------|
+| `uv_timer_t` / `uv_fs_event_t` 回调是否 fast-event | **都是 `vim.in_fast_event() == true`** | 所有 uv 回调必须 `vim.schedule_wrap`；否则 `vim.fn.writefile` 直接报 `E5560` |
+| 单文件改内容 | root 非递归监听收到 `change=true, filename=base.txt` | 只监听 root 就能发现 root 层文件编辑 |
+| `git add` 的 fs 事件量 | `.git` 递归监听收到 ~12 个事件（`index.lock` → `index` rename 等） | 去抖不是优化而是必需；这也是 §5.2 那条「≤2 轮」的由来 |
+| `h:start(不存在的目录, {}, cb)` | 返回 `nil, ENOENT` | `_watch` 必须先 `fs_stat` 判目录 |
+| 删除/改名**被监听目录**后 | libuv **持续投递**事件（探针刷出上千条、nvim 卡住不退出） | 首个事件必须 `_mark_deleted()` → `stop()+close()`；实测 `stop()` 后 400ms/800ms 事件数不再增长 |
+| Windows 上 rename 被监听的目录 | `uv.fs_rename` 成功（即使句柄开着） | §5.4 的「marker 消失」用 rename 实现（删目录有风险） |
+| `git status` 是否回写 `.git/index` | 用了 `--no-optional-locks` 后 **mtime 不变** | 不存在「自己触发自己」的自激刷新环 |
+| `git add` 后的 `svn`/`git` 域 | `M `（index=modified, worktree=nil） | 只能通过 `.git` 监听发现 |
+| 全新 `svn co` 出来的 wc | `svn status` **为空**（fixture 的脏状态只存在于工作副本，不在服务端） | repo_spec 的 svn 用例改为「建仓后自己制造变更」 |
+| `exec.run` 计数验证 | 10 次快写 → **1 轮** `git status`（断言 ≤2） | 去抖+串行补跑生效 |
+| 句柄清零 | `dispose_all()` 后 `uv_count('fs_event')` 与 `uv_count('timer')` 均回到基线 | 无句柄泄漏 |
+| 全量套件 | **67 用例，0 失败，11s**；连跑两次同结果；共享 fixture 矩阵未变 | 幂等可复现 |
+
+四个复用价值高的探针结论（已进代码注释）：
+1. `vim.schedule_wrap` 是所有 uv 回调的硬要求（不是「保险」）。
+2. **停止监听必须在第一个「仓库消失」事件里完成**，否则事件风暴。
+3. 撤消/收敛类断言要等 `deep_equal` 剪裁后的**第二次** `on_update`。
+4. `dispose` 清空在排 waiter 而不回调 → 调用方永久挂起（探针复现 `waiter called=false`）；
+   已修为带 reason 释放（`_mark_deleted` 先 flush 再广播 `on_delete`）。
+
+## 附录 D · M2 独立代码审查（code-reviewer）与修复
+
+审查给出 1 critical + 3 major + 6 minor + 测试/文档问题；逐条定论与动作见 `02-repo-runtime.md` §7。
+最值得记住的三条：
+
+1. **critical（已修）**：`repo_manager` 的检测是异步的，`attach` 与 `detach` 竞态时
+   晚到的回调会把**已释放的引用**重新绑定 → 仓库与它的监听永久存活。
+   修法：每 ref 一个**世代号**，`detach` 递增；回调世代不符就拒绝绑定并回调
+   `attach cancelled: ...`。（`BufEnter` + 立刻切 buffer 就能触发。）
+2. **major（已修，影响 M3/M4）**：`exec.run` 的回调在 **fast-event 上下文**（`vim.system`
+   本身如此，不只超时路径）。在那里 `vim.notify` / `nvim_buf_set_lines` 会报 E5560，
+   也就是说 **M3 的渲染器回调会被 pcall 静默吃掉**。修法：在 `exec.run` 的 `finish` 里
+   统一 `vim.schedule`，把「回调在主循环」变成全局契约，并加 `exec_spec` 用例钉住。
+3. **major（已修）**：git worktree / submodule 的 `.git` 是**文件**且真 index 在仓库外，
+   原来的监听集完全看不到 `git add`。修法：新增适配器钩子 `system.metadata_dir(root)`，
+   监听 `metadata_path`；用例在 worktree 里做 `git add`。
+
+另外两个「自己没想到、被审查抓到」的（都已修）：命令飞行中被 dispose 还会在已终结对象上
+建退避 timer；Windows 大小写折叠只做了 `relpath` 没做 map 键（会为同一仓库建两个 Repo）。
+审查中**经核实不成立**的一条：`dispose()` 并非不通知 manager —— `_mark_deleted` 会 emit
+`on_delete`，manager 正是靠它 `_remove`（已写进文档注释）。
+
+顺带修了测试基建的一个真问题：headless 下 `print` 走 **stderr**，会和插件的 `vim.notify`
+日志粘成一行（实测把两条 TAP 行拼在一起），现在结果显式写 stdout。
+
+## 附录 E · M2 收尾后的第二轮全量审查
+
+code-reviewer 复查全部实现（~2400 行）：**无 critical，2 major + 7 minor**，逐条定论见
+`02-repo-runtime.md` §7「第二轮」。三条最值得记住的：
+
+1. **major（已修，实证）**：`relpath(root, root) == nil` —— 前缀（根 + 分隔符）天然比根
+   长一字符，等值路径永远比不上。后果：`cd repo && nvim` 时 `active()` 解析不到，
+   M4 的 `:Vcssign`（不带路径）与 M3 的目录 buffer 全部落空。修法：等值分支返回 `''`。
+2. **major（已修）**：世代号只覆盖 `detach` 路径 —— `_remove`（仓库消失）与 `dispose_all`
+   （退出）都不推进它，晚到的检测回调会把已释放/已全灭的引用重新建仓（监听 + status 进程）。
+   修法：`attach` 进入即递增（**最新者胜**）+ `_remove` 逐 ref 递增 + `dispose_all` 递增
+   模块级 epoch（覆盖「从未绑定、无 `_gen` 条目」的在飞引用）。
+3. 自己暴露的第三条：`refresh_now` 不取消已武装的防抖 —— 窗口内夹一次手动刷新，
+   同一批变更跑两遍 `git status`。`_do_refresh` 起跑前 `_refresh_cancel()` 一行修掉。
+
+其余：重试 timer 取消后不多跑（`armed` 判定）、exec 防御分支 nil 安全、metadata 事件
+在更新期间**记为 pending 而非丢弃**（否则完全落在 status 窗口内的 `git add` 会永久丢失）、
+waiter 陈旧语义文档化、`!!`/`X`/`I` 前向兼容注释。`get_by_path` 的双 normalize 不修
+（仓库数个位数，正确性优先）。
+
+全量 **81/81** 两遍幂等（repo_spec 21 例，含 3 个新回归用例）。
