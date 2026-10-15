@@ -26,8 +26,8 @@
 | `test/vcs_git_spec.lua`、`vcs_svn_spec.lua`、`vcs_registry_spec.lua` | 01 的验收 spec | ✅（42 用例全绿） |
 | `test/repo_spec.lua` | 02 的验收 spec（运行时） | ✅（21 用例全绿） |
 | `test/exec_spec.lua` | `exec.run` 契约（**回调上下文**/错误结构/超时/spawn 失败） | ✅（7 用例全绿） |
-| `test/renderer_spec.lua` | 03 的行模型 spec（纯函数，无仓库/无二进制） | ✅（13 用例全绿） |
-| `test/sidebar_spec.lua` | 03 的窗口/按键 spec（真实仓库 + 真实屏幕） | ✅（13 用例全绿） |
+| `test/renderer_spec.lua` | 03 的行模型 spec（纯函数，无仓库/无二进制） | ✅（15 用例全绿） |
+| `test/sidebar_spec.lua` | 03 的窗口/按键 spec（真实仓库 + 真实屏幕） | ✅（18 用例全绿） |
 | `stylua.toml` / `.luacheckrc` / `Makefile` | 工程工具链（gitsigns 同款） | ⬜ M5 剩余 |
 
 ## 2. temp/ 测试仓库（scripts/make_test_repos.sh）
@@ -187,13 +187,21 @@ Summary of conflicts:
   - ⬜ `vcs_svn_spec` 的 `<1.9` 降级用例（当前用真实 svn 1.14 只覆盖了 `--show-item` 可用路径）
   - ⬜ git `unstage` 的旧版回退分支（需 git < 2.23，本机无法制造；仅对错误文案做了实测确认）
   - ⬜ `Repo` 的 `refresh_now` 在 fast-event 上下文中被调用时的 `vim.schedule` 分支
-  - ✅ `renderer_spec`（13 用例）：排序（严重度→字典序）/三组与 svn 扁平/rename 文本/头部截断/双 sign 位
-        （priority 与 porcelain 列序）/单域单 sign/高亮覆盖 `default=true`/placeholder 三态/1000 行 7ms。
+  - ✅ `renderer_spec`（15 用例）：排序（严重度→字典序，全 13 个状态的顺序**字面钉住**）/三组与 svn 扁平/
+        rename 文本/路径截头留尾**与消息截尾留头**/双 sign 位（priority 与 porcelain 列序）/单域单 sign/
+        高亮覆盖 `default=true`/placeholder 三态（含只有失败才染红）/1000 行 7ms。
         **纯函数**：不需要仓库，也不需要二进制，所以它随 `-l test/run.lua renderer_spec` 就能跑。
   - ✅ `sidebar_spec`（13 用例）：窗口/缓冲区选项与 buffer name、屏幕单元格断言 sign 列（`│ A M`）、
         svn 单域、toggle 三语义与缓冲区复用、dispose 连带销毁、光标跟文件走、placeholder→列表、
-        失败首刷显示原因、按键**真实按下**（`feedkeys`）、能力门、help、keymap 覆盖/禁用。
+        失败首刷显示原因、按键**真实按下**（`feedkeys`）、能力门、help、keymap 覆盖/禁用、
+        `position = "left"`、`position = "float"` 回落（WARN）、resize 重画、同 root 双系统各一个侧边栏、
+        动作抛异常与动作模块加载失败的报告。
+        每个用例都包在 `guarded(fn)` 里：**失败也清场**，不留侧边栏/仓库/桩给下一个用例（否则级联失败最难读）。
         实测：headless nvim 仍维护屏幕网格，`screenstring` 能读到 sign 位—所以「两个 sign 列对不对」是**渲染**断言，不是模型断言。
+  - ⚠️ **headless 不发 `VimResized` / `WinResized`**（实测：`:vertical resize`、`nvim_win_set_width`、`wincmd >`
+        都不触发，`vim.wait` 也等不到，`vim.o.columns = 100` 同样不发）—所以「resize 后重画」的用例分两步断言：注册的事件列表 + `nvim_exec_autocmds('WinResized')` 驱动处理器。
+  - ⚠️ 同理，UI 断言靠 `screenstring` 读屏幕网格（headless 仍维护），但**没有 UI 就不发窗口事件**，
+        这条差异写进用例注释，避免后来者当成漏测。
   - ⬜ `actions_spec`：stage/unstage/commit 全链路（**必须**在副本仓库上真实跑命令）
 
 ## 4. lint / format / CI
