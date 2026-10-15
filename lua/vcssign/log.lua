@@ -59,4 +59,25 @@ function M.error(...)
   emit('error', ...)
 end
 
+-- ▏ answers ───────────────────────────────────────────────────────────────────
+
+--- Tell the *user* something about what they asked for: an action's result, a
+--- command's failure.
+---
+--- Deliberately not level-gated: `log_level` decides how much of the plugin's
+--- own chatter is shown, not whether a refused or failed action answers the
+--- person who pressed the key.  Deliberately not deferred either: every caller
+--- already runs on the main loop (`exec.run` hands its callback back there,
+--- D19), and an answer one tick later is a different experience.
+---@param msg string
+---@param level? integer  `vim.log.levels`; defaults to INFO
+function M.notify(msg, level)
+  vim.notify('vcssign: ' .. msg, level or vim.log.levels.INFO)
+end
+
+---@param msg string
+function M.notify_error(msg)
+  M.notify(msg, vim.log.levels.ERROR)
+end
+
 return M

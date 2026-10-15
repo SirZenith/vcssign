@@ -14,6 +14,16 @@ local M = {}
 ---@field retry_max_ms integer       upper bound of the exponential retry backoff
 ---@field log_level vcssign.LogLevel
 ---@field sidebar vcssign.SidebarConfig
+---@field diff vcssign.DiffConfig
+---@field commit vcssign.CommitConfig
+--- Called when a repository becomes attached / detached (04 §4).  Optional,
+--- looked up on every call so a later `setup()` still takes effect.
+---@field on_attach? fun(repo: vcssign.Repo)
+---@field on_detach? fun(repo: vcssign.Repo)
+
+--- How a unified diff is shown (impl/init/04-commands-actions.md §2.1).
+---@class vcssign.DiffConfig
+---@field mode "vertical"|"split"  the diff window: a vertical split or a horizontal one
 
 --- Sidebar window and rendering options (impl/init/03-sidebar-ui.md).
 ---@class vcssign.SidebarConfig
@@ -21,6 +31,10 @@ local M = {}
 ---@field width integer              columns of the split
 ---@field group_by "none"|"status"   `status` splits git into Staged/Unstaged/Untracked
 ---@field keymaps table<string, string|false>  lhs -> action name; `false` leaves a key free
+
+--- Committing (impl/init/04-commands-actions.md §2.2).
+---@class vcssign.CommitConfig
+---@field message_input "input"|"buffer"  `buffer` is reserved: only `input` is implemented
 
 ---@type vcssign.Config
 M.defaults = {
@@ -34,6 +48,16 @@ M.defaults = {
   retry_delay_ms = 1000,
   retry_max_ms = 30000,
   log_level = 'warn',
+  diff = {
+    mode = 'vertical',
+  },
+  commit = {
+    -- `vim.ui.input`'s one-line prompt.  `"buffer"` (a throwaway commit
+    -- buffer, gitsigns' `actions/commit.lua` style) is listed in the plan but
+    -- not implemented yet: it warns and falls back, like `sidebar.position =
+    -- "float"` does (03 §2).
+    message_input = 'input',
+  },
   sidebar = {
     position = 'right',
     -- Wide enough for the two sign columns plus a readable path, and still

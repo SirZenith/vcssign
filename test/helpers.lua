@@ -205,6 +205,31 @@ function M.svn_checkout(name)
   return dir
 end
 
+--- A throwaway svn repository *and* a working copy of it, both under
+--- `temp/_spec/`.
+---
+--- `svn_checkout` shares one server on purpose (`temp/svn-server`, several
+--- specs assert its exact status matrix), which is why a spec that *writes* to
+--- the repository — a commit — needs a server nobody else looks at.
+---@param name string
+---@return string dir  working copy
+---@return string url  `file://` url of the server
+function M.svn_repo(name)
+  local server = M.scratch_dir(name .. '-server')
+  local dir = M.scratch_dir(name .. '-wc')
+  M.sh({ 'svnadmin', 'create', server })
+  local url = 'file:///' .. server
+  -- Seed one revision, so the working copy starts with something to change
+  -- (`svn commit` of an added-only tree would work too, but a base revision
+  -- makes the diff and status assertions simpler).
+  local seed = M.scratch_dir(name .. '-seed')
+  M.write(seed .. '/base.txt', 'base\n')
+  M.write(seed .. '/sub/nested.txt', 'nested\n')
+  M.sh({ 'svn', 'import', '-q', '-m', 'init', seed, url .. '/trunk' })
+  M.sh({ 'svn', 'co', '-q', url .. '/trunk', dir })
+  return dir, url
+end
+
 -- ▏ runtime helpers ───────────────────────────────────────────────────────────
 
 --- Block until `pred()` is true.

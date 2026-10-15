@@ -453,10 +453,18 @@ return {
       ok(captured[1].message:find("'stage'", 1, true), captured[1].message)
       package.loaded['vcssign.actions'] = nil
 
-      -- Before the action layer exists at all (this milestone), say so.
+      -- And a install where the action layer is missing *entirely* (a partial
+      -- checkout, a file that did not survive an upgrade) is reported as "not
+      -- implemented yet" rather than as a load failure — the two need different
+      -- reactions from the user.  Simulated by hiding the module path, since
+      -- M4 genuinely ships `vcssign.actions`.
+      package.loaded['vcssign.actions'] = nil
+      local saved_path = package.path
+      package.path = ''
       captured = helpers.capture_notify(function()
         keymap.dispatch('open', ctx)
       end)
+      package.path = saved_path
       eq(captured[1].message, "vcssign: the 'open' action is not implemented yet")
     end),
   },
