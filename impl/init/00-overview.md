@@ -186,6 +186,9 @@ vcssign/
 | D29 | 命令层用 `repo_manager.ensure(path, cb)` 解析仓库：按**最近的 marker** 判定，且会用 `cmd:<path>` 引用把仓库钉到会话结束 | 「`:Vcssign` 第一次用就要能用」；嵌套仓库时内层文件不会被判给已 attach 的外层仓库；重复命令不累积引用 |
 | D30 | 用户回答（动作结果、命令失败）走 `log.notify`/`log.notify_error`：**不受 `log_level` 门限、不经 `vim.schedule`**；系统级拒绝（`svn: no staging area`）不带 `vcssign:` 前缀 | `log_level` 管的是插件自己的唠叨，不是回答用户按下的那一下；调用点本来就在主循环（D19） |
 | D31 | 生命周期去抖用「每缓冲区只 attach 一次」的记忆表，不在 `repo_manager` 里套 100ms 防抖；`VimLeavePre` 只清理、不杀正在跑的命令 | 风暴的本质是同一缓冲区反复进入（`attach` 本身幂等），防抖会连「第一次 attach」一起推迟；命令在退出时是否还在飞，由 `exec` 的超时定时器兜底（04 §7.1） |
+| D32 | 侧边栏持有自己的 manager 引用（`sidebar:<system>|<root>`，`repo_manager.hold`），缓冲区在就持有；`ensure` 的引用是「每仓库一个」(`cmd:<root>`) | 侧边栏缓冲区比窗口活得久：没有这条引用，「关掉仓库里最后一个文件」会把用户正在看的列表一起拆掉（M4 审查 major）；每仓库一个引用同时解决「重复命令累积引用」 |
+| D33 | 动作条目按**身份**绑定仓库：`abspath(repo.root, entry.rel_path) == entry.path` 才认 | `rel_path` 是渲染它的那个 root 的相对路径；仓库套仓库时「包含该路径的最深仓库」是另一个仓库，会把外层的相对路径交给内层（M4 审查 major） |
+| D34 | 只读窥视（`get_status`/`get_entries`）按**最近 marker** 解析、只读缓存、不阻塞；仓库未跟踪时返回 nil/`{}` 并在后台**每路径最多一次**预热，用共享的 `get_status` 引用 | 与命令层的 `ensure` 同一套解析规则（不然嵌套仓库会被父仓库的缓存冒充）；不按路径钉住仓库，避免集成方查过的每个目录都挂一个监听 |
 
 ## 5. 风险与待验证项
 
@@ -202,5 +205,5 @@ vcssign/
 | M1 VCS 抽象层 | 01 | ✅ 完成（53/53）：git/svn 适配器在真实 `temp/` 仓库上 status/root 解析全部通过（spec 见 05） |
 | M2 仓库运行时 | 02 | ✅ 完成（81/81）：Repo 缓存 + 监听置脏 + 防抖刷新，手动改文件后 1s 内状态变化可观测 |
 | M3 侧边栏 UI | 03 | ✅ 完成（107/107）：窗口/缓冲区生命周期 + 双 sign 状态列（屏幕单元格断言）+ 高亮 + 按键；`:Vcssign` 命令族仍属 M4 |
-| M4 命令与动作 | 04 | ✅ 完成（157/157）：`:Vcssign` 全部子命令（含 `diff`/`debug`）+ 真实按键与命令同一条路；git stage/unstage/commit 都用 VCS 自身核对过，svn 无 stage 且 commit + `svn log` 可查；生命周期 autocmd 与 `VimLeavePre` 清理有句柄级断言（04 §6/§7） |
+| M4 命令与动作 | 04 | ✅ 完成（167/167，含审查修复）：`:Vcssign` 全部子命令（含 `diff`/`debug`）+ 真实按键与命令同一条路；git stage/unstage/commit 都用 VCS 自身核对过，svn 无 stage 且 commit + `svn log` 可查；生命周期 autocmd 与 `VimLeavePre` 清理有句柄级断言（04 §6/§7） |
 | M5 测试与工程化 | 05 | `make test` / `make format` 在 Windows 与 CI（Linux）都跑通 |

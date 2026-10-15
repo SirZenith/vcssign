@@ -257,9 +257,15 @@ M.on_repo_attached(fn) / M.on_repo_detached(fn)
 
 全量（M2 收尾时）：**81 用例，0 失败**（`status_type` 4 + `config` 7 + `exec` 7 + `vcs_git` 16 +
 `vcs_svn` 18 + `vcs_registry` 8 + `repo` 21；repo 的最后 3 例是第二轮回归用例）。
-M3 之后全量为 **114**（+ `renderer` 15 + `sidebar` 18，见 03 §6/§7）；M4 之后 **157**（+ `actions` 19 + `cli` 15 + `autocmds` 9，见 04 §6）。
+M3 之后全量为 **114**（+ `renderer` 15 + `sidebar` 18，见 03 §6/§7）；M4 之后 **167**（+ `actions` 24 + `cli` 17 + `autocmds` 10 + `exec` 2，见 04 §6）。
 
-M4 在 `repo_manager` 侧新增了一个入口 `ensure(path, cb)`：按**最近的 marker** 解析仓库（不是`get_by_path` 的「最深已 attach」），并用 `cmd:<path>` 引用把仓库钉到会话结束。理由与踩到的坑见 04 §7.1。
+M4 在 `repo_manager` 侧新增了两个入口：
+
+- `ensure(path, cb)`：命令层的「现在就作用在这个路径上」。按**最近的 marker** 解析仓库（而不是 `get_by_path`
+  的「最深已 attach」），并用 `cmd:<root>` 引用把仓库钉到会话结束（每仓库一个引用，见 D32）。理由与踩到的坑见 04 §7.1。
+- `hold(ref, repo)`：给已经拿着 Repo 的消费者加一个引用——不探测、不发命令。侧边栏用它成为 D18 里说的那个
+  引用持有者（`sidebar:<system>|<root>`，缓冲区活多久就持多久；M4 审查的 major：没有这条引用，关掉仓库里
+  最后一个文件会把用户正在看的侧边栏一起拆掉）。
 
 ### 第二轮（M2 收尾后的全量复查）
 

@@ -28,9 +28,9 @@
 | `test/exec_spec.lua` | `exec.run` 契约（**回调上下文**/错误结构/超时/spawn 失败） | ✅（7 用例全绿） |
 | `test/renderer_spec.lua` | 03 的行模型 spec（纯函数，无仓库/无二进制） | ✅（15 用例全绿） |
 | `test/sidebar_spec.lua` | 03 的窗口/按键 spec（真实仓库 + 真实屏幕） | ✅（18 用例全绿） |
-| `test/actions_spec.lua` | 04 的动作 spec（真实仓库 + VCS 自身核对 + 桩 `vim.ui.input`） | ✅（19 用例全绿） |
-| `test/cli_spec.lua` | 04 的 `:Vcssign` spec（命令分派/补全/目标解析/`plugin/` 薄壳） | ✅（15 用例全绿） |
-| `test/autocmds_spec.lua` | 04 的生命周期 spec（attach/detach/清理/钩子隔离） | ✅（9 用例全绿） |
+| `test/actions_spec.lua` | 04 的动作 spec（真实仓库 + VCS 自身核对 + 桩 `vim.ui.input`） | ✅（24 用例全绿） |
+| `test/cli_spec.lua` | 04 的 `:Vcssign` spec（命令分派/补全/目标解析/公共 API/`plugin/` 薄壳） | ✅（17 用例全绿） |
+| `test/autocmds_spec.lua` | 04 的生命周期 spec（attach/detach/清理/钩子隔离） | ✅（10 用例全绿） |
 | `stylua.toml` / `.luacheckrc` / `Makefile` | 工程工具链（gitsigns 同款） | ⬜ M5 剩余 |
 
 ## 2. temp/ 测试仓库（scripts/make_test_repos.sh）
@@ -205,16 +205,16 @@ Summary of conflicts:
         都不触发，`vim.wait` 也等不到，`vim.o.columns = 100` 同样不发）—所以「resize 后重画」的用例分两步断言：注册的事件列表 + `nvim_exec_autocmds('WinResized')` 驱动处理器。
   - ⚠️ 同理，UI 断言靠 `screenstring` 读屏幕网格（headless 仍维护），但**没有 UI 就不发窗口事件**，
         这条差异写进用例注释，避免后来者当成漏测。
-  - ✅ `actions_spec`（19 用例）：stage/unstage 后**用 `git diff --cached` 核对**、失败（index.lock）报 VCS 原文、
+  - ✅ `actions_spec`（24 用例）：stage/unstage 后**用 `git diff --cached` 核对**、失败（index.lock）报 VCS 原文、
         commit 走桩输入框（成功/未 stage/取消/空消息四种）并核对 `git log`、svn 现造服务器提交后核对 `svn log`、
         diff（内容/只读/复用缓冲区与窗口/`mode = "split"`/无改动不开窗）、open（deleted 拒开、消失的文件、侧边栏不被顶掉、
         `tab = true`）、refresh（跳过防抖、只有一个仓库时的回落）、仓库外路径明确报错。
         ⚠️ 用例里**不能**用 `^…$` 锚点断言多行 diff：Lua 模式没有多行标志，`^%+changed$` 只匹配整串首尾（会被骗）。
-  - ✅ `cli_spec`（15 用例）：空会话里第一条命令就能用、toggle 三语义、未知子命令列全部、**每个子命令都能分派**、
+  - ✅ `cli_spec`（17 用例）：空会话里第一条命令就能用、toggle 三语义、未知子命令列全部、**每个子命令都能分派**、
         路径参数（绝对/相对/带空格）、无参时用侧边栏光标行、仓库外 INFO、`debug` 报告内容、补全、嵌套仓库各归各的、
         公共 API（`open`/`close`/`toggle`/`refresh` 无需先 attach、`get_status` 冷调用返回 nil 并把缓存热起来、
         `setup()` 合并选项 + 定义高亮 + 启动 autocmd）、`source plugin/vcssign.vim` 后命令可用。
-  - ✅ `autocmds_spec`（9 用例）：事件注册（重复 `setup()` 不叠加）、每缓冲区只 attach 一次、仓库外静默、
+  - ✅ `autocmds_spec`（10 用例）：事件注册（重复 `setup()` 不叠加）、每缓冲区只 attach 一次、仓库外静默、
         `BufDelete` 释放引用并关监听、`FocusGained` 拉取外部修改、`DirChanged` 换仓库、`on_attach`/`on_detach`
         钩子与抛异常隔离、`VimLeavePre` 后无仓库/侧边栏/`fs_event`/`timer`、`disable()` 幂等。
         ⚠️ `VimLeavePre` 用例要**先等首次 status 落地**再断言句柄数：`exec` 的定时器属于在飞的命令，
@@ -242,20 +242,23 @@ Summary of conflicts:
 3. `stylua --check` / `luacheck` 零输出。
 4. spec 失败注入（改坏一个断言）→ TAP 输出定位到用例名，exit code 1（CI 可用性验证）。
 
-### M4 之后的实况（157 用例）
+### M4 之后的实况（167 用例，含审查修复）
 
 | spec | 用例数 | 需要的外部命令 |
 |------|--------|----------------|
 | status_type / config / renderer | 4 + 7 + 15 | 无 |
-| exec / repo | 7 + 21 | git（svn 部分用 svn） |
+| exec / repo | 9 + 21 | git（svn 部分用 svn） |
 | vcs_git / vcs_svn / vcs_registry | 16 + 18 + 8 | git / svn / 两者 |
 | sidebar | 18 | git, svn |
-| actions / cli | 19 + 12 | git, svn, **svnadmin** |
-| autocmds | 9 | git, svn |
+| actions / cli | 24 + 17 | git, svn, **svnadmin** |
+| autocmds | 10 | git |
 
 - `svnadmin` 是 M4 新增依赖（`helpers.svn_repo` 现造服务器，见 04 §7.2）；缺它时这两个 spec 会 SKIP 而不是失败。
 - 全量跑两遍结果一致（幂等）；**stderr 只应有 1 行**（`runtime-retry` 用例那条预期超时告警）。
   用例若制造了额外噪音要主动消掉：用内部消息的动作结果（stage/commit）在用例里用
   「吞掉通知的包装」跑，`vim.ui.input` 一律打桩。
-- 断言 `uv` 句柄数时记住两件事：`exec` 的超时定时器要等命令回答才关（所以先等 status 落地再断言），
-  以及 `helpers.uv_count` 只数「未在关闭中」的句柄。
+- 断言 `uv` 句柄数时记住三件事：`exec` 的超时定时器要等命令回答才关（所以先等 status 落地再断言）；
+  `helpers.uv_count` 只数「未在关闭中」的句柄；**同步回调**这种形状要用桩复现（`vim.system` 的退出回调可以在
+  `exec.run` 返回前就跑，`exec_spec` 用它钉住「定时器先建后 spawn」这条不变量——旧实现下这个用例会红）。
+- 通知类断言统一用 `helpers.capture_notify(fn, is_done?)`：不给谓词时只排空 50ms（同步回答够用），
+  给谓词时等到达（VCS 命令的回答都是异步的）。三份 spec 早先各抄了一份，M4 审查后收敛到 helpers。
