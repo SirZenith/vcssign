@@ -98,6 +98,16 @@ local function is_definitive_negative(err)
   return false
 end
 
+--- Is this failure the VCS itself saying "there is no repository here"?
+---
+--- Any other failure (a missing binary, dubious ownership, a timeout) is
+--- environmental, and the command layer reports it as an error rather than as
+--- "no repository here" — which is why it is shared rather than re-listed per
+--- caller.
+---@param err string?
+---@return boolean
+M.is_definitive_negative = is_definitive_negative
+
 --- Detect and resolve the authoritative root.
 ---
 --- The marker scan decides *which* system owns the path; that system's own

@@ -219,6 +219,55 @@ function M.attach(ref, path, cb)
   end)
 end
 
+--- Reference used by the explicit-command layer (`:Vcssign`, the public API).
+--- A command is a deliberate request to *use* a repository, so the reference is
+--- not released again: the repository (and its watcher) stays for the session,
+--- which is what the user asked for.  One reference per path, so two commands
+--- for two files in the same repository do not cancel each other's detection.
+---@param path string
+---@return string
+local function cmd_ref(path)
+  return 'cmd:' .. base.path_key(base.normalize(path))
+end
+
+--- Repository for `path`, detecting and attaching it when nothing has yet.
+---
+--- The command layer cannot assume that a buffer already attached the
+--- repository: `:Vcssign toggle` in a fresh session is the first thing that
+--- happens, and it has to work.
+---@param path string
+---@param cb fun(err: string?, repo: vcssign.Repo?)
+function M.ensure(path, cb)
+  -- A path is not optional here: `base.normalize(nil)` silently produces a
+  -- relative path against whatever the cwd happens to be (measured: the
+  -- string `v:/null`), and every layer above would then be working on a
+  -- directory nobody asked about.
+  assert(type(path) == 'string' and path ~= '', 'vcssign.repo_manager.ensure: a path is required')
+  local abs = base.normalize(path)
+  -- Which repository does the file belong to?  The marker scan answers "the
+  -- nearest one", and that matters when a repository is nested inside another
+  -- repository that is already attached: `get_by_path` (deliberately, for
+  -- lookups) returns the *deepest attached* one, so asking it here would hand
+  -- back the outer repository for a file that belongs to the inner one — and
+  -- every action would then run against the wrong tree.
+  local detection = registry.detect(abs)
+  local repo = detection and M.get(detection.root) or nil
+  if repo then
+    -- Already tracked (by a buffer, a sidebar, or an earlier command): asking
+    -- again must not pile up references.
+    return cb(nil, repo)
+  end
+  if not detection then
+    -- No marker nearby: fall back to an attached repository containing the
+    -- path (a working copy whose marker sits further up, say).
+    repo = M.get_by_path(abs)
+    if repo then
+      return cb(nil, repo)
+    end
+  end
+  M.attach(cmd_ref(abs), abs, cb)
+end
+
 --- Release a reference.  The last reference disposes the repository; any
 --- detection this reference still has in flight is cancelled.
 ---@param ref string

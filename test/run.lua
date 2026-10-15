@@ -51,6 +51,7 @@ local REQUIRES = {
   sidebar_spec = { 'git', 'svn' },
   autocmds_spec = { 'git', 'svn' },
   actions_spec = { 'git', 'svn', 'svnadmin' },
+  cli_spec = { 'git', 'svn', 'svnadmin' },
 }
 
 local DEFAULT_SPECS = {
@@ -65,6 +66,7 @@ local DEFAULT_SPECS = {
   'sidebar_spec',
   'autocmds_spec',
   'actions_spec',
+  'cli_spec',
 }
 
 local requested = {}
