@@ -80,7 +80,7 @@
 - [ ] backlog（明确不做）：`position = "float"`、`single_column`、`group_by = "directory"` 树模式、
       条目级增量更新（1000 行 7ms，全量重画足够）—见 03 §7.3
 
-## M4 · 命令与动作（04，P3）—— ✅ 已完成（157/157 spec 通过）
+## M4 · 命令与动作（04，P3）—— ✅ 已完成（167/167 spec 通过，含独立审查修复）
 
 - [x] `lua/vcssign/actions.lua`：open/diff/stage/unstage/commit/refresh，动作后强制 refresh（04 §2）
 - [x] diff 展示：unified diff → nofile 缓冲区 `filetype=diff`，同文件复用缓冲/窗口，只读（04 §2.1）
@@ -88,7 +88,7 @@
 - [x] `lua/vcssign/autocmds.lua`：BufReadPost/BufEnter/BufDelete/DirChanged/FocusGained/VimLeavePre（04 §4）
 - [x] 公共 API：`setup/open/close/toggle/refresh/get_status/get_entries` + `M.cli`（04 §5）
 - [x] 验收：04 §6 全部 8 条（含两条额外的：空会话第一条命令可用、`plugin/` 薄壳真的注册了命令）
-- [x] 测试：`actions_spec` 19 + `cli_spec` 15 + `autocmds_spec` 9（05 §6）
+- [x] 测试：`actions_spec` 24 + `cli_spec` 17 + `autocmds_spec` 10 + `exec_spec` 9（05 §6）
 
 M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
 1. `exec.run` 的超时定时器武装顺序 → 立刻失败的进程会留下一个**已武装**的定时器（15s 后才自我关闭）。
@@ -379,3 +379,23 @@ waiter 陈旧语义文档化、`!!`/`X`/`I` 前向兼容注释。`get_by_path` �
 - **破坏性前提的用例要自造环境**：提交需要可写的 svn 服务器 → `helpers.svn_repo` 现造（共享 fixture 只读）。
 - **headless 收不到 `FocusGained`**（同 `VimResized`/`WinResized`）：用例用 `nvim_exec_autocmds` 驱动处理器，
   另有用例断言注册本身。
+
+## 附录 I · M4 独立审查（code-reviewer）与修复
+
+范围 `318e1b3..1f3ed6e`，结论 **无 critical，2 major + 约 20 minor**（定论表在 04 §7.4）。两条 major 都值得记住：
+
+1. **动作条目要按「身份」绑定仓库**。`entry.rel_path` 是**渲染它的那个 root** 的相对路径。仓库套仓库时
+   （外层把内嵌 checkout 列成一行 `?? inner/`），「包含该路径的最深仓库」是内层——于是外层的相对路径被交给内层
+   仓库，stage/diff 作用在错误的树上。修法：`abspath(repo.root, rel_path) == entry.path` 精确匹配。
+   这条和 M4 实现时修的 `ensure` 是同一个错的**两个方向**（那次修的是「内层文件被判给外层」）。
+2. **侧边栏必须自己持引用**（D18 原文，M4 实现时漏了）。缓冲区比窗口活得久：不然「关掉仓库里最后一个文件」
+   会把用户正在看的列表一起拆掉。新增 `repo_manager.hold(ref, repo)`（不探测、不发命令）。
+
+审查还抓到三条我原先没意识到的边界：svn 会把**目录**列成条目而 `svn commit -- <dir>` 递归提交整棵子树
+（现在直接拒绝）；`DirChanged` 的细节在 `v:event` 而不是回调参数里（`:lcd`/`:tcd` 也会触发它）；
+`VimLeavePre` 清理路径上「侧边栏是唯一窗口」会抛 `E444`，从而跳过句柄释放。
+
+修复后全量 167/167、两遍幂等、stderr 仍只有 1 行预期告警。审查同时确认了 10 条「不是问题」
+（exec 四条结束路径都关定时器、D19 在 M4 新代码里成立、钩子隔离、`<f-args>` 无注入面、diff 缓冲复用与
+`bufhidden=wipe` 不冲突等），并指出 6 条「已声明的取舍，保留」（最近 marker 解析、每缓冲区一次 attach、
+`HEAD` 对比策略、unborn/untracked 的 diff 边界、插件的容量、退出不杀在飞命令）。
