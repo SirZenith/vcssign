@@ -23,6 +23,24 @@ local function reset()
     vim.cmd('only')
   end
   package.loaded['vcssign.actions'] = nil
+  package.preload['vcssign.actions'] = nil
+end
+
+--- Wrap a case body so it cleans up after itself whether it passes or fails.
+---
+--- `reset()` at the end of a case only runs on the happy path; a failing case
+--- would leave its sidebar, repository and stubbed modules behind for the next
+--- one (the failures that are hardest to read are the cascading ones).
+---@param fn function
+---@return function
+local function guarded(fn)
+  return function()
+    local ok, err = pcall(fn)
+    reset()
+    if not ok then
+      error(err, 0)
+    end
+  end
 end
 
 --- Attach `ref` to the repository containing `path` and wait for the first
@@ -134,7 +152,7 @@ end
 return {
   {
     name = 'opening a sidebar creates a buffer and a window for the repository',
-    fn = function()
+    fn = guarded(function()
       reset()
       local repo, dir = repo_with_changes('sidebar-open')
       local _, bufnr, win = open_sidebar(repo)
@@ -156,12 +174,11 @@ return {
       ok(vim.api.nvim_win_get_position(win)[2] >= vim.o.columns / 2, 'the default position is the right edge')
       eq(#vim.api.nvim_tabpage_list_wins(0), 2, 'the sidebar splits, it does not replace the window')
       eq(vim.api.nvim_get_current_win(), win, 'open focuses the sidebar')
-      reset()
-    end,
+    end),
   },
   {
     name = 'the list groups by status and puts the state characters in two columns',
-    fn = function()
+    fn = guarded(function()
       reset()
       local repo = repo_with_changes('sidebar-list')
       local _, bufnr, win = open_sidebar(repo)
@@ -193,12 +210,11 @@ return {
       vim.wo[win].signcolumn = 'yes'
       eq(sign_area(win, row_of(bufnr, 'both.txt'), 'both.txt'), '│ A')
       eq(sign_area(win, row_of(bufnr, 'base.txt'), 'base.txt'), '│ M')
-      reset()
-    end,
+    end),
   },
   {
     name = 'an svn working copy renders one flat list with a single domain',
-    fn = function()
+    fn = guarded(function()
       reset()
       local dir = helpers.svn_checkout('sidebar-svn')
       helpers.write(dir .. '/base.txt', 'changed\n')
@@ -212,12 +228,11 @@ return {
       end
       eq(sign_area(win, row_of(bufnr, 'base.txt'), 'base.txt'), '│ M  ')
       eq(sign_area(win, row_of(bufnr, 'unknown.txt'), 'unknown.txt'), '│ U  ')
-      reset()
-    end,
+    end),
   },
   {
     name = 'toggle closes a focused sidebar, focuses an unfocused one and reuses the buffer',
-    fn = function()
+    fn = guarded(function()
       reset()
       local repo = repo_with_changes('sidebar-toggle')
       local state, bufnr, win = open_sidebar(repo)
@@ -244,12 +259,11 @@ return {
       eq(sidebar.is_open(repo), false, 'close only closes the window')
       eq(vim.api.nvim_buf_is_valid(bufnr), true)
       eq(state.bufnr, bufnr)
-      reset()
-    end,
+    end),
   },
   {
     name = 'a disposed repository takes its sidebar window and buffer with it',
-    fn = function()
+    fn = guarded(function()
       reset()
       local before = helpers.uv_count('fs_event')
       local dir = helpers.git_repo('sidebar-dispose')
@@ -266,12 +280,11 @@ return {
       eq(vim.api.nvim_win_is_valid(win), false, 'the window is gone')
       eq(vim.api.nvim_buf_is_valid(bufnr), false, 'the buffer is gone')
       eq(helpers.uv_count('fs_event'), before, 'and the watcher with them')
-      reset()
-    end,
+    end),
   },
   {
     name = 'the cursor stays on its file when rows appear above it',
-    fn = function()
+    fn = guarded(function()
       reset()
       local dir = helpers.git_repo('sidebar-cursor')
       helpers.write(dir .. '/base.txt', 'changed\n')
@@ -295,12 +308,11 @@ return {
 
       local cursor = vim.api.nvim_win_get_cursor(win)[1]
       eq(renderer.entry_at(bufnr, cursor - 1).rel_path, 'zzz.txt', 'the cursor followed its file')
-      reset()
-    end,
+    end),
   },
   {
     name = 'the first paint says it is refreshing, then shows the list',
-    fn = function()
+    fn = guarded(function()
       reset()
       local dir = helpers.git_repo('sidebar-placeholder')
       helpers.write(dir .. '/base.txt', 'changed\n')
@@ -325,12 +337,11 @@ return {
       end, 'the list to replace the placeholder')
       eq(#renderer.items(bufnr), 2, 'one group header plus one file')
       repo:dispose()
-      reset()
-    end,
+    end),
   },
   {
     name = 'a failed first run shows its reason instead of a list',
-    fn = function()
+    fn = guarded(function()
       reset()
       -- Outside any repository: `git status` fails, and the sidebar has nothing
       -- but the error to show.
@@ -355,12 +366,11 @@ return {
         end)
       end)
       vim.fn.delete(dir, 'rf')
-      reset()
-    end,
+    end),
   },
   {
     name = 'the default keys are buffer-local and work by pressing them',
-    fn = function()
+    fn = guarded(function()
       reset()
       local repo = repo_with_changes('sidebar-keys')
       local _, bufnr, win = open_sidebar(repo)
@@ -387,12 +397,12 @@ return {
       vim.api.nvim_feedkeys('q', 'x', false)
       eq(sidebar.is_open(repo), false, "pressing 'q' closes the sidebar")
       eq(vim.api.nvim_win_is_valid(win), false, 'the window is gone')
-      reset()
-    end,
+      eq(sidebar.state(repo).win, nil, 'and the state does not keep a dead window number')
+    end),
   },
   {
     name = 'an entry action is handed to the actions layer, not built here',
-    fn = function()
+    fn = guarded(function()
       reset()
       local repo = repo_with_changes('sidebar-actions')
       local _, bufnr, win = open_sidebar(repo)
@@ -448,12 +458,11 @@ return {
         keymap.dispatch('open', ctx)
       end)
       eq(captured[1].message, "vcssign: the 'open' action is not implemented yet")
-      reset()
-    end,
+    end),
   },
   {
     name = 'the capability gate explains a missing staging area before anything runs',
-    fn = function()
+    fn = guarded(function()
       reset()
       local dir = helpers.svn_checkout('sidebar-gate')
       helpers.write(dir .. '/base.txt', 'changed\n')
@@ -480,12 +489,11 @@ return {
       eq(captured[2].message, 'svn: no staging area')
       eq(captured[1].level, vim.log.levels.INFO, 'a missing capability is not an error')
       eq(ran, false, 'the gate fires before any command is built')
-      reset()
-    end,
+    end),
   },
   {
     name = 'the help key lists the effective mappings',
-    fn = function()
+    fn = guarded(function()
       reset()
       local repo = repo_with_changes('sidebar-help')
       local _, bufnr = open_sidebar(repo)
@@ -497,12 +505,11 @@ return {
         ok(help:find(lhs, 1, true), lhs .. ' is listed:\n' .. help)
         ok(help:find(action, 1, true), action .. ' is listed:\n' .. help)
       end
-      reset()
-    end,
+    end),
   },
   {
     name = 'keymap overrides are respected, including disabling a key',
-    fn = function()
+    fn = guarded(function()
       reset()
       with_config({ sidebar = { keymaps = { q = false, x = 'close' } } }, function()
         local repo = repo_with_changes('sidebar-keys-override')
@@ -515,7 +522,143 @@ return {
         eq(sidebar.is_open(repo), false, 'the custom key does what it says')
         eq(vim.api.nvim_win_is_valid(win), false)
       end)
+    end),
+  },
+  {
+    name = 'position = "left" puts the sidebar on the left of the current window',
+    fn = guarded(function()
       reset()
-    end,
+      with_config({ sidebar = { position = 'left', width = 30 } }, function()
+        local repo = repo_with_changes('sidebar-left')
+        local main = vim.api.nvim_get_current_win()
+        local main_buffer = vim.api.nvim_win_get_buf(main)
+        local _, _, win = open_sidebar(repo)
+
+        eq(vim.api.nvim_win_get_position(win)[2], 0, 'the sidebar owns column 0')
+        eq(vim.api.nvim_win_get_width(win), 30)
+        ok(vim.api.nvim_win_get_position(main)[2] > 0, 'the edited window moved right')
+        eq(vim.api.nvim_win_get_buf(main), main_buffer, 'and kept its buffer')
+      end)
+    end),
+  },
+  {
+    name = 'position = "float" is refused out loud and falls back to the right edge',
+    fn = guarded(function()
+      reset()
+      with_config({ sidebar = { position = 'float' } }, function()
+        local repo = repo_with_changes('sidebar-float')
+        local captured = helpers.capture_notify(function()
+          sidebar.open(repo)
+        end)
+        eq(#captured, 1, 'the user is told')
+        eq(captured[1].level, vim.log.levels.WARN)
+        ok(captured[1].message:find('float', 1, true), captured[1].message)
+        ok(captured[1].message:find('right', 1, true), 'and what happened instead: ' .. captured[1].message)
+        local win = sidebar.win(repo)
+        ok(vim.api.nvim_win_get_position(win)[2] >= vim.o.columns / 2, 'the sidebar is on the right')
+      end)
+    end),
+  },
+  {
+    name = 'resizing the sidebar re-renders the truncated paths',
+    fn = guarded(function()
+      reset()
+      with_config({ sidebar = { group_by = 'none' } }, function()
+        local dir = helpers.git_repo('sidebar-resize')
+        helpers.write(dir .. '/src/a-deeply-nested/directory/with-a-long-file-name.txt', 'x\n')
+        local repo = attach_ready('spec:sidebar-resize', dir)
+        local _, bufnr, win = open_sidebar(repo)
+
+        -- Both events are watched: `WinResized` is what `:vertical resize` and a
+        -- mouse drag fire (0.9+), `VimResized` what a terminal resize fires.
+        local events = {}
+        for _, autocmd in ipairs(vim.api.nvim_get_autocmds({ group = 'vcssign_sidebar' })) do
+          events[autocmd.event] = true
+        end
+        eq(events['WinResized'], true, 'a manual resize is listened to')
+        eq(events['VimResized'], true, 'and a terminal resize')
+
+        vim.api.nvim_win_set_cursor(win, { 1, 0 })
+        local before = renderer.items(bufnr)[1].text
+        ok(before:sub(1, 3) == '…', 'the default width already truncates: ' .. before)
+
+        -- A headless editor never emits either event (verified: not after a
+        -- `vim.wait` either, and `vim.o.columns = 100` does not help), so the
+        -- handler is driven the way the autocmd drives it.  Without the repaint
+        -- the old truncation stays on screen until the next refresh.
+        vim.cmd('vertical resize 20')
+        eq(vim.api.nvim_win_get_width(win), 20)
+        vim.api.nvim_exec_autocmds('WinResized', {})
+        local after = renderer.items(bufnr)[1].text
+        ok(vim.fn.strchars(after) < vim.fn.strchars(before), 'the row is narrower now: ' .. after)
+        ok(after:find('file-name.txt', 1, true), 'and still names the file: ' .. after)
+        ok(helpers.screen_line_at(win, 1):find('file-name.txt', 1, true), 'the screen agrees')
+      end)
+    end),
+  },
+  {
+    name = 'two systems on one root get one sidebar each',
+    fn = guarded(function()
+      reset()
+      local dir = helpers.git_repo('sidebar-two-systems')
+      local git_repo = repo_mod.new(vcs.get('git'), dir)
+      local svn_repo = repo_mod.new(vcs.get('svn'), dir)
+      sidebar.open(git_repo)
+      sidebar.open(svn_repo, { enter = false })
+
+      ok(sidebar.state(git_repo) ~= nil and sidebar.state(svn_repo) ~= nil, 'both are tracked')
+      local git_buf, svn_buf = sidebar.bufnr(git_repo), sidebar.bufnr(svn_repo)
+      ok(git_buf ~= svn_buf, 'two buffers, not one shared by accident')
+      ok(vim.api.nvim_buf_get_name(svn_buf):find('vcssign://svn/', 1, true), 'named for its own system')
+
+      sidebar.close(git_repo)
+      eq(sidebar.is_open(git_repo), false)
+      eq(sidebar.is_open(svn_repo), true, 'closing one leaves the other')
+      git_repo:dispose()
+      svn_repo:dispose()
+    end),
+  },
+  {
+    name = 'a failing or broken action layer is reported honestly',
+    fn = guarded(function()
+      reset()
+      local repo = repo_with_changes('sidebar-actions-fail')
+      local _, bufnr, win = open_sidebar(repo)
+      vim.api.nvim_win_set_cursor(win, { row_of(bufnr, 'base.txt'), 0 })
+      local ctx = { repo = repo, bufnr = bufnr }
+
+      -- The action itself raises: the user gets an error, not silence.
+      package.loaded['vcssign.actions'] = {
+        open = function()
+          error('kaboom')
+        end,
+      }
+      local captured = helpers.capture_notify(function()
+        keymap.dispatch('open', ctx)
+      end)
+      ok(captured[1].message:find('kaboom', 1, true), captured[1].message)
+      eq(captured[1].level, vim.log.levels.ERROR)
+      package.loaded['vcssign.actions'] = nil
+
+      -- A module that exists but fails to load is *not* "not implemented".
+      package.preload['vcssign.actions'] = function()
+        error('unexpected symbol near <eof>')
+      end
+      captured = helpers.capture_notify(function()
+        keymap.dispatch('open', ctx)
+      end)
+      ok(captured[1].message:find('cannot load the action layer', 1, true), captured[1].message)
+      eq(captured[1].level, vim.log.levels.ERROR)
+      ok(not captured[1].message:find('not implemented', 1, true), 'a load failure is not a missing feature')
+      package.preload['vcssign.actions'] = nil
+
+      -- And an action the module simply does not have is named as such.
+      package.loaded['vcssign.actions'] = {}
+      captured = helpers.capture_notify(function()
+        keymap.dispatch('open', ctx)
+      end)
+      ok(captured[1].message:find("'open'", 1, true), captured[1].message)
+      package.loaded['vcssign.actions'] = nil
+    end),
   },
 }

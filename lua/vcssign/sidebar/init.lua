@@ -22,12 +22,20 @@ local M = {}
 ---@field win integer?              nil while closed (or after the window died)
 ---@field unsubscribe fun()[]
 
---- Live sidebars, keyed by `path_key(root)` (and by buffer number for the
---- lookups that start from a window).
+--- Live sidebars.
 ---@type table<string, vcssign.SidebarState>
 M._states = {}
----@type table<integer, vcssign.SidebarState>
-M._by_buf = {}
+
+--- Map key of a sidebar: one per *system and root*, matching the buffer name.
+--- The repository manager only ever holds one repository per root, but the
+--- sidebar is a plain consumer of `Repo` objects — keying on the root alone
+--- would let a second system's repository take over the first one's buffer
+--- (whose name, after all, still says which system it belongs to).
+---@param repo vcssign.Repo
+---@return string
+local function state_key(repo)
+  return repo.system.name .. '|' .. base.path_key(repo.root)
+end
 
 --- Buffer name for a repository.
 ---
@@ -46,7 +54,7 @@ end
 ---@param repo vcssign.Repo
 ---@return vcssign.SidebarState?
 function M.state(repo)
-  return M._states[base.path_key(repo.root)]
+  return M._states[state_key(repo)]
 end
 
 ---@param repo vcssign.Repo
@@ -129,15 +137,18 @@ local function redraw_all()
 end
 
 --- Window resizes change how much of a path fits, so the sidebar listens for
---- them.  This is the only autocmd the sidebar owns; the editor-wide lifecycle
---- (attach on BufEnter, cleanup on exit) belongs to 04's `autocmds.lua`.
+--- them: `VimResized` for the terminal, `WinResized` for a manual
+--- `:vertical resize` / mouse drag (0.9+; `VimResized` alone would leave the
+--- old truncation on screen until the next refresh).  This is the only autocmd
+--- the sidebar owns; the editor-wide lifecycle (attach on BufEnter, cleanup on
+--- exit) belongs to 04's `autocmds.lua`.
 local resize_hook = false
 local function ensure_resize_hook()
   if resize_hook then
     return
   end
   resize_hook = true
-  vim.api.nvim_create_autocmd('VimResized', {
+  vim.api.nvim_create_autocmd({ 'VimResized', 'WinResized' }, {
     group = vim.api.nvim_create_augroup('vcssign_sidebar', { clear = true }),
     desc = 'vcssign: re-render sidebars after a resize',
     callback = redraw_all,
@@ -154,17 +165,28 @@ local function unsubscribe(state)
   state.unsubscribe = {}
 end
 
+--- Drop every trace of a sidebar.  The one place that knows the order in which
+--- subscriptions, maps and windows have to go.
+---@param state vcssign.SidebarState
+---@param delete_buffer boolean  false from `BufWipeout`, where the buffer is
+---        already going away (deleting it again would re-enter)
+local function drop(state, delete_buffer)
+  unsubscribe(state)
+  if state.win ~= nil and vim.api.nvim_win_is_valid(state.win) then
+    vim.api.nvim_win_close(state.win, true)
+  end
+  state.win = nil
+  M._states[state_key(state.repo)] = nil
+  if delete_buffer and vim.api.nvim_buf_is_valid(state.bufnr) then
+    vim.api.nvim_buf_delete(state.bufnr, { force = true })
+  end
+end
+
 --- Forget a sidebar: drop the subscriptions, delete the buffer and the maps.
 --- Called when the repository is gone, and when the buffer is wiped by hand.
 ---@param state vcssign.SidebarState
 function M._forget(state)
-  unsubscribe(state)
-  M._states[base.path_key(state.root)] = nil
-  M._by_buf[state.bufnr] = nil
-  state.win = nil
-  if vim.api.nvim_buf_is_valid(state.bufnr) then
-    vim.api.nvim_buf_delete(state.bufnr, { force = true })
-  end
+  drop(state, true)
 end
 
 --- Create the (hidden) buffer for `repo` and wire it to the repository.
@@ -189,19 +211,17 @@ local function create(repo)
     win = nil,
     unsubscribe = {},
   }
-  M._states[base.path_key(repo.root)] = state
-  M._by_buf[bufnr] = state
+  M._states[state_key(repo)] = state
 
   -- The buffer is the unit of subscription, so dropping it must drop them —
   -- otherwise a `:bwipeout` would leave listeners pointing at a dead buffer.
+  -- The buffer is already on its way out here, hence `delete_buffer = false`.
   vim.api.nvim_create_autocmd('BufWipeout', {
     buffer = bufnr,
     once = true,
     desc = 'vcssign: forget a wiped sidebar buffer',
     callback = function()
-      unsubscribe(state)
-      M._states[base.path_key(state.root)] = nil
-      M._by_buf[bufnr] = nil
+      drop(state, false)
     end,
   })
 
@@ -316,8 +336,8 @@ end
 
 --- Forget every sidebar: subscriptions, buffers, maps.  Terminal.
 function M.forget_all()
-  -- Snapshot the values, not the map: `_forget` mutates it, and a deep copy
-  -- would try to copy the repo (which holds libuv userdata).
+  -- Snapshot the values, not the map: dropping a state mutates it, and a deep
+  -- copy would try to copy the repo (which holds libuv userdata).
   local states = {}
   for _, state in pairs(M._states) do
     states[#states + 1] = state
@@ -325,18 +345,6 @@ function M.forget_all()
   for _, state in ipairs(states) do
     M._forget(state)
   end
-end
-
---- The entry under the cursor of the window showing `bufnr` (the keymap layer's
---- entry point).
----@param bufnr integer
----@return vcssign.StatusEntry?
-function M.cursor_entry(bufnr)
-  local win = vim.fn.bufwinid(bufnr)
-  if win == -1 then
-    win = vim.api.nvim_get_current_win()
-  end
-  return renderer.entry_at(bufnr, vim.api.nvim_win_get_cursor(win)[1] - 1)
 end
 
 return M

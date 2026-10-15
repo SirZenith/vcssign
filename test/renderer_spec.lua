@@ -92,6 +92,19 @@ local function scratch_buffer()
   return vim.api.nvim_create_buf(false, true)
 end
 
+--- The line highlight `draw` put on `line` (0-based), or nil.
+---@param bufnr integer
+---@param line integer
+---@return string?
+local function line_hl(bufnr, line)
+  for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(bufnr, renderer.ns, 0, -1, { details = true })) do
+    if mark[2] == line and mark[4].line_hl_group then
+      return mark[4].line_hl_group
+    end
+  end
+  return nil
+end
+
 return {
   {
     name = 'rows are ordered by severity, then by path',
@@ -108,6 +121,38 @@ return {
         { 'z.txt', 'a.txt', 'm.txt', 'r.txt', 'u.txt' },
         'conflicted first; then modified by path; then renamed; then untracked'
       )
+    end,
+  },
+  {
+    name = 'the severity order is the one the plan documents',
+    fn = function()
+      -- Every status the enum has, one row each, so a change to
+      -- `status_type.default_sign_priority` has to face this list (and 03 §3.1).
+      local names = {}
+      for _, status in pairs(status_type.StatusType) do
+        names[#names + 1] = status
+      end
+      table.sort(names)
+      local entries = {}
+      for i, status in ipairs(names) do
+        entries[i] = entry(status, { worktree = status })
+      end
+      eq(rel_paths(renderer.build(entries, { group_by = 'none' })), {
+        'conflicted',
+        'missing',
+        -- equals at 50 / 40 are broken by path
+        'modified',
+        'replaced',
+        'typechange',
+        'deleted',
+        'renamed',
+        'added',
+        'untracked',
+        'obstructed',
+        'switched',
+        'external',
+        'ignored',
+      })
     end,
   },
   {
@@ -259,6 +304,11 @@ return {
           eq(vim.api.nvim_get_hl(0, { name = group }).link, link, 'default link for ' .. group)
         end
       end
+      -- Leave the process as we found it: specs share one nvim, and a global
+      -- colour left behind would hide a future "wrong colour" regression.
+      vim.cmd('highlight clear VcssignAdded')
+      renderer.define_highlights()
+      eq(vim.api.nvim_get_hl(0, { name = 'VcssignAdded' }).link, 'DiffAdd')
     end,
   },
   {
@@ -282,6 +332,31 @@ return {
       eq(#listed, 2)
       eq(listed[1].kind, 'header')
       eq(listed[2].kind, 'entry')
+    end,
+  },
+  {
+    name = 'a failure banner keeps the words that explain the failure',
+    fn = function()
+      local reason = 'fatal: not a git repository (or any of the parent directories): .git'
+      local bufnr = scratch_buffer()
+      -- 40 columns is the default sidebar width: the budget is 35 characters,
+      -- and the reason alone is 66 — the classic case where trimming the head
+      -- (right for a path) would leave only the parenthetical tail.
+      renderer.draw(bufnr, renderer.for_repo(fake_repo({}, { has_loaded = false, last_error = reason }), 40))
+      local banner = renderer.items(bufnr)[1]
+      eq(banner.kind, 'banner')
+      eq(vim.fn.strchars(banner.text), 35, 'it fills the row and no more')
+      eq(vim.fn.strcharpart(banner.text, vim.fn.strchars(banner.text) - 1, 1), '…', 'the cut is marked')
+      ok(banner.text:find('fatal: not a git repository', 1, true), 'the reason survives: ' .. banner.text)
+      eq(line_hl(bufnr, 0), 'VcssignError', 'a failure reads as one')
+
+      -- The other two placeholders are ordinary states, so they are not red.
+      renderer.draw(bufnr, renderer.for_repo(fake_repo({}, { has_loaded = false }), 40))
+      eq(line_hl(bufnr, 0), 'VcssignHeader', 'refreshing is not an error')
+      renderer.draw(bufnr, renderer.for_repo(fake_repo({}), 40))
+      ok(renderer.items(bufnr)[1].text:find('no changes', 1, true))
+      eq(line_hl(bufnr, 0), 'VcssignHeader', 'a clean tree is not an error')
+      vim.api.nvim_buf_delete(bufnr, { force = true })
     end,
   },
   {
