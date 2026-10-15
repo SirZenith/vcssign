@@ -47,6 +47,7 @@ local REQUIRES = {
   vcs_git_spec = { 'git' },
   vcs_svn_spec = { 'svn' },
   vcs_registry_spec = { 'git', 'svn' },
+  repo_spec = { 'git', 'svn' },
 }
 
 local DEFAULT_SPECS = {
@@ -56,6 +57,7 @@ local DEFAULT_SPECS = {
   'vcs_git_spec',
   'vcs_svn_spec',
   'vcs_registry_spec',
+  'repo_spec',
 }
 
 local requested = {}
