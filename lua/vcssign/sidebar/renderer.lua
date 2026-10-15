@@ -46,6 +46,9 @@ local UNTRACKED = 'Untracked'
 ---@field text string                  final line text (already truncated)
 ---@field entry vcssign.StatusEntry?   only for `kind == "entry"`
 ---@field group string?                only for `kind == "entry"` in grouped mode
+---@field hl string?                   line highlight for `header`/`banner` rows
+---                                   (defaults to `VcssignHeader`; the failure
+---                                   banner asks for `VcssignError`)
 
 -- ▏ highlights ────────────────────────────────────────────────────────────────
 
@@ -148,20 +151,38 @@ end
 
 -- ▏ lines ─────────────────────────────────────────────────────────────────────
 
---- Keep the tail of `text` and mark the cut with an ellipsis: the file name
---- lives at the end of a path, that is the half worth keeping.
+--- Cut characters off the *front* and keep the tail: a path ends in its file
+--- name, which is the half worth keeping.
+---
 --- Counted in characters, not bytes, so a CJK or accented path is not cut in
 --- the middle of a codepoint.
 ---@param text string
 ---@param width integer
 ---@return string
-local function truncate_head(text, width)
+local function keep_tail(text, width)
   local chars = vim.fn.strchars(text)
   if chars <= width then
     return text
   end
   local keep = math.max(1, width - 1)
   return '…' .. vim.fn.strcharpart(text, chars - keep, keep)
+end
+
+--- Cut characters off the *end* and keep the head.
+---
+--- Messages and group headers are not paths: they say what they mean in their
+--- first few words (`fatal: not a git repository…`, `── Staged …`).  Trimming a
+--- banner like a path would throw away exactly the part a user opened the
+--- sidebar to read — the review caught that with the classic
+--- "fatal: not a git repository (or any of the parent directories): .git".
+---@param text string
+---@param width integer
+---@return string
+local function keep_head(text, width)
+  if vim.fn.strchars(text) <= width then
+    return text
+  end
+  return vim.fn.strcharpart(text, 0, math.max(1, width - 1)) .. '…'
 end
 
 ---@param entry vcssign.StatusEntry
@@ -209,13 +230,13 @@ function M.build(entries, opts)
       if #bucket > 0 then
         items[#items + 1] = {
           kind = 'header',
-          text = truncate_head(string.format('── %s (%d) ──', group, #bucket), width),
+          text = keep_head(string.format('── %s (%d) ──', group, #bucket), width),
           group = group,
         }
         for _, entry in ipairs(bucket) do
           items[#items + 1] = {
             kind = 'entry',
-            text = truncate_head(label(entry), width),
+            text = keep_tail(label(entry), width),
             entry = entry,
             group = group,
           }
@@ -224,7 +245,7 @@ function M.build(entries, opts)
     end
   else
     for _, entry in ipairs(list) do
-      items[#items + 1] = { kind = 'entry', text = truncate_head(label(entry), width), entry = entry }
+      items[#items + 1] = { kind = 'entry', text = keep_tail(label(entry), width), entry = entry }
     end
   end
   return items
@@ -237,16 +258,22 @@ end
 ---@param width integer
 ---@return vcssign.RenderItem?
 local function placeholder(repo, width)
-  local text ---@type string?
+  local text, hl ---@type string?, string?
   if not repo.has_loaded then
-    text = repo.last_error and ('── ' .. repo.last_error .. ' ──') or '── refreshing… ──'
+    if repo.last_error then
+      text, hl = '── ' .. repo.last_error .. ' ──', 'VcssignError'
+    else
+      text = '── refreshing… ──'
+    end
   elseif #repo:entries() == 0 then
     text = '── no changes ──'
   end
   if not text then
     return nil
   end
-  return { kind = 'banner', text = truncate_head(text, width) }
+  -- Only a real failure is painted as one; a clean tree and a pending refresh
+  -- are ordinary states, and red would make them look like errors.
+  return { kind = 'banner', text = keep_head(text, width), hl = hl }
 end
 
 --- Rows for a repository, placeholder included.
@@ -305,11 +332,18 @@ function M.draw(bufnr, items)
     texts[i] = item.text
   end
   -- `modifiable = false` is part of the sidebar contract (the list is not user
-  -- editable); the write itself has to lift it for the length of the call.
+  -- editable); the write itself has to lift it for the length of the call, and
+  -- put it back even when the write raises (a caller may hand us a buffer that
+  -- went away in the meantime).
   local was_modifiable = vim.bo[bufnr].modifiable
   vim.bo[bufnr].modifiable = true
-  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, texts)
-  vim.bo[bufnr].modifiable = was_modifiable
+  local ok, err = pcall(vim.api.nvim_buf_set_lines, bufnr, 0, -1, false, texts)
+  if vim.api.nvim_buf_is_valid(bufnr) then
+    vim.bo[bufnr].modifiable = was_modifiable
+  end
+  if not ok then
+    error(err, 0)
+  end
 
   vim.api.nvim_buf_clear_namespace(bufnr, M.ns, 0, -1)
   for row, item in ipairs(items) do
@@ -324,7 +358,7 @@ function M.draw(bufnr, items)
       })
     else
       vim.api.nvim_buf_set_extmark(bufnr, M.ns, line, 0, {
-        line_hl_group = item.kind == 'banner' and 'VcssignError' or 'VcssignHeader',
+        line_hl_group = item.hl or 'VcssignHeader',
       })
     end
   end

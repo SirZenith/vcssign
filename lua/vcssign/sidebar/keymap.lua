@@ -24,11 +24,28 @@ local function notify(msg, level)
   vim.notify(msg, level or vim.log.levels.INFO)
 end
 
---- `vcssign.actions` once it exists (M4), nil before that.
----@return table<string, function>?
+--- `vcssign.actions` once it exists (M4).
+---
+--- Returns the load error as a second value so the caller can tell "the action
+--- layer is not written yet" (M3) from "the action layer is broken" (a syntax
+--- error in `lua/vcssign/actions.lua` must not be reported as "not implemented").
+---@return table<string, function>? actions, string? err
 local function actions()
   local ok, mod = pcall(require, 'vcssign.actions')
-  return ok and mod or nil
+  if not ok then
+    return nil, tostring(mod)
+  end
+  if type(mod) ~= 'table' then
+    return nil, 'vcssign.actions did not return a table'
+  end
+  return mod
+end
+
+--- Not written yet, or failed to load?
+---@param err string
+---@return boolean
+local function missing_module(err)
+  return err:find("module 'vcssign.actions' not found", 1, true) ~= nil
 end
 
 --- Capability gate message, phrased per action.
@@ -42,14 +59,25 @@ local function unsupported(action, repo)
   return string.format('%s: %s is not supported', repo.system.name, action)
 end
 
---- Which file the action applies to: the entry under the cursor of the window
---- showing the sidebar (the current window for a real key press).
+--- The window showing the sidebar, or nil when it is not on screen.  Never
+--- falls back to "the current window": the row number only means something in
+--- the sidebar's own window, and a silent fallback would act on an unrelated
+--- file (`:Vcssign stage` from another window, for instance).
+---@param bufnr integer
+---@return integer?
+local function sidebar_win(bufnr)
+  local win = vim.fn.bufwinid(bufnr)
+  return win == -1 and nil or win
+end
+
+--- Which file the action applies to: the entry under the cursor of the sidebar
+--- window.
 ---@param ctx { repo: vcssign.Repo, bufnr: integer }
 ---@return vcssign.StatusEntry?
 local function cursor_entry(ctx)
-  local win = vim.fn.bufwinid(ctx.bufnr)
-  if win == -1 then
-    win = vim.api.nvim_get_current_win()
+  local win = sidebar_win(ctx.bufnr)
+  if win == nil then
+    return nil
   end
   return renderer.entry_at(ctx.bufnr, vim.api.nvim_win_get_cursor(win)[1] - 1)
 end
@@ -70,10 +98,9 @@ function M.dispatch(action, ctx)
     return
   end
   if action == 'close' then
-    local win = vim.fn.bufwinid(ctx.bufnr)
-    if win ~= -1 then
-      vim.api.nvim_win_close(win, true)
-    end
+    -- Through the owner of the window, so `state.win` is cleared with it
+    -- instead of being left pointing at a dead window number.
+    require('vcssign.sidebar').close(repo)
     return
   end
   if action == 'help' then
@@ -87,14 +114,23 @@ function M.dispatch(action, ctx)
     return
   end
 
+  if sidebar_win(ctx.bufnr) == nil then
+    notify('vcssign: the sidebar is not on screen')
+    return
+  end
   local entry = cursor_entry(ctx)
   if not entry then
     notify('vcssign: no file on this line', vim.log.levels.INFO)
     return
   end
 
-  local mod = actions()
+  local mod, load_err = actions()
   if mod == nil then
+    if not missing_module(load_err) then
+      log.error('cannot load vcssign.actions: %s', load_err)
+      notify('vcssign: cannot load the action layer: ' .. load_err, vim.log.levels.ERROR)
+      return
+    end
     -- M3 ships the sidebar without the action layer; say so instead of
     -- pretending the key is unbound.
     notify(string.format("vcssign: the '%s' action is not implemented yet", action))
