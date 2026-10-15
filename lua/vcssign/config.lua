@@ -13,6 +13,14 @@ local M = {}
 ---@field retry_delay_ms integer     first retry delay after a failed status run
 ---@field retry_max_ms integer       upper bound of the exponential retry backoff
 ---@field log_level vcssign.LogLevel
+---@field sidebar vcssign.SidebarConfig
+
+--- Sidebar window and rendering options (impl/init/03-sidebar-ui.md).
+---@class vcssign.SidebarConfig
+---@field position "left"|"right"|"float"  `float` is reserved: not implemented yet
+---@field width integer              columns of the split
+---@field group_by "none"|"status"   `status` splits git into Staged/Unstaged/Untracked
+---@field keymaps table<string, string|false>  lhs -> action name; `false` leaves a key free
 
 ---@type vcssign.Config
 M.defaults = {
@@ -26,6 +34,23 @@ M.defaults = {
   retry_delay_ms = 1000,
   retry_max_ms = 30000,
   log_level = 'warn',
+  sidebar = {
+    position = 'right',
+    -- Wide enough for the two sign columns plus a readable path, and still
+    -- narrower than the 80-column terminal the test suite renders into.
+    width = 40,
+    group_by = 'status',
+    keymaps = {
+      ['<cr>'] = 'open',
+      t = 'open_tab',
+      d = 'diff',
+      s = 'stage',
+      u = 'unstage',
+      r = 'refresh',
+      q = 'close',
+      ['?'] = 'help',
+    },
+  },
 }
 
 ---@type vcssign.Config

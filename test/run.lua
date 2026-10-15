@@ -58,6 +58,7 @@ local DEFAULT_SPECS = {
   'vcs_svn_spec',
   'vcs_registry_spec',
   'repo_spec',
+  'renderer_spec',
 }
 
 local requested = {}
