@@ -80,14 +80,20 @@
 - [ ] backlog（明确不做）：`position = "float"`、`single_column`、`group_by = "directory"` 树模式、
       条目级增量更新（1000 行 7ms，全量重画足够）—见 03 §7.3
 
-## M4 · 命令与动作（04，P3）
+## M4 · 命令与动作（04，P3）—— ✅ 已完成（157/157 spec 通过）
 
-- [ ] `lua/vcssign/actions.lua`：open/diff/stage/unstage/commit/refresh，动作后强制 refresh（04 §2）
-- [ ] diff 展示：unified diff → nofile 缓冲区 `filetype=diff`（04 §2.1）
-- [ ] `lua/vcssign/cli.lua` + `plugin/vcssign.vim`：`:Vcssign` 子命令族 + customlist 补全（04 §3）
-- [ ] `lua/vcssign/autocmds.lua`：BufEnter/DirChanged/FocusGained/VimLeavePre + attach 去抖（04 §4）
-- [ ] 公共 API：`setup/refresh/open/close/toggle/get_status`（04 §5）
-- [ ] 验收：04 §6.1–6.6
+- [x] `lua/vcssign/actions.lua`：open/diff/stage/unstage/commit/refresh，动作后强制 refresh（04 §2）
+- [x] diff 展示：unified diff → nofile 缓冲区 `filetype=diff`，同文件复用缓冲/窗口，只读（04 §2.1）
+- [x] `lua/vcssign/cli.lua` + `plugin/vcssign.vim`：`:Vcssign` 子命令族（+`diff`/`debug`）+ customlist 补全（04 §3）
+- [x] `lua/vcssign/autocmds.lua`：BufReadPost/BufEnter/BufDelete/DirChanged/FocusGained/VimLeavePre（04 §4）
+- [x] 公共 API：`setup/open/close/toggle/refresh/get_status/get_entries` + `M.cli`（04 §5）
+- [x] 验收：04 §6 全部 8 条（含两条额外的：空会话第一条命令可用、`plugin/` 薄壳真的注册了命令）
+- [x] 测试：`actions_spec` 19 + `cli_spec` 15 + `autocmds_spec` 9（05 §6）
+
+M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
+1. `exec.run` 的超时定时器武装顺序 → 立刻失败的进程会留下一个**已武装**的定时器（15s 后才自我关闭）。
+2. `repo_manager.ensure`（新）与 `get_by_path` 的语义差：嵌套仓库时内层文件会被判给已 attach 的外层仓库。
+3. 路径未解析就传给 `ensure` → `base.normalize(nil)` 静默变成「cwd 下的相对路径」（实测字符串 `v:/null`）。
 
 ## M5 · 测试与工程化（05，P4，M1 起并行）
 
@@ -351,3 +357,25 @@ waiter 陈旧语义文档化、`!!`/`X`/`I` 前向兼容注释。`get_by_path` �
 另外：`sidebar_spec` 的 18 个用例统一包 `guarded(fn)`——失败也清场（原来 `reset()` 只在成功路径执行，
 一个失败会把残留留给下一个用例，级联失败最难读）；`renderer_spec` 的高亮用例跑完会把自己改过的全局
 高亮复原。
+
+## 附录 H · M4 实现顺序与踩坑速记
+
+按「能被验证的最小步」推进，每一步都跑绿再进下一步：
+
+1. **config**（`diff.mode` / `commit.message_input`）→ 2. **actions**（先 stage/unstage：最容易用 VCS 自身核对）→
+3. **diff**（缓冲区+窗口，注意复用与只读）→ 4. **commit**（桩 `vim.ui.input`）→ 5. **cli + plugin 薄壳** →
+6. **autocmds** → 7. **init 公共 API** → 8. spec 与文档。
+
+踩到并记住的：
+
+- **`vim.system` 的退出回调可能同步发生**：立刻失败的进程（`cwd` 不存在）会在 `vim.system` 返回前回调，
+  所以任何「spawn 之后再武装超时定时器」的写法都会漏关（M1 就是这么写的，M4 的句柄断言才把它抓出来）。
+- **`until` 是 Lua 关键字**：`local function collect(fn, until)` 直接编译失败。
+- **Lua 模式没有多行锚点**：`^…$` 对多行文本等于没断言（写 diff 用例时被骗过一次）。
+- **`svn log` 在工作副本上只到 BASE**：刚提交后要查 URL，不是工作副本路径。
+- **`vim.fn.fnamemodify(nil, ':p')` 不报错**：它给一个基于 cwd 的怪字符串（`v:/null`），所以入口要 `assert` 参数。
+- **跨 spec 的状态会互相影响**：文件/缓冲区/窗口/cwd 都会留到下一个 spec。`reset()` 里加 `enew!` + `cd` 回插件根，
+  且断言要针对「本 spec 关心的对象」（例如数 diff 缓冲区时按 `filetype == 'diff'` 过滤，而不是按文件名包含）。
+- **破坏性前提的用例要自造环境**：提交需要可写的 svn 服务器 → `helpers.svn_repo` 现造（共享 fixture 只读）。
+- **headless 收不到 `FocusGained`**（同 `VimResized`/`WinResized`）：用例用 `nvim_exec_autocmds` 驱动处理器，
+  另有用例断言注册本身。

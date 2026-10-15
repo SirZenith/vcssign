@@ -11,6 +11,7 @@
 | `lua/vcssign/actions.lua` | 动作层：open / diff / stage / unstage / commit / refresh（按 capabilities 分派） |
 | `lua/vcssign/autocmds.lua` | 生命周期 autocmd（attach 触发、清理） |
 | `plugin/vcssign.vim` | 命令注册（`nvim_create_user_command`），setup 延迟加载入口 |
+| `lua/vcssign/init.lua` | 公共 API：`setup` / `open` / `close` / `toggle` / `refresh` / `get_status` / `get_entries`（§5） |
 
 ## 2. 动作层（actions.lua）—— 按 VCS 能力分派
 
@@ -39,11 +40,16 @@ actions.refresh()            # Repo:refresh
 
 ### 2.1 diff 展示
 
-两种实现（config：`diff.mode = "vertical" | "split"`）：
+`diff.mode`（config）决定 diff 窗口开在**哪一侧**：`"vertical"`（默认）是右侧竖分屏，`"split"` 是下方横分屏。
+diff 灌进一个 nofile 缓冲区、`filetype=diff` 交给内置语法上色：
 
 - git：`git --no-pager diff --no-color HEAD -- <file>` 取 unified diff → 借鉴 vcs-helper `systems/base.lua` 的 `parse_diff_hunk`（unified diff 解析已成参考）**但不引入它的渲染**——更简单的方案：diff 输出直接灌进一个 `vcssign-diff` nofile 缓冲区，`filetype=diff` 让内置 syntax 上色，这是初版方案。
-- 与暂存内容对比：`git diff --cached -- <file>`（分组在 Staged 时用这个）。
-- svn：`svn diff -- <file>` 同上灌缓冲区。
+- 与暂存内容对比：`git diff --cached -- <file>`——当条目的改动**只在 index 里**（也就是用户按 `d` 的那一行在
+  Staged 分组）时用它，因为那才是「这次提交会记下什么」；有工作区改动时对比 index/HEAD（「相对上次提交改了什么」）。
+- svn：`svn diff -- <file>` 同上灌缓冲区（svn 没有 index，第二个参数被忽略）。
+- 缓冲区名 = 侧边栏 bufname + `/` + `rel_path`：同一个文件再按 `d` 会**复用缓冲区与窗口**，不会堆一摞分屏；
+  缓冲区 `modifiable = false`、`bufhidden = wipe`（diff 是视图不是文档）。
+- 没有任何改动可显示时（`git diff` 输出为空）只提示 `no changes to show`，不开一个空窗口。
 - 后续增强（列 backlog，不进初版）：左右窗 worktree vs HEAD 对比（gitsigns `actions/diffthis.lua` 是参考）。
 
 ### 2.2 commit
@@ -52,6 +58,11 @@ actions.refresh()            # Repo:refresh
 - git：选中文件先确保 staged（在 Staged 组的条目直接 `git commit -m msg -- <files>`；跨组混合提交初版**禁止**——提示先 stage）。
 - svn：`svn commit -m msg -- <files>`。
 - 提交后强制 refresh；失败原样 notify（svn 服务端连接错误的 stderr 有价值，整段展示）。
+- 取消输入（Esc）**什么都不做也不说话**；提交空消息只回一句 `empty commit message`（两种都不提交）。
+- 消息来源：`vim.ui.input`（`commit.message_input = "input"`）；`"buffer"` 未实现，会 `log.warn` 后回落（同
+  `sidebar.position = "float"` 的处理）。
+- git 的「必须先 stage」判定按**能力**而不是按名字：`capabilities.stage` 为真的系统，`status.index == nil` 就拒绝；
+  svn（`capabilities.stage = false`）直接提交工作副本。
 
 ## 3. `:Vcssign` 命令族（cli.lua + plugin/vcssign.vim）
 
@@ -63,11 +74,16 @@ actions.refresh()            # Repo:refresh
 | `:Vcssign open [path]` | 打开 path（默认当前文件/cwd）所属 repo 侧边栏 |
 | `:Vcssign close` | 关闭 |
 | `:Vcssign refresh` | 强制刷新当前 repo |
+| `:Vcssign diff [path]` | 与 `d` 同一动作（计划表里只有按键，命令补上是为了一次性可用） |
 | `:Vcssign stage [path]` / `unstage [path]` | 动作层入口（git only） |
-| `:Vcssign commit` | §2.2 |
+| `:Vcssign commit [path]` | §2.2（路径是文件，消息一律来自输入框） |
 | `:Vcssign debug` | 打印当前 repo 状态缓存 + 监听句柄数（排障用，gitsigns `:Gitsigns debug_messages` 的定位） |
 
-补全：`customlist` 枚举子命令（gitsigns `cli.complete` 的简化版）；`stage/unstage` 补全当前条目 rel_path 可后置，初版只补子命令。
+补全：`customlist` 枚举子命令（gitsigns `cli.complete` 的简化版）；`stage/unstage` 补全当前条目 rel_path 可后置，初版只补子命令
+（实测：`-complete=customlist` 无法同时做文件名补全，所以 `:Vcssign stage ` 之后返回空集）。
+
+路径参数：`<f-args>` 按空白切词，所以未加转义的空格路径会拆成多个词——命令把剩下的词**拼回一个路径**
+（`:Vcssign stage my file.txt` 可用）。无参时指向「光标所在侧边栏行 → 当前缓冲区文件 → cwd」。
 
 `plugin/vcssign.vim` 只做 `nvim_create_user_command("Vcssign", ...)`，实现体 `require("vcssign").cli.run(params)`——保持 gitsigns 的「plugin/ 最薄」惯例。
 
@@ -85,7 +101,13 @@ actions.refresh()            # Repo:refresh
 
 `setup()` 时创建 group；`config.on_attach` / `on_detach` 回调钩子（gitsigns config 同款命名），给用户集成点。
 
-去抖：attach 调用全部经 `debounce_trailing(100ms)` 包装（repo_manager 内部），防 BufEnter 风暴连跑探测命令。
+去抖：**改用「每个缓冲区只 attach 一次」的记忆表**（`autocmds._attached[bufnr] = path`），不再在
+`repo_manager` 内部套 `debounce_trailing(100ms)`（偏差见 §7.1）：风暴的本质是同一个缓冲区被反复进入，而
+`repo_manager.attach(ref, path)` 对同一 `(ref, path)` 本来就幂等；加一层防抖反而会把「打开文件后的第一次
+attach」也推迟 100ms——那一次正是用户在等的。
+
+另外：`VimLeavePre` 只做清理（`sidebar.forget_all()` → `manager.dispose_all()`），**不杀正在跑的 VCS 命令**：
+`exec` 的超时定时器要等子进程回答才关（§7.1 记了这条边界）。
 
 ## 5. 公共 API（lua/vcssign/init.lua）
 
@@ -98,11 +120,67 @@ require("vcssign").get_status(path)    # 单文件状态（第三方集成入口
 
 `get_status` 保证「不在仓库返回 nil，仓库存在但未刷新不阻塞」（直接返回缓存，nil 时后台触发 attach+refresh）——供 oil-vcs-status 这类集成未来消费（backlog，见 00 非目标）。
 
-## 6. 验收标准
+## 6. 验收标准与实测结果（M4 完成）
 
-1. 空目录 / 非 VCS 目录：`:Vcssign toggle` → `notify "no repository found"`（INFO 级，不报错）。
-2. git 仓库全链路：toggle 打开 → `s` stage → 状态翻转到 Staged 组（依赖 `.git` 监听或动作后强制 refresh）→ `u` unstage 回 → `:Vcssign commit` 提交后列表清空。
-3. svn 仓库：无 stage/unstage 键生效（提示）→ `:Vcssign commit` 提交成功 → 列表清空。
-4. 外部修改（终端 `echo >> file`）→ FocusGained / fs 监听两条路都能把变化带进侧边栏。
-5. `VimLeavePre` 后无残留 uv handle（headless spec 断言 `loop Walking` 状态）。
-6. 命令补全在输入 `:Vcssign ` 后列出全部子命令。
+全部有自动用例（`test/actions_spec.lua` 19 + `test/cli_spec.lua` 12 + `test/autocmds_spec.lua` 9），
+全量 157/157；stderr 只有 1 行预期的重试告警。
+
+| # | 计划验收 | 用例 | 实测 |
+|---|----------|------|------|
+| 1 | 非 VCS 目录下 `:Vcssign toggle` → INFO 级 `no repository found`，不报错 | cli_spec「outside every repository it says so, at INFO level」 | ✅ INFO，消息里带被查的路径；「没仓库」与「环境坏了」（缺二进制、权限）分开报（后者 ERROR） |
+| 2 | git 全链路：toggle → `s` stage → 状态翻到 Staged → `u` unstage → `commit` 后列表清空 | actions_spec「stage …」「unstage …」「commit commits a staged file …」 | ✅ 每步都用 VCS 自己核对（`git diff --cached --name-only`、`git log -1 --format=%s`、`rev-parse HEAD`），不只看插件缓存 |
+| 3 | svn：stage/unstage 不生效并提示；commit 成功；列表清空 | actions_spec「svn has no staging area …」「svn commits the working copy …」 | ✅ 提示 `svn: no staging area`（无 `vcssign:` 前缀，与键位层同一句式）；提交后 `svn log -l 1 <url>/trunk` 能查到 |
+| 4 | 外部修改经 FocusGained 与 fs 监听两条路都能带进侧边栏 | autocmds_spec「FocusGained refreshes …」+ M2 的 fs 监听用例 | ✅ 直接驱动 `nvim_exec_autocmds('FocusGained')`（headless 收不到终端焦点事件）；fs 一路由 M2 用例覆盖 |
+| 5 | `VimLeavePre` 后无残留 uv handle | autocmds_spec「VimLeavePre leaves no repository, sidebar or watcher behind」 | ✅ 无仓库、无侧边栏、`fs_event = 0`、`timer = 0`（**先等首次 status 落地**，见 §7.1 的边界） |
+| 6 | 命令补全列出全部子命令 | cli_spec「completion offers the subcommands …」 | ✅ 空前缀给全量、前缀过滤、子命令之后返回空（`customlist` 不能补文件名） |
+| 7 | （额外）命令能在**什么都没 attach** 的新会话里用 | cli_spec「the command works before anything has attached the repository」 | ✅ `manager.ensure` 会先探测并 attach；同一路径重复命令不累积引用 |
+| 8 | （额外）`plugin/vcssign.vim` 真的注册了命令 | cli_spec「plugin/vcssign.vim registers the command and it runs」 | ✅ `source plugin/vcssign.vim` 后 `exists(':Vcssign') == 2`，`Vcssign debug` / `Vcssign toggle` 都通 |
+
+**没有被验收覆盖的**：`:Vcssign commit` 在**命令行**上的完整交互（用例走 `actions.commit` + 桩 `vim.ui.input`，
+命令一层由「每个子命令都能分派」+ `stage` 的路径解析覆盖）。
+
+## 7. 实测、偏差与坑
+
+### 7.1 与计划不同或计划没说清的地方
+
+1. **attach 去抖改成「每缓冲区一次」记忆表**（§4）。理由：风暴来自同一缓冲区反复 `BufEnter`，而
+   `attach(ref, path)` 本身幂等；防抖会连「第一次 attach」一起推迟。代价：换缓冲区不会重新探测——但那条路由
+   `DirChanged` / 显式命令覆盖。
+2. **`exec` 的超时定时器改成「先建表再 spawn」**。计划（及 M1 实现）是 spawn 之后再建定时器并 `start`，
+   而实测发现 `vim.system` 的退出回调**可能在本函数返回之前**就跑（`cwd` 不存在这种立刻失败的进程），
+   于是那次 `finish` 看到的是 `timer = nil`，定时器被留在「已武装」状态直到 15s 后超时才自我关闭——
+   期间是一个活着的 handle（`autocmds_spec` 的 `VimLeavePre` 用例抓到的就是这个）。
+   改成定时器在 spawn 前建好，`finish` 就一定能关掉它；`proc` 先声明为局部变量，超时回调里判空后再 `kill`。
+3. **`repo_manager.ensure(path)` 新增**（§3 的路径解析靠它）。它按**最近的**仓库 marker 解析，而不是
+   `get_by_path` 的「最深的**已 attach** 仓库」——后者在「仓库套仓库」（子模块、vendored checkout、
+   项目里放测试仓库）时会把内层文件判给外层仓库，于是侧边栏和 stage 都作用在错误的树上。
+   顺带：`ensure` 现在对 nil 路径直接 `assert`，因为 `base.normalize(nil)` 会静默变成
+   「cwd 下的相对路径」（实测得到一个 `v:/null` 这样的字符串）。
+4. **`:Vcssign` 多了一个 `diff` 子命令**（计划表只列了按键）：动作既然有了，命令族不该缺一个入口。
+5. **`plugin/vcssign.vim` 用 `nvim_create_user_command` + 惰性 `require`**：命令回调与补全函数都写成
+   「用时才 `require('vcssign.cli')`」，这样 `plugin/` 在启动时只执行一行注册、不加载 Lua 模块树。
+6. **`commit.message_input = "buffer"` 与 `diff` 的更花哨形态（左右窗对比）**留在 backlog：前者会 warn 后回落
+   到 `input`，后者没实现。
+7. **`repo_manager.ensure` 的引用是「会话级」的**：显式命令（`:Vcssign open` 等）用 `cmd:<path>` 引用把仓库
+   钉住到退出（用户明确要求用它）；重复对同一路径下命令不会累积引用。集成方若用 `get_status` 触发的
+   `get_status` 引用，可以自行 `manager.detach('get_status')` 放开。
+
+### 7.2 计划里应当记住的坑
+
+1. **Lua 模式没有多行锚点**：`text:find('^%+changed$')` 里 `^`/`$` 只匹配整个字符串的首尾，对多行 diff 等于
+   什么都没断言（写用例时被这个骗过一次，改成逐行比较）。
+2. **`svn log` 在工作副本上只到 BASE 版本**：刚提交完还没 update 时，`svn log -l 1 <wc>` 看不到那次提交，
+   要用 URL（`svn log -l 1 <url>/trunk`）。
+3. **提交类用例不能打共享 fixture 的主意**：`temp/svn-server` 是只读的（多个 spec 断言它的状态矩阵），
+   所以 `helpers.svn_repo(name)` 现造一个 `svnadmin create` 的服务器 + 工作副本，都落在 `temp/_spec/` 下由
+   `cleanup()` 删掉。
+4. **`vim.ui.input` 是回调式的**，桩要连「取消」（回调收到 nil）和「空串」两种都覆盖；两者都不该提交。
+5. **headless 里 `FocusGained` 永远不会来**（和 `VimResized`/`WinResized` 一样），用例必须用
+   `nvim_exec_autocmds` 驱动——驱动的是同一个处理器，注册本身另有用例断言。
+
+### 7.3 backlog（本里程碑不做）
+
+- `commit.message_input = "buffer"`：临时缓冲区写提交消息（gitsigns `actions/commit.lua` 是参考）。
+- 多选/整组 stage（`:Vcssign stage` 目前一次一个文件）。
+- diff 的左右窗模式（worktree vs HEAD 并排）、word diff。
+- `:Vcssign` 的路径参数补全（需要 `-complete=file` 之外的自定义实现）。

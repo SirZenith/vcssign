@@ -265,6 +265,16 @@ function M.detect_async(path, cb)
   `get_systems()` 每次读 config，改配置立即生效（不做启动时快照）。
 - 新增 VCS = 新写一个模块实现 base 接口 + 注册到列表，**不改任何上层代码**（本层验收的唯一硬指标）。
 
+## 6.1 `exec.run` 的超时定时器（M4 实测修正）
+
+计划里的顺序是「先 `vim.system`，再建并武装超时定时器」。实测发现 **`vim.system` 的退出回调可能在本函数返回之前就跑**
+（立刻失败的进程，例如 `cwd` 不存在），于是那次 `finish` 看到 `timer = nil`（还没有定时器可关），
+定时器随后被武装、却再也没人关它——直到 15s 后超时回调发现自己 `finished` 才自我关闭。
+期间它是一个活着的、已武装的 handle（`autocmds_spec` 的 `VimLeavePre` 用例抓到的就是这个）。
+
+改为**先建定时器再 spawn**（`proc` 预先声明为局部变量，超时回调里判空后再 `kill`）：`finish` 无论如何都能关掉它。
+`test/exec_spec.lua` 的 7 个用例（含超时与「0 表示不限时」）在改动后仍全绿。
+
 ## 7. 验收标准
 
 1. 在 `temp/git-repo`（含 untracked / staged modify / worktree modify / staged delete / rename / 子目录路径）上：`git.status(root, cb)` 的 entries 覆盖以上所有状态且 path 全部为正确绝对路径（含空格 + 中文文件名用例）。

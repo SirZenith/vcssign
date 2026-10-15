@@ -182,6 +182,10 @@ vcssign/
 | D25 | 侧边栏行模型 `kind = header \| entry \| banner`，缓存在 `vim.b[bufnr].vcssign_items`；`item_at/entry_at` 用 **0 基行号**（与 extmark 行号一致） | keymap/actions 只能经这两个 API 取「当前是哪个文件」，UI 层因此完全不碰 VCS 命令；`entry_at` 返回副本，M4 按 `path`/`rel_path` 值比较（03 §4） |
 | D26 | keymap 只实现 UI 动作（`q`/`r`/`?`）；其余经 `keymap.dispatch(action, ctx)` 交给 `vcssign.actions`（延迟 `require`，M3 时不存在则明确提示）；能力门在 keymap **先**挡（INFO） | 单一入口让「真实按键」和「`:Vcssign`」走同一条路；UI 层不拼命令行；`open_tab` 复用 `open(entry, { tab = true })`，动作层只有一个入口 |
 | D27 | 侧边栏订阅**跟着缓冲区**（buffer 生命周期），不跟窗口 | 窗口隐藏时仓库消失（或 `dispose_all`）也能把窗口+缓冲区一并销毁；`close` 只关窗口、缓冲区复用，重开瞬时且不丢列表 |
+| D28 | 动作层（04）是唯一把「用户意图」翻成 VCS 命令的地方：所有动作签名统一为 `fn(target, opts?)`，`target` 可以是侧边栏 `StatusEntry`、路径字符串或 nil（nil 时解析为「侧边栏光标行 → 当前缓冲区文件 → cwd」） | 按键与 `:Vcssign` 共用同一实现；UI 层不拼命令行；一个动作只有一个入口（`open_tab` 就是 `open(entry, {tab=true})`） |
+| D29 | 命令层用 `repo_manager.ensure(path, cb)` 解析仓库：按**最近的 marker** 判定，且会用 `cmd:<path>` 引用把仓库钉到会话结束 | 「`:Vcssign` 第一次用就要能用」；嵌套仓库时内层文件不会被判给已 attach 的外层仓库；重复命令不累积引用 |
+| D30 | 用户回答（动作结果、命令失败）走 `log.notify`/`log.notify_error`：**不受 `log_level` 门限、不经 `vim.schedule`**；系统级拒绝（`svn: no staging area`）不带 `vcssign:` 前缀 | `log_level` 管的是插件自己的唠叨，不是回答用户按下的那一下；调用点本来就在主循环（D19） |
+| D31 | 生命周期去抖用「每缓冲区只 attach 一次」的记忆表，不在 `repo_manager` 里套 100ms 防抖；`VimLeavePre` 只清理、不杀正在跑的命令 | 风暴的本质是同一缓冲区反复进入（`attach` 本身幂等），防抖会连「第一次 attach」一起推迟；命令在退出时是否还在飞，由 `exec` 的超时定时器兜底（04 §7.1） |
 
 ## 5. 风险与待验证项
 
@@ -198,5 +202,5 @@ vcssign/
 | M1 VCS 抽象层 | 01 | ✅ 完成（53/53）：git/svn 适配器在真实 `temp/` 仓库上 status/root 解析全部通过（spec 见 05） |
 | M2 仓库运行时 | 02 | ✅ 完成（81/81）：Repo 缓存 + 监听置脏 + 防抖刷新，手动改文件后 1s 内状态变化可观测 |
 | M3 侧边栏 UI | 03 | ✅ 完成（107/107）：窗口/缓冲区生命周期 + 双 sign 状态列（屏幕单元格断言）+ 高亮 + 按键；`:Vcssign` 命令族仍属 M4 |
-| M4 命令与动作 | 04 | `:Vcssign` 全部子命令工作；git 仓库可 stage/unstage/commit；svn 仓库无 stage 菜单项 |
+| M4 命令与动作 | 04 | ✅ 完成（157/157）：`:Vcssign` 全部子命令（含 `diff`/`debug`）+ 真实按键与命令同一条路；git stage/unstage/commit 都用 VCS 自身核对过，svn 无 stage 且 commit + `svn log` 可查；生命周期 autocmd 与 `VimLeavePre` 清理有句柄级断言（04 §6/§7） |
 | M5 测试与工程化 | 05 | `make test` / `make format` 在 Windows 与 CI（Linux）都跑通 |
