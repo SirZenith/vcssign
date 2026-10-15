@@ -43,9 +43,13 @@ local function current_path()
   return vim.uv.cwd() or '.'
 end
 
+--- Tell the user that a path belongs to no repository.
+---
+--- Shared with the public API (`vcssign/init.lua`), so a path-less
+--- `require('vcssign').toggle()` and `:Vcssign toggle` answer the same way.
 ---@param path string
 ---@param err string?
-local function no_repo(path, err)
+function M.report_no_repo(path, err)
   if err and err:find('attach cancelled', 1, true) then
     -- Superseded by a newer command: the caller is gone, so a message would
     -- only be noise about work nobody is waiting for.
@@ -56,6 +60,7 @@ local function no_repo(path, err)
   -- repositories, 04 §6.1); anything else — a missing binary, a permission
   -- problem, a timeout — is environmental and worth an error.
   if err == nil or registry.is_definitive_negative(err) then
+    -- Not an error: most directories are not repositories (04 §6).
     log.notify(message)
   else
     log.notify_error(message .. ': ' .. err)
@@ -71,7 +76,7 @@ end
 local function with_repo(path, fn)
   manager.ensure(path, function(err, repo)
     if not repo then
-      return no_repo(path, err)
+      return M.report_no_repo(path, err)
     end
     fn(repo)
   end)
@@ -191,7 +196,9 @@ function M.run(args)
   end
   -- `:Vcssign` is declared with `-nargs=*`, so a path with a space arrives as
   -- several words (Vim splits on whitespace unless the user escapes): put the
-  -- rest back together rather than silently using the first word.
+  -- rest back together rather than silently using the first word.  Joining with
+  -- a single space means *runs* of spaces collapse, so a path with two adjacent
+  -- spaces has to be escaped (`:Vcssign stage 'a  b.txt'`).
   local rest = vim.list_slice(args, 2)
   handler(#rest > 0 and table.concat(rest, ' ') or nil)
 end
@@ -222,22 +229,7 @@ function M.complete(arglead, cmdline)
   return matches
 end
 
---- Register the user command.  Called from `plugin/vcssign.vim`, which stays
---- thin: the module tree is only loaded when the user runs the command (`run`
---- and `complete` are looked up lazily, on the first invocation).
-function M.register()
-  vim.api.nvim_create_user_command('Vcssign', function(params)
-    require('vcssign.cli').run(params.fargs)
-  end, {
-    nargs = '*',
-    complete = function(arglead, cmdline)
-      return require('vcssign.cli').complete(arglead, cmdline)
-    end,
-    desc = 'vcssign: open the git/svn status sidebar and act on files',
-  })
-end
-
---- Exposed for the specs and for `require('vcssign.cli').register()` users.
+--- Exposed for the specs (the `debug` subcommand's body).
 M._debug_report = debug_report
 
 return M

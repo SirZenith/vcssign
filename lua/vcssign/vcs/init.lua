@@ -81,6 +81,10 @@ local NOT_A_REPO = {
   'not a git repository',
   'not a working copy',
   'e155007',
+  -- svn prints this one as a *warning* (W155007) on some builds, and the
+  -- repository manager wraps an empty detection in its own words.
+  'w155007',
+  'no repository',
 }
 
 ---@param err string?

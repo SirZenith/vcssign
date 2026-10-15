@@ -299,6 +299,16 @@ function M.diff(root, file, opts, cb)
     sub[#sub + 1] = 'HEAD'
   end
   exec.run(build(sub, { '--', file }), { cwd = root }, function(err, res)
+    if err and not (opts and opts.cached) then
+      -- A repository with no commits yet has no `HEAD` to compare against
+      -- ("ambiguous argument 'HEAD'").  The staged view is the useful answer
+      -- there (it is what a first commit would record), and it is what the user
+      -- pressing `d` on such a row is looking for.
+      local lower = err:lower()
+      if lower:find('ambiguous argument', 1, true) or lower:find('unknown revision', 1, true) then
+        return M.diff(root, file, { cached = true }, cb)
+      end
+    end
     if err then
       return cb(err)
     end

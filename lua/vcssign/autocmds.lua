@@ -113,9 +113,18 @@ function M.setup()
     M.detach_buffer(args.buf)
   end)
 
-  subscribe('DirChanged', function()
-    local cwd = vim.uv.cwd()
-    if cwd then
+  subscribe('DirChanged', function(args)
+    -- For this event the details live in `v:event` (scope/cwd), not in the
+    -- callback's arguments (`args.file` happens to hold the new directory as
+    -- well).  `:lcd` / `:tcd` fire it too, and for those the global cwd is not
+    -- the directory the event is about — attaching it would pin an unrelated
+    -- repository.
+    local event = vim.v.event or {}
+    if event.scope and event.scope ~= 'global' then
+      return
+    end
+    local cwd = event.cwd or args.file or vim.uv.cwd()
+    if cwd and cwd ~= '' then
       M.attach_cwd(cwd)
     end
   end)
@@ -131,9 +140,12 @@ function M.setup()
   end)
 
   -- Nothing may outlive the session: buffers first (they hold subscriptions
-  -- into the repositories), then the repositories with their watchers.
+  -- into the repositories), then the repositories with their watchers.  The
+  -- first step is guarded because the second one — releasing handles — is the
+  -- part that must not be skipped: a sidebar that refuses to close (it is the
+  -- last window) would otherwise leave every watcher armed at exit.
   subscribe('VimLeavePre', function()
-    sidebar.forget_all()
+    pcall(sidebar.forget_all)
     manager.dispose_all()
   end)
 

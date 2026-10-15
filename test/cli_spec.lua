@@ -44,36 +44,10 @@ local function guarded(fn)
   end
 end
 
---- Collect the notifications `fn` produces (waiting when needed).
----@param fn function
----@param is_done? fun(seen: vcssign.CapturedNotify[]): boolean
----@return vcssign.CapturedNotify[]
-local function collect(fn, is_done)
-  local real = vim.notify
-  local seen = {} ---@type vcssign.CapturedNotify[]
-  vim.notify = function(message, level)
-    seen[#seen + 1] = { message = message, level = level or vim.log.levels.INFO }
-  end
-  local ok, err = pcall(fn)
-  if ok and is_done then
-    if not vim.wait(5000, function()
-      return is_done(seen)
-    end, 10) then
-      vim.notify = real
-      error('timeout waiting for a notification', 2)
-    end
-  elseif ok then
-    vim.wait(50, function()
-      return false
-    end)
-  end
-  vim.notify = real
-  if not ok then
-    error(err, 0)
-  end
-  return seen
-end
-
+-- `helpers.capture_notify` with the optional wait predicate: the VCS answers
+-- asynchronously, so a case has to wait for its notification while the stub
+-- is still in place.
+local collect = helpers.capture_notify
 ---@param repo vcssign.Repo
 ---@param rel string
 ---@return vcssign.StatusEntry
@@ -120,10 +94,23 @@ return {
       eq(manager.count(), 1)
       ok(manager.get_by_path(dir .. '/base.txt') ~= nil, 'the repository is tracked now')
 
+
       -- No argument at all is the same as `toggle` (04 §3).
       cli.run({})
       eq(sidebar.open_count(), 0, 'pressing it again from the sidebar closes it')
       ok(sidebar.count() == 1, 'the buffer stays, so reopening is instant')
+      -- D29: the command pins *the repository* for the session — one reference
+      -- per repository, no matter how many commands (or how many files) name it.
+      local held = manager.ref_count(dir)
+      eq(held >= 2, true, 'the buffer and the command hold it')
+      cli.run({ 'refresh', dir .. '/base.txt' })
+      -- `debug` answers with a report; the point here is only that running
+      -- another command does not add a reference (its message is swallowed so
+      -- the suite's stderr stays clean).
+      collect(function()
+        cli.run({ 'debug' })
+      end)
+      eq(manager.ref_count(dir), held, 'asking again does not pile up references')
     end),
   },
   {
@@ -397,6 +384,78 @@ return {
       local entries = vcssign.get_entries(dir .. '/base.txt')
       eq(#entries, 1)
       eq(entries[1].rel_path, 'base.txt')
+    end),
+  },
+  {
+    name = 'the public API answers "no repository" the same way the command does',
+    fn = guarded(function()
+      reset()
+      local elsewhere = vim.fn.tempname()
+      vim.fn.mkdir(elsewhere, 'p')
+      vim.cmd('cd ' .. vim.fn.fnameescape(elsewhere))
+      vim.cmd('enew')
+
+      local vcssign = require('vcssign')
+      local seen = collect(function()
+        vcssign.toggle()
+      end, function(s)
+        return #s > 0
+      end)
+      -- INFO with the path, exactly like `:Vcssign toggle` (one implementation
+      -- in `cli.report_no_repo`), not a bare unclassified message.
+      eq(seen[1].level, vim.log.levels.INFO)
+      ok(seen[1].message:find('no repository found', 1, true), seen[1].message)
+      ok(seen[1].message:find(elsewhere, 1, true), seen[1].message)
+
+      -- And an empty path is an answer too, not an assertion error.
+      local empty = collect(function()
+        vcssign.open('')
+      end, function(s)
+        return #s > 0
+      end)
+      ok(empty[1].message:find('no path given', 1, true), empty[1].message)
+      vim.fn.delete(elsewhere, 'rf')
+    end),
+  },
+  {
+    name = 'a nested repository is not answered with its parent cache',
+    fn = guarded(function()
+      reset()
+      local vcssign = require('vcssign')
+      local outer = helpers.git_repo('cli-api-nested-outer')
+      helpers.write(outer .. '/base.txt', 'changed\n')
+      local inner = helpers.git_repo('cli-api-nested-outer/inner')
+      helpers.write(inner .. '/base.txt', 'changed\n')
+
+      -- Only the *outer* repository is attached (a buffer in it).
+      edit_file(outer)
+      cli.run({ 'open' })
+      helpers.wait_for(function()
+        return manager.get(outer) ~= nil
+      end, 'the outer repository to attach')
+      local outer_repo = manager.get(outer)
+      helpers.wait_for(function()
+        return outer_repo.has_loaded
+      end, 'the outer status')
+      -- The inner checkout shows up in the outer list as one row...
+      helpers.wait_for(function()
+        return helpers.entry(outer_repo:entries(), 'inner/') ~= nil
+      end, 'the nested row')
+
+      -- ...but the inner file's own status must come from the inner
+      -- repository — which is not tracked yet, so the honest answer is "not
+      -- yet", not the outer repository's view of the file.
+      eq(vcssign.get_status(inner .. '/base.txt'), nil)
+      eq(vcssign.get_status(outer .. '/base.txt').worktree, 'modified', 'the outer file is answered from the outer cache')
+
+      -- The cold call warmed the inner repository up.
+      helpers.wait_for(function()
+        return manager.get(inner) ~= nil
+      end, 'the inner repository to be attached in the background')
+      helpers.wait_for(function()
+        local status = vcssign.get_status(inner .. '/base.txt')
+        return status ~= nil and status.worktree == 'modified'
+      end, 'the inner status to land')
     end),
   },
   {

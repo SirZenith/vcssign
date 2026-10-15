@@ -265,9 +265,14 @@ end
 --- The stub also swallows messages the plugin defers through `vim.schedule`
 --- (`log` routes everything that way), which is why the drain below happens
 --- *before* `vim.notify` is restored.
+---
+--- `is_done` is for the answers that arrive asynchronously (every VCS command
+--- does): the case waits for its notification while the stub is still in place,
+--- which is what makes "the action reported X" assertable at all.
 ---@param fn function
+---@param is_done? fun(seen: vcssign.CapturedNotify[]): boolean
 ---@return vcssign.CapturedNotify[]
-function M.capture_notify(fn)
+function M.capture_notify(fn, is_done)
   local real = vim.notify
   local captured = {} ---@type vcssign.CapturedNotify[]
   vim.notify = function(message, level)
@@ -275,9 +280,18 @@ function M.capture_notify(fn)
   end
   local ok, err = pcall(fn)
   if ok then
-    vim.wait(50, function()
-      return false
-    end)
+    if is_done then
+      if not vim.wait(5000, function()
+        return is_done(captured)
+      end, 10) then
+        vim.notify = real
+        error('timeout waiting for a notification', 2)
+      end
+    else
+      vim.wait(50, function()
+        return false
+      end)
+    end
   end
   vim.notify = real
   if not ok then
