@@ -230,6 +230,63 @@ function M.uv_count(kind)
   return n
 end
 
+---@class vcssign.CapturedNotify
+---@field message string
+---@field level integer
+
+--- Run `fn` with `vim.notify` stubbed out and report what it sent.  Levels are
+--- kept because "is this INFO or ERROR" is part of the behaviour under test.
+---
+--- The stub also swallows messages the plugin defers through `vim.schedule`
+--- (`log` routes everything that way), which is why the drain below happens
+--- *before* `vim.notify` is restored.
+---@param fn function
+---@return vcssign.CapturedNotify[]
+function M.capture_notify(fn)
+  local real = vim.notify
+  local captured = {} ---@type vcssign.CapturedNotify[]
+  vim.notify = function(message, level)
+    captured[#captured + 1] = { message = message, level = level or vim.log.levels.INFO }
+  end
+  local ok, err = pcall(fn)
+  if ok then
+    vim.wait(50, function()
+      return false
+    end)
+  end
+  vim.notify = real
+  if not ok then
+    error(err, 0)
+  end
+  return captured
+end
+
+--- One rendered screen row of `win`, as a string.
+---
+--- Reads the real screen grid, so it asserts what a user sees — signs and all —
+--- rather than what the buffer happens to contain.  The row starts at the
+--- window's left edge, i.e. the first cell is the vertical separator.
+---@param win integer
+---@param row integer  1-based *screen* row
+---@return string
+function M.screen_line(win, row)
+  vim.cmd('redraw')
+  local col = vim.api.nvim_win_get_position(win)[2]
+  local cells = {}
+  for i = 0, vim.api.nvim_win_get_width(win) do
+    cells[#cells + 1] = vim.fn.screenstring(row, col + i)
+  end
+  return table.concat(cells)
+end
+
+--- Screen row of line `line` (1-based, buffer-relative) inside `win`.
+---@param win integer
+---@param line integer
+---@return string
+function M.screen_line_at(win, line)
+  return M.screen_line(win, vim.api.nvim_win_get_position(win)[1] + line)
+end
+
 --- Attach `ref` to the repository containing `path`, run `fn(repo)`, then always
 --- release the reference again — including when the body raises.
 ---@param ref string
