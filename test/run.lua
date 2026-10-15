@@ -43,6 +43,7 @@ _G.check = helpers.ok
 
 --- Specs and the external binaries they need; skipped when one is missing.
 local REQUIRES = {
+  exec_spec = { 'git' },
   vcs_git_spec = { 'git' },
   vcs_svn_spec = { 'svn' },
   vcs_registry_spec = { 'git', 'svn' },
@@ -51,6 +52,7 @@ local REQUIRES = {
 local DEFAULT_SPECS = {
   'status_type_spec',
   'config_spec',
+  'exec_spec',
   'vcs_git_spec',
   'vcs_svn_spec',
   'vcs_registry_spec',
