@@ -255,8 +255,9 @@ M.on_repo_attached(fn) / M.on_repo_detached(fn)
 | test | `vim.notify` 可能因断言失败而保持被 stub | **已修**：`pcall` 包住用例主体，先恢复再重抛 |
 | doc | 计数漂移（13/66 vs 实际） | **已修**：总数改为 78，并保持各文件一致 |
 
-全量：**81 用例，0 失败**（`status_type` 4 + `config` 7 + `exec` 7 + `vcs_git` 16 +
+全量（M2 收尾时）：**81 用例，0 失败**（`status_type` 4 + `config` 7 + `exec` 7 + `vcs_git` 16 +
 `vcs_svn` 18 + `vcs_registry` 8 + `repo` 21；repo 的最后 3 例是第二轮回归用例）。
+M3 之后全量为 **107**（+ `renderer` 13 + `sidebar` 13，见 03 §6/§7）。
 
 ### 第二轮（M2 收尾后的全量复查）
 

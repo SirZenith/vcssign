@@ -17,8 +17,8 @@
 
 - **每个 Repo 一个侧边栏缓冲区**，buffer name：`vcssign://<system>/<root>`（合法 bufname 转义 `:` `\` 空格）；`buftype=nofile`、`modifiable=false`、`filetype=vcssign`、`bufhidden=hide`。
 - 打开方式（config：`sidebar.position`）：
-  - `"right"`（默认）/ `"left"`：`nvim_open_win(0, true, { vertical = true, win = pos=="right" and 标号 9999 或 0 })`，打开后 `vim.cmd("vertical resize " .. config.sidebar.width)`（默认 `width = 40`）。
-  - `"float"`：浮动窗（初版后置，schema 先占位）。
+  - `"right"`（默认）/ `"left"`：**实现用的是**`nvim_open_win(bufnr, enter, { split = "right"|"left", width = N })`（实测 0.12.4 支持 `split`，且不会动当前窗口及其 buffer）—计划里写的 `{ vertical = true, win = 9999 }` + `vertical resize` 那套不需要了。默认 `width = 40`。
+  - `"float"`：浮动窗—**仍未实现**：schema 收下 `"float"` 但会 `log.warn` 并回落到 `"right"`（宁可说清楚，也不静默换行为）。
 - 窗口选项：`signcolumn = "yes:2"`（两位状态 sign，oil-vcs-status 同款）、`number = false`、`wrap = false`、`foldenable = false`、`spell = false`、`winfixwidth = true`。
 - toggle 语义：窗口开着且聚焦 → 关闭；开着但不聚焦 → 聚焦；关着 → 打开（gitsigns toggle 类命令的常见语义）。
 - 关闭时**只关窗口，缓冲区按 root 复用**（重开不丢状态，直接重渲染）。
@@ -65,7 +65,12 @@ nvim_buf_set_extmark(buf, ns, row, 0, {
 -- local 位: priority = priority
 ```
 
-- 「git 单列窗口」场景：config `sidebar.single_column = true` → 合成显示策略（upstream 存在时取 upstream，`sign_text` 前缀区别），初版可以只做双列。
+**sign 列的实际排布（`screenstring` 实测，0.12.4）**：同色列中**priority 高的靠左**，列宽不足时**保留 priority 高的那个**。
+因此 upstream 位的偏移取 `+1000`（不是示意代码里的 `+100`）：本地状态里最高的 `conflicted = 100`，`+1000` 才能保证「有 index 位就一定有 index 位」这条不变量对**所有**组合成立。
+结果正好是 `git status --short` 的 XY 观感：index 在左、worktree 在右，窄列时留下的是已暂存状态。
+
+> 单列窗口（`sidebar.single_column`）**未实现**，见 §7：`yes:2` 是侧边栏的固定形态，单列只在用户自己覆盖 `signcolumn` 时出现。
+
 
 ### 3.4 高亮
 
@@ -114,11 +119,48 @@ renderer.item_at(buf, row) → vcssign.RenderItem?   # extmark 或行模型反�
 
 - capability 不满足时：`vim.notify("svn: no staging area", vim.log.levels.INFO)`，**不映射失败动作的静默**。
 
-## 6. 验收标准
+## 6. 验收标准（实测）
 
-1. git 仓库：Staged/Unstaged/Untracked 三组渲染正确，两位 sign 状态正确（含 rename 的 `R` 与 orig_path 提示）。
-2. svn 仓库：单列状态正确（upstream 位为空），无 Staged 分组。
-3. 高亮组被用户主题覆盖后跟随变化（`default=true` 验证）。
-4. 快速连续刷新（02 §5 用例 2）过程中：窗口不闪烁、光标行保持在同一文件上。
-5. repo dispose 后窗口关闭、缓冲区删除，无残留 extmark（namespace 清理断言）。
-6. 1000 条目仓库（fixture 大仓库用例）重渲染 < 50ms（`vim.loop.hrtime` 断言，宽松 CI 环境取 < 200ms）。
+| # | 标准 | 用例 | 实测 |
+|---|------|------|------|
+| 1 | git 三组 + 两位 sign（含 rename 的 `R` 与 orig_path 提示） | `sidebar_spec` 「the list groups by status and puts the state characters in two columns」/ `renderer_spec` 「a file in both domains…」 | ✅ 屏幕单元格实测 `│ A M`（both.txt）、`│ A  `、`│ M  `、`│ U  `；rename 文本 `new (from old)` |
+| 2 | svn 单域、无 Staged 分组 | `sidebar_spec` 「an svn working copy renders one flat list…」 | ✅ 只 entry 行、单列 sign |
+| 3 | 用户主题覆盖后跟随（`default=true`） | `renderer_spec` 「highlights are defined as defaults…」 | ✅ 用户 `fg` 存活，其余按文档链接 |
+| 4 | 连续刷新不闪、光标跟文件走 | `sidebar_spec` 「the cursor stays on its file when rows appear above it」 | ✅ 上方插行后（行号变了）光标仍在同一 rel_path |
+| 5 | dispose 后窗口关闭、缓冲区删除 | `sidebar_spec` 「a disposed repository takes its sidebar window and buffer with it」 | ✅ 窗口/缓冲区失效 + `fs_event` 回到 attach 前 |
+| 6 | 1000 行重渲染 < 50ms（宽松 < 200ms） | `renderer_spec` 「a thousand rows render well inside the debounce window」 | ✅ build ≈1.7ms + draw ≈5.3ms ≈ **7ms**（1003 行，三次采样 6.5/7.5/6.8） |
+
+额外（计划外但值得钉住）：窗口/缓冲区选项与 buffer name、toggle 三种语义与 buffer 复用、placeholder 三态（refreshing / 失败原因 / no changes）、按键真实按下（`feedkeys`）而非只测 `dispatch`、能力门先于动作层、keymap 覆盖与禁用。
+
+## 7. 实测偏差、决定与遗留（实现后回写）
+
+### 7.1 与计划草案的偏差
+
+| # | 计划草案 | 实际实现 / 依据 |
+|---|----------|-----------------|
+| 1 | `nvim_open_win(0, true, { vertical = true, win = 9999 })` + `vertical resize` | `nvim_open_win(bufnr, enter, { split = "right"\|"left", width = N })`—0.12.4 实测支持 `split`，一句搞定且不动当前窗口的 buffer |
+| 2 | upstream 位 `priority = priority + 100` | `+1000`（`renderer.upstream_offset`）。本地最高优先级是 `conflicted = 100`，`+100` 不能保证「index 位一定压过 local 位」，`+1000` 可以—这条不变量现在有测试钉住 |
+| 3 | sign 位「双列」的列序未定义 | **实测**：priority 高的在**左**，窄列保留 priority 高的。于是 index 在左、worktree 在右—与 `git status --short` 的 XY 一致（`screenstring` 读真实屏幕得出，不是推断） |
+| 4 | 分组标题 `── Staged ──` | `── Staged (2) ──`：带条目数，长列表里一眼看到规模 |
+| 5 | svn「无分组或按状态种类分组」 | 取「无分组」：无 index 域时 `Staged/Unstaged` 是**假**信息；状态种类分组记入 backlog |
+| 6 | 只有 `header` / `entry` 两种行 | 增加 `banner`：`refreshing…` / 错误原因 / `no changes` 三种占位—「还没加载」「加载失败」「真的干净」是三件事，界面必须说清是哪件 |
+| 7 | 状态字符只在 sign 位 | sign 位仍是唯一的**字符**来源；额外用 `Vcssign<State>` 给**行文本**上色，让长列表可扫（`status_type.default_hl_group` 正是为此存在的） |
+| 8 | `single_column` 初版可以只做双列 | 未实现（backlog）。侧边栏固定 `signcolumn=yes:2`，单列只在用户自行覆盖时出现，那时按实测规则保留 index 位 |
+| 9 | `sidebar.position = "float"` schema 先占位 | schema 收下但未实现：`log.warn` + 回落 `"right"` |
+| 10 | 窗口只在 `close` 时保留缓冲区 | 订阅（`on_update`/`on_error`/`on_delete`）**跟着缓冲区**走，不是跟着窗口—这样窗口隐藏时仓库消失也能把窗口和缓冲区一起销毁（否则会留下一个永远不更新的幽灵侧边栏） |
+| 11 | 计划未提窗口 resize | 侧边栏自己挂 `VimResized`（augroup `vcssign_sidebar`）重画：截断宽度依赖窗口宽度，不重画就会一直显示旧截断。全局生命周期 autocmd 仍归 04 |
+
+### 7.2 实现期踩到并修掉的坑
+
+- **`vim.deepcopy` 一个 Repo 会抛**（`Cannot deepcopy object of type userdata`）：Repo 持有 `uv_fs_event_t` 句柄。`sidebar.forget_all()` 原想 deepcopy 映射表再遍历，改为**浅拷贝值列表**。探针先跑出来，否则会在「清场」路径上炸。
+- **`item_at`/`entry_at` 的行号是 0 基**（与 extmark/`nvim_win_get_cursor` 减一后的约定一致），文档里写死，`cursor_entry` 统一做 `- 1`。第一版 spec 把它当 1 基写过，测试立刻报错。
+- **`capture_notify` 必须 `vim.wait` 一小段再还原 `vim.notify`**：`log` 全部经 `vim.schedule` 投递，同步还原会让这些 warn 跑到真实 `vim.notify` 里、污染 stderr 并让断言漏掉它们。
+
+### 7.3 backlog（明确不做，但记下来）
+
+1. `sidebar.position = "float"`：浮动窗布局 + 跟随光标。
+2. `sidebar.single_column`：合成列（index 优先），窄窗口下替代现在的「保留 index 位」规则。
+3. `sidebar.group_by = "directory"`：目录树模式（oil-vcs-status `status_tree.lua` 是参考）。
+4. 条目级增量更新（现在每次全量 clear + 重画；1000 行 7ms，暂不需要）。
+5. 行文本截断策略可做成 config（当前固定「留尾」）。
+6. 单 sign 位的行：sign 落在**左列**（priority 顺序决定），与 porcelain 的固定 X/Y 列位不同—要严格对齐得插一个占位 sign，收益不抵复杂度，先记下。
