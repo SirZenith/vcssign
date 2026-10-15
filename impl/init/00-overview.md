@@ -178,6 +178,10 @@ vcssign/
 | D21 | 路径 map 键在 Windows 上**大小写折叠**（`base.path_key`） | `D:/Repo` 与 `d:/repo` 是同一目录，不折叠就变成两个 Repo（两个缓存 + 两个监听 + 双倍进程） |
 | D22 | 引用取消分**三层**：`attach` 进入即递增自己 ref 的世代号（最新者胜）、每个释放路径（`detach`/`_remove`）逐 ref 递增、`dispose_all` 递增**模块级 epoch**（覆盖从未绑定的在飞引用）；回调两者都校验 | 检测是异步的：不递增的话，晚到的回调会把已释放的 ref 重新建仓（监听 + status 进程永久泄漏），或在 `dispose_all` 之后「复活」仓库（02 §7 二轮 major 2） |
 | D23 | `relpath` 对「路径 == 根」返回 `''` 而非 nil | 前缀（根 + 分隔符）天然比根长一字符，等值分支不显式处理的话 `active()` 在 cwd 即仓库根时解析不到（02 §7 二轮 major 1） |
+| D24 | sign 列排布按**实测**：priority 高的在最左，窄列时保留 priority 高的那个；upstream 位用 `+1000` 偏移（严格大于本地最高优先级 100） | 于是双列读起来就是 `git status --short` 的 XY（index 左、worktree 右），窄列留的是已暂存状态（03 §3.3、§7） |
+| D25 | 侧边栏行模型 `kind = header \| entry \| banner`，缓存在 `vim.b[bufnr].vcssign_items`；`item_at/entry_at` 用 **0 基行号**（与 extmark 行号一致） | keymap/actions 只能经这两个 API 取「当前是哪个文件」，UI 层因此完全不碰 VCS 命令（03 §4） |
+| D26 | keymap 只实现 UI 动作（`q`/`r`/`?`）；其余经 `keymap.dispatch(action, ctx)` 交给 `vcssign.actions`（延迟 `require`，M3 时不存在则明确提示）；能力门在 keymap **先**挡（INFO） | 单一入口让「真实按键」和「`:Vcssign`」走同一条路；UI 层不拼命令行；`open_tab` 复用 `open(entry, { tab = true })`，动作层只有一个入口 |
+| D27 | 侧边栏订阅**跟着缓冲区**（buffer 生命周期），不跟窗口 | 窗口隐藏时仓库消失（或 `dispose_all`）也能把窗口+缓冲区一并销毁；`close` 只关窗口、缓冲区复用，重开瞬时且不丢列表 |
 
 ## 5. 风险与待验证项
 
@@ -191,8 +195,8 @@ vcssign/
 
 | 里程碑 | 计划文件 | 验收 |
 |--------|----------|------|
-| M1 VCS 抽象层 | 01 | git/svn 适配器在真实 `temp/` 仓库上 status/root 解析全部通过（spec 见 05） |
-| M2 仓库运行时 | 02 | Repo 缓存 + 监听置脏 + 防抖刷新，手动改文件后 1s 内（默认去抖 300ms+防抖 200ms）状态变化可观测 |
-| M3 侧边栏 UI | 03 | `:Vcssign` 打开/关闭/刷新；双 sign 状态列正确；高亮正确；光标行有文件路径 |
+| M1 VCS 抽象层 | 01 | ✅ 完成（53/53）：git/svn 适配器在真实 `temp/` 仓库上 status/root 解析全部通过（spec 见 05） |
+| M2 仓库运行时 | 02 | ✅ 完成（81/81）：Repo 缓存 + 监听置脏 + 防抖刷新，手动改文件后 1s 内状态变化可观测 |
+| M3 侧边栏 UI | 03 | ✅ 完成（107/107）：窗口/缓冲区生命周期 + 双 sign 状态列（屏幕单元格断言）+ 高亮 + 按键；`:Vcssign` 命令族仍属 M4 |
 | M4 命令与动作 | 04 | `:Vcssign` 全部子命令工作；git 仓库可 stage/unstage/commit；svn 仓库无 stage 菜单项 |
 | M5 测试与工程化 | 05 | `make test` / `make format` 在 Windows 与 CI（Linux）都跑通 |

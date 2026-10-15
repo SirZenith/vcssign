@@ -18,7 +18,7 @@
 - [x] `temp/svn-switch`：**真实 switched 子目录**（列 5 S）—— 05 §2.4
 - [x] 实测捕获：见附录 A1/A2/A3
 
-## M1 · VCS 抽象层（01，P0）—— ✅ 已完成（44/44 spec 通过）
+## M1 · VCS 抽象层（01，P0）—— ✅ 已完成（53/53 spec 通过）
 
 - [x] `lua/vcssign/status_type.lua`：统一状态枚举 + 默认符号/高亮/优先级三件套（01 §2）
       兼 `camel/symbol/sign_hl_group/hl_group/sign_priority` 查询函式
@@ -39,7 +39,7 @@
       `test/vcs_registry_spec.lua` + `status_type_spec` + `config_spec` = **53 用例，全绿**）
 - [x] 代码审查（独立 code-reviewer 两轮）发现的问题已修复—— 见本文件附录 B
 
-## M2 · 仓库运行时（02，P1）—— ✅ 已完成（67/67 spec 通过）
+## M2 · 仓库运行时（02，P1）—— ✅ 已完成（81/81 spec 通过；含二轮回归 3 例）
 
 - [x] `lua/vcssign/exec.lua`：`vim.system` 封装 + `LC_ALL=C`、MSYS noglob、超时、`split_nul/split_lines`（02 §2）
       **已在 M1 落地**（适配器依赖）；`pcall` 包住 `vim.system`（命令不存在时会抛 ENOENT 而非回调，已实测）
@@ -61,16 +61,24 @@
 - [x] 验收：02 §5.1–5.5 + §4，共 **18 个用例**（`test/repo_spec.lua`），含 `vim.uv.walk` 句柄清零断言
       —— 实测数据见本文件附录 C，审查修复见附录 D
 
-## M3 · 侧边栏 UI（03，P2）
+## M3 · 侧边栏 UI（03，P2）—— ✅ 已完成（107/107 spec 通过）
 
-- [ ] `lua/vcssign/sidebar/init.lua`：窗口管理（open/close/toggle、right/left、`signcolumn=yes:2`）（03 §2）
-- [ ] `lua/vcssign/sidebar/renderer.lua`：
-  - [ ] 排序（严重度→字典序）+ 分组（git 三组，svn 自适应单域）（03 §3.1）
-  - [ ] 双 extmark sign 位渲染 + namespace 全量重画 + 光标行恢复（03 §3.3、§3.5）
-  - [ ] 高亮组定义（default=true）（03 §3.4）
-  - [ ] `item_at` 光标行反查（03 §4）
-- [ ] `lua/vcssign/sidebar/keymap.lua`：默认键表 + capability 门控（03 §5）
-- [ ] 验收：03 §6.1–6.6
+- [x] `lua/vcssign/config.lua`：`sidebar` 段（`position`/`width`/`group_by`/`keymaps`）（03 §2、§5）
+- [x] `lua/vcssign/sidebar/init.lua`：窗口/缓冲区生命周期（open/close/toggle/focus/close_all/forget_all、
+      `nvim_open_win{split}`、`signcolumn=yes:2`、订阅跟缓冲区走、`VimResized` 重画、`cursor_entry`）（03 §2）
+- [x] `lua/vcssign/sidebar/renderer.lua`：
+  - [x] 排序（严重度→字典序）+ 分组（git 三组，svn 无 index 域则扁平）（03 §3.1）
+  - [x] 双 extmark sign 位渲染（`+1000` upstream 偏移 → porcelain XY）+ namespace 全量重画（03 §3.3）
+  - [x] 高亮组定义（`default = true`，18 组，覆盖枚举全部取值）（03 §3.4）
+  - [x] `item_at`/`entry_at` 行模型反查（0 基行号，缓存于 `vim.b[bufnr].vcssign_items`）（03 §4）
+  - [x] `banner` 三态占位（refreshing / 失败原因 / no changes）（03 §7.1 #6）
+- [x] `lua/vcssign/sidebar/keymap.lua`：默认 8 键（`<cr> t d s u r q ?`）+ `dispatch()` 单一分派入口
+      + capability 门控（svn 提示 `no staging area`，INFO）+ 动作交 04（M3 期缺模块则明确提示）（03 §5）
+- [x] 光标行恢复：按 rel_path 恢复（行号只作兜底）（03 §3.5）
+- [x] 验收：03 §6.1–6.6 全部通过（表格见 03 §6，`sidebar_spec` 用 `screenstring` 读真实屏幕断言）
+- [x] spec：`renderer_spec`（13，纯函数）+ `sidebar_spec`（13，真实仓库/窗口/按键）
+- [ ] backlog（明确不做）：`position = "float"`、`single_column`、`group_by = "directory"` 树模式、
+      条目级增量更新（1000 行 7ms，全量重画足够）—见 03 §7.3
 
 ## M4 · 命令与动作（04，P3）
 
@@ -87,10 +95,12 @@
 - [x] `scripts/run_tests.sh` + `test/run.lua` + `test/helpers.lua`：TAP 输出、exit code、svn 缺失 SKIP、
       `helpers.wait` 阻塞式异步测试（取代计划里的 `preload.lua` + `wait_for`）（05 §3）
 - [x] spec（M1 部分）：`status_type_spec` / `config_spec` / `vcs_git_spec` / `vcs_svn_spec` / `vcs_registry_spec`（53 用例）
-- [x] spec（M2 部分）：`repo_spec`（18 用例）+ `exec_spec`（7 用例，固化「回调在主循环」契约）
-- [x] `test/helpers.lua` 扩展：`scratch_dir` + `cleanup`（末尾清理）、`git_repo` / `svn_checkout`
-      （**可变的临时仓库**，不碰 M1 断言依赖的共享 fixture）、`sh` / `write` / `wait_for` / `uv_count` / `with_repo`
-- [ ] spec（后续里程碑）：`renderer_spec` / `sidebar_spec` / `actions_spec`（05 §3 清单）
+- [x] spec（M2 部分）：`repo_spec`（21 用例）+ `exec_spec`（7 用例，固化「回调在主循环」契约）
+- [x] `test/helpers.lua` 扩展：`scratch_dir` + `cleanup`（末尾清理）、`git_repo` / `svn_checkout` / `git_worktree`
+      （**可变的临时仓库**，不碰 M1 断言依赖的共享 fixture）、`sh` / `write` / `wait_for` / `uv_count` / `with_repo`、
+      `capture_notify`（含 `vim.schedule` 排空，否则 `log` 的 warn 会绕过桩）、`screen_line` / `screen_line_at`（读屏幕单元格）
+- [x] spec（M3 部分）：`renderer_spec`（13 用例，纯函数）+ `sidebar_spec`（13 用例，真实仓库/窗口/按键）
+- [ ] spec（后续里程碑）：`actions_spec`（stage/unstage/commit 全链路，M4；**必须**在副本仓库上跑真实命令）
 - [ ] `stylua.toml` / `.luacheckrc` / `Makefile`（test/format/lint）（05 §4）
 - [ ] `doc/vcssign.txt` 初版手写（05 §5）
 - [ ] CI（backlog）：ubuntu+windows matrix
@@ -262,3 +272,42 @@ waiter 陈旧语义文档化、`!!`/`X`/`I` 前向兼容注释。`get_by_path` �
 （仓库数个位数，正确性优先）。
 
 全量 **81/81** 两遍幂等（repo_spec 21 例，含 3 个新回归用例）。
+
+## 附录 F · M3 实测记录（Windows 11 · nvim 0.12.4）
+
+全部结论都由探针直接观测，不是推断：
+
+1. **`nvim_open_win` 支持 `split`**：`nvim_open_win(buf, enter, { split = "right", width = 40 })`
+   建出右分屏、直接显示该 buffer、不改变当前窗口的 buffer —— 计划草案里的
+   `vim.cmd("vertical resize")` + `win = 9999` 一套可以删掉。
+2. **headless nvim 仍然维护屏幕网格**：`vim.fn.screenstring(row, col)` 能读到真实渲染结果，
+   连 sign 位字符都在。于是「两个 sign 列顺序对不对」可以写成渲染断言（`sidebar_spec`
+   实测 `│ A M` / `│ A  ` / `│ M  ` / `│ U  `）。
+3. **sign 列顺序**：同列位里 **priority 高的靠左**；列宽不足时保留 priority 高的那个。
+   计划草案给 upstream 位 `+100`，但本地最高优先级是 `conflicted = 100`，
+   `+100` 不能保证「有 index 位就一定有 index 位」→ 改 `+1000`（`renderer.upstream_offset`）。
+   双列读起来就是 `git status --short` 的 XY。
+4. **`sign_text = ' ' .. symbol` 的两字符 sign 占 2 个单元格**：`signcolumn=yes:2` 固定占 4 格，
+   **没有 sign 的行也占**（正文始终从第 5 格开始）→ 截断宽度按 `width - 4 - 1` 计算。
+5. **`vim.deepcopy` 一个 Repo 会抛**（`Cannot deepcopy object of type userdata`，Repo 持有
+   `uv_fs_event_t`）→ `sidebar.forget_all()` 改成浅拷贝值列表再遍历。探针先炸出来的。
+6. **`capture_notify` 必须排空 `vim.schedule`**：`log` 全部经 `vim.schedule` → 同步还原
+   `vim.notify` 会让这些 warn 绕过桩、污染 stderr 并让断言漏掉它们。
+7. **1000 行渲染 7ms**（build 1.7 + draw 5.3，三次采样 6.5/7.5/6.8）→ 远低于 300ms 去抖窗口，
+   全量 clear + 重画这个策略站得住，条目级增量更新无需做。
+8. **按键可以真实按**：headless 下 `nvim_feedkeys('r', 'x', false)` 会走 buffer-local 映射
+   （`q` 关窗、`r` 刷新都实测过）；`<CR>` 要用真实 `` 字节，`'<CR>'` 这种记法不展开。
+
+### 实现期自己踩到并修掉的三个坑
+
+| # | 现象 | 原因 / 修法 |
+|---|------|-------------|
+| 1 | `forget_all()` 抛 `Cannot deepcopy object of type userdata` | Repo 持 libuv 句柄 → 浅拷贝值列表（见上 #5） |
+| 2 | `sidebar_spec` placeholder 用例超时 | `item_at(buf, row)` 是 **0 基**行号，spec 里当 1 基用了 → 断言改成读行模型首行；0 基约定已写进 03 §4/§7.2 |
+| 3 | 测试输出里混入 `Already only one window` 与 `vcssign: no handler for action stage` | `:only` 在单窗口时也会发消息（`reset()` 里先判窗口数）；`log.warn` 是 `vim.schedule` 投递的（`capture_notify` 排空后就被捕获，不再漏到 stderr） |
+
+### 测试与工程门
+
+- 全量 **107/107**（M1 53 + exec 7 + repo 21 + renderer 13 + sidebar 13），两遍幂等。
+- stderr 只剩 1 行预期 warn（M2 退避重试用例），其余全部被捕获或消除。
+- `git diff --check` 干净；`temp/` 只剩共享 fixture（`temp/_spec/` 由 `helpers.cleanup()` 清掉）。
