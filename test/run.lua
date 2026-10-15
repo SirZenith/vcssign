@@ -49,6 +49,7 @@ local REQUIRES = {
   vcs_registry_spec = { 'git', 'svn' },
   repo_spec = { 'git', 'svn' },
   sidebar_spec = { 'git', 'svn' },
+  autocmds_spec = { 'git', 'svn' },
 }
 
 local DEFAULT_SPECS = {
@@ -61,6 +62,7 @@ local DEFAULT_SPECS = {
   'repo_spec',
   'renderer_spec',
   'sidebar_spec',
+  'autocmds_spec',
 }
 
 local requested = {}

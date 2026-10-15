@@ -57,6 +57,40 @@ function M.state(repo)
   return M._states[state_key(repo)]
 end
 
+--- The sidebar a buffer belongs to, or nil when `bufnr` is not one.
+---
+--- The command layer needs this: `:Vcssign close` typed while the cursor sits
+--- in a sidebar has to act on *that* sidebar, and the buffer's name
+--- (`vcssign://…`) is not a path that could be resolved instead.
+---@param bufnr integer
+---@return vcssign.SidebarState?
+function M.state_of_buf(bufnr)
+  for _, state in pairs(M._states) do
+    if state.bufnr == bufnr then
+      return state
+    end
+  end
+  return nil
+end
+
+--- How many sidebars are tracked, open or hidden (`:Vcssign debug`).
+---@return integer
+function M.count()
+  return vim.tbl_count(M._states)
+end
+
+--- How many of them are on screen right now.
+---@return integer
+function M.open_count()
+  local n = 0
+  for _, state in pairs(M._states) do
+    if state.win ~= nil and vim.api.nvim_win_is_valid(state.win) then
+      n = n + 1
+    end
+  end
+  return n
+end
+
 ---@param repo vcssign.Repo
 ---@return boolean
 function M.is_open(repo)
