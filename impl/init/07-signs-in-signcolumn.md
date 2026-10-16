@@ -347,7 +347,7 @@ commit = { message_input = 'input' },
 | 10 | `worddiff.lua`（成对行按段 diff）+ `preview.lua`（`virt_lines` 删除预览 / hunk 浮窗） | ✅ **已完成**（`1317890`，213 → **229** 用例，全绿；`worddiff_spec` 9 + `preview_spec` 7） |
 | 11 | `blame.lua`（`current_line_blame` + `blame_line` 浮窗）+ `revdiff.lua`（`diffthis [rev]`）；各约 6 | ✅ **已完成**（`22ad24a`，229 → **244** 用例，全绿；`blame_spec` 8 + `revdiff_spec` 7） |
 | 12 | 文档与帮助回写（`00`–`06`、`doc/vcssign.txt`、`doc_spec`） | ✅ **已完成**（`a4b3551`，用例数仍 **244**，全绿；`doc_spec` 6/6 单跑） |
-| 13 | 独立审查（`code-reviewer` 审 M6 起点..HEAD）+ 修复 | ⬜ 待做（入口见 §6.2 / §6.4） |
+| 13 | 独立审查（`code-reviewer` 审 M6 起点..HEAD）+ 修复 | ✅ **已完成**（审查 runId `del_mvas87sc_mefj`，完整报告 `temp/m6_review.md`；修复 `c2990be`，244 → **250** 用例，全绿） |
 | 14 | 终验（全量两遍幂等、stderr 合同、`git diff --check` 干净、逐 SHA 复跑） | ⬜ 待做（入口见 §6.2 / §6.4） |
 
 > **减法步骤（Step 1）的判据是「删干净 + 全绿 + 文档/`doc_spec` 同步」**，不追求功能完整；
@@ -355,7 +355,7 @@ commit = { message_input = 'input' },
 
 ---
 
-### §6.1 已落地（截至 `a4b3551`）
+### §6.1 已落地（截至 `c2990be`）
 
 | SHA | 提交 | 验证（`make test`） |
 |---|---|---|
@@ -498,6 +498,32 @@ window is not run twice` 只在全量里红（`repo_spec` 单跑 20/20）。原�
 前面某个 spec 留下的仓库在窗口内应了自己的 watcher，计数就多一个。`5942dd9` 把计数限定到
 **第一个**探测所在的 cwd（`fn` 一上来就动被测仓库），用例语义没变。再跑全量即 **229/229**。
 
+**Step 13（独立审查，`%s`）**：`code-reviewer` 只读审了 `080379c^..HEAD`（24 提交 / 58 文件 /
++8956−4499），结论「**没有 blocker**」，但抓到一个真缺陷和一个假绿灯，两个都就地修掉：
+
+1. **F1 attach 的死状态**（修）：仓库消失走 `deactivate` 时状态被标成 `attached = false` 却留在
+   `M._bufs` 里，而 `M.attach` 的幂等分支（`prev.path == path` → 直接返回）把它当成「已经挂好了」——
+   于是仓库重建后这个缓冲区**永远没有 sign**（`BufEnter` / `:Vcssign refresh` / 键位全撞在死状态上），
+   唯一自救是 `:e!`。修法是把「仓库消失」与「这个文件本来就不在仓库里」分开：`deactivate` 打
+   `abandoned` 标记，`M.attach` 只对 `abandoned` 的状态重建；「没有仓库」的答案仍然缓存（否则仓库外
+   的文件每次 `BufEnter` 都重跑一遍检测），改由**显式**请求重试 —— `M.refresh` / `M.toggle` 走新增的
+   `revive()`。三条用例：仓库消失后重建、仓库后建（`git init`）后 `refresh` 接上、`toggle` 在无状态
+   缓冲区上返回「已开」而不是把刚建好的状态翻成关。
+2. **F2 `hq` / `hQ` 的假绿灯**（修）：`setqflist` / `setqflist_all` 是默认键位、帮助里也写着「把 hunk
+   放进 quickfix」，但 `keymap.ACTIONS` 里没有它们，按下去只会「not implemented yet」——`doc_spec`
+   只查名字出现，所以全绿。现在 `keymap.PLACEHOLDERS` 显式列出这两个，帮助表各自标注「（未实现）」，
+   并给 `doc_spec` 加了一条**语义**断言：默认键位的每个动作要么在 `M.ACTIONS` 里，要么在
+   `PLACEHOLDERS` 里，且 `PLACEHOLDERS` 里不能有已实现的动作。
+3. 其余就地修的小项：`set_signcolumn` 在 `signcolumn = false` 且全局是 `no` / `number` 时给一次性告警
+   （07 §8 的承诺，此前从未实现），并新增 `M.reapply_signcolumn` + `autocmds` 的 `WinEnter` 订阅
+   （`attach` 跑在 `BufReadPost`，那时缓冲区可能还没有窗口，`:split` 出来的新窗口会留在全局值上）；
+   `keymap.detach` 只删自己装过的键（值不是字符串的 lhs 是用户自己的）；`vcs/svn.lua` 的
+   `apply_patch` 注释改回实测结论（旧注释还在说「git 风格头会被拒」）。
+4. 审查标为「待验证」的 **V1（`on_detach` 是否在 fast context）实测为否**：探针里 `on_lines` 与
+   `on_detach` 都是 `vim.in_fast_event() == false`，所以 `M.detach` 直接在 `on_detach` 里调是安全的。
+5. 进 backlog 而**不改代码**的两条：`patch_of` 用的是 `st.base_text`（磁盘被别的程序改过时补丁会对不上，
+   表现是 git 报 `patch does not apply` —— 安全但不友好）；11 份 spec 各自复制 `guarded`。
+
 ### §6.2 怎么推进后续步骤（工作契约）
 
 1. **路标就是 §6 的表**。一步一提交，标题沿用仓库既有风格：`feat(scope): 中文摘要（M6 Step N）` /
@@ -549,6 +575,14 @@ window is not run twice` 只在全量里红（`repo_spec` 单跑 20/20）。原�
 - **`svn cat -r 1 <file>` 可能报 `E195012: Unable to find repository location … in revision 1`**：
   文件是后来才进版本库的。和某个历史 rev 比时要挑该文件确实存在的 rev（spec 里用 `HEAD`）。
 - **`virt_text` 挂在 `eol` 上要自己带空格**（`{ ' ' .. text .. ' ' }`），否则装饰和源码行黏在一起。
+- **`on_detach` 与 `on_lines` 都不在 fast context**（Step 13 探针实测 `vim.in_fast_event() == false`）：
+  `nvim_buf_attach` 的三个回调都在主循环里跑，所以 `M.detach` 直接在 `on_detach` 里调是安全的；
+  D19「只能置标记」的边界只对 textlock 里的 `on_lines` / `on_reload` 成立。
+- **「默认面答应了、实现没跟上」这类问题是 `doc_spec` 查不出来的**：`doc_spec` 只断言名字在
+  `doc/vcssign.txt` 里出现（`hq` → `setqflist` 也在 `keymap.ACTIONS` 之外活了一整个里程碑）。
+  任何「文档承诺 + 键位/子命令」的组合都要配一条**语义**断言（Step 13 给默认键位补的就是这条）。
+- `vim.notify_once` 按**消息文本**去重：要「每个动作只提示一次」就得把动作名编进消息
+  （`keymap.dispatch` 的 `… is not implemented yet` 就是这么做的）。
 - 测试卫生：每个用例包 `guarded(fn)`（失败也清场）；`helpers.capture_notify` 必须**排空 `vim.schedule`**
   再还原 `vim.notify`；`helpers.uv_count` 只数**未 closing** 的句柄；跑测试前 fixture 要在（`make fixtures`），
   `temp/_spec` 由 `helpers.cleanup()` 清。
@@ -601,18 +635,28 @@ window is not run twice` 只在全量里红（`repo_spec` 单跑 20/20）。原�
 `doc/vcssign.txt` 的三处措辞（`watch` / `retry_*` / `debug`）一并更正；用例数不变，`doc_spec` 6/6。
 **`impl/init/06` 与 `07` 的 §6 / §6.1 保持逐 SHA 记录，不当作「设计要求」读。**
 
-**Step 13 要做的事（独立审查）**：用 `code-reviewer` 从 **M6 起点（`080379c^`）** 审到 HEAD，重点：
+**Step 13 已完成**（`c2990be`）：`code-reviewer` 只读审 `080379c^..HEAD`，结论「没有 blocker」，抓到
+F1（attach 死状态）与 F2（`hq` / `hQ` 假绿灯）两个必须修的，加上 F3 / F4 / F7 / F8 / F10 五条就地修的
+小项；F5（`patch_of` 用过期的 `base_text`）与 F9（11 份 spec 复制 `guarded`）进 §10 backlog。其余 12 条
+「确认没问题」（exec 恰好一次且不留 timer、D19 在 `on_lines` / `on_reload` 成立、`M.ready` 的 waiter
+三条销毁路径都会 settle、能力门齐全、D45 落实、stdin 契约与 svn 退 0 冲突解析、双层 sign 不重叠、
+D46 无新依赖、`cli.report_no_repo` 静默 `attach cancelled`）留在报告 `temp/m6_review.md` 里
+（`temp/` 不入库，结论已摘进本节与 §6.3）。
 
-1. `attach.lua` 的状态机与**六个清理出口**（`clear_layers` / `refresh_cancel` / `unobserve` / `settle` /
-   `keymap.detach` / `blame.detach`）有没有漏 —— Step 14 的 `VimLeavePre` 零句柄断言靠它。
-2. 适配器与 `exec` 的错误 / `stdin` 契约（**补丁必须自带结尾 `\n`**；`string[]` 形式的 stdin 会逐元素补换行）。
-3. 有没有引入 D46 明令禁止的东西：async 框架、新依赖、在 Vim 主循环之外回调（D19）。
-4. 公共 API（`setup` / `refresh` / `attach` / `detach` / `toggle` / `get_hunks`）、`cli.subcommands` 与
-   `doc/vcssign.txt` 是否仍然一致（`doc_spec` 只钉名字出现，不钉语义）。
+**Step 14 要做的事（终验）**：
 
-审查结论要么就地修（`fix(scope): …` 单独提交，按 §6.2 的「不是本步问题」规则），要么写进 §6.3 / §10 的
-backlog。随后 Step 14 终验：全量两遍幂等、stderr 合同（断言「0 或 1 行」或主动捕获 retry 告警）、
-`git diff --check` 干净、并按 §6.2 的 `git stash push -u -- <文件>` 流程逐 SHA 复跑。
+1. **全量两遍**：`make test` 连跑两次，两次都全绿且用例数一致。顺序敏感的红要先查是不是**探针计数**
+   被别的仓库带跑（Step 10 的 `5942dd9` 就是这类）；`repo_spec` 对负载敏感，**不要**与 `svnadmin` /
+   `svn patch` 并发跑。
+2. **stderr 合同**：进程 stderr 只应有 retry 用例那条 1ms 超时告警（在 0 / 1 行之间浮动）——断言
+   「0 或 1 行」，或把它捕获掉（`05-testing-infra.md` 记着这条）。
+3. **`git diff --check` 干净**（M6 全程）与 `make format-check` 零输出 / `make lint` 0 警告。
+4. **逐 SHA 复跑**：按 §6.2 的 `git stash push -u -- <文件>` 流程，对 `080379c` 起到 HEAD 的每个提交
+   `git checkout <sha> && make test`（`git log --oneline 080379c..HEAD` 就是清单；docs 提交可以只在
+   全量里带过）。
+5. 把 §7 的 10 条验收逐条对照一遍（能自动断言的都已在 spec 里），然后收尾：本文档与 `06-todo.md` /
+   `00-overview.md` 同步到「M6 完成」的最终状态。
+
 
 
 ## §7 验收标准（用户可点）
@@ -621,7 +665,9 @@ backlog。随后 Step 14 终验：全量两遍幂等、stderr 合同（断言「
 2. svn 工作副本里已修改的文件同样显示（基线 = `BASE`）。
 3. 编辑缓冲区 → 200ms 内 sign 跟着更新；`:e!` 重载、外部改动、终端里 `git add` 之后 sign 也更新。
 4. git 已暂存的行显示第二层（不同高亮）；同一行不会出现矛盾的两层 sign。
-5. `]c`/`[c`（支持 `3]c`）在 hunk 间跳转，可配环绕。
+5. `]c`/`[c`（支持 `3]c`）在 hunk 间跳转，默认环绕（✓ `f54b6af` + `nav_spec` 13 例；
+   **环绕不是配置键**（D44 —— §4 里没有这个键，gitsigns 也没有）：只有 `nav.next/prev(bufnr, count, { wrap = false })`
+   这个 API 参数能关，用户在 `doc/vcssign.txt` 的键位表里读到的是「走到头会环绕」）。
 6. `<leader>hs` 暂存当前 hunk（`git diff --cached` 可见）、`<leader>hr` 丢弃当前 hunk（磁盘回到 index 版本；缓冲区有未保存修改时拒绝并提示）、
    `<leader>hS` 暂存整个缓冲区、`<leader>hu` 撤销暂存；svn 侧丢弃按能力门给明确结果。
 7. `word_diff` 打开后 change hunk 的行内改动高亮；`deleted_preview` 打开后被删行以 `virt_lines` 内联显示；`:Vcssign preview_hunk` 弹窗显示完整 hunk。
@@ -666,10 +712,18 @@ backlog。随后 Step 14 终验：全量两遍幂等、stderr 合同（断言「
 4. **内存内 patch 应用**（即使缓冲区有未保存改动也能 reset，gitsigns 用 text edit 同步）。
 5. `:Vcssign setqflist`（把 hunk 灌进 quickfix）。
 6. **svn hunk 级丢弃的替代方案**（当前依赖反向补丁 + `svn patch --strip 0` 临时文件）。
+7. **`patch_of` 的基线新鲜度**（审查 F5）：动作读的是 `st.base_text`（上一次探测拿到的 index 内容）。
+   磁盘被别的程序改过时补丁会对不上，表现是 git 报 `patch does not apply` —— 安全但不友好。在动作前
+   做「磁盘 vs 缓冲区」的比对会在 CRLF / `autocrlf` 上有假阳性，所以留到能同时处理行尾时再做。
+8. **`guarded(fn)` 的复制**（审查 F9）：11 份 spec 各自抄了一份清场包装，该收进 `test/helpers.lua`。
 
 ---
 
 ## §11 待验证项（探针报告标为「不确定 / 需要再测」）
+
+> Step 13 的审查标出的 V1 已实测为否（`on_detach` / `on_lines` 都在主循环，见 §6.3）；V3（空文件的
+> `@@ -0,0 +1,1 @@` 与末行无换行的反向补丁）与 V5（`signcolumn` 覆盖）分别由 Step 13 新增的两条
+> `actions_spec` 用例、以及「一次性告警 + `WinEnter` 复设」落地。
 
 1. **`on_reload` 与 `:e!` 的差异**：仅在 Windows/nvim 0.12.4 组合实测 `:e!`→`on_detach`；不同平台/版本可能不同，
    实现里两种都兜底（`on_detach` + `BufReadPost`）。

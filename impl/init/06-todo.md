@@ -113,7 +113,7 @@ M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
       键位动作 / API / `:helptags` tag 唯一）（05 §5）
 - [ ] CI（backlog，**未做**）：ubuntu+windows matrix——本机无 GitHub 远端，写了也无法验证；接入步骤见 05 §4
 
-## M6 · 行级 sign（07，P0 转向）—— 🚧 进行中（Step 1–12/14 完成，244/244）
+## M6 · 行级 sign（07，P0 转向）—— 🚧 进行中（Step 1–13/14 完成，250/250）
 
 > 用户要求把「文件状态侧边栏」换成 gitsigns 式的**行级 sign**（状态直接进 `'signcolumn'`）。
 > 设计、探针实测与分步计划见 `07-signs-in-signcolumn.md`；**交接说明见该文 §6.1–§6.4**
@@ -133,7 +133,7 @@ M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
 - [x] **Step 10** 词级 diff（`worddiff.lua`）+ 删除预览与 hunk 浮窗（`preview.lua`）+ `hp` / `tw` 接线 —— `1317890`（213 → 229；`worddiff_spec` 9 + `preview_spec` 7）
 - [x] **Step 11** 当前行 blame（`blame.lua`：行内 `virt_text`、`changedtick` 缓存、`blame_line` 浮窗） + `revdiff.lua`（`diffthis [rev]`，diff 窗口从 `actions` 挪进来） —— `22ad24a`（229 → 244；`blame_spec` 8 + `revdiff_spec` 7）
 - [x] **Step 12** 文档与帮助回写（`00`–`06`、`doc/vcssign.txt`、`doc_spec`） —— `a4b3551`（用例数不变，`make test` 244/244；`doc_spec` 6/6）
-- [ ] **Step 13** 独立审查（`code-reviewer` 审 M6 起点..HEAD）+ 修复
+- [x] **Step 13** 独立审查（`code-reviewer` 只读审 `080379c^..HEAD`，报告 `temp/m6_review.md`）+ 修复 —— `c2990be`（F1 死状态复活 / F2 `hq`·`hQ` 假绿灯 / F4 signcolumn 告警 / F7 键位释放 / F3 注释 / F8 两条边界用例；V1 实测为否；244 → 250）
 - [ ] **Step 14** 终验（全量两遍幂等、stderr 合同、`git diff --check`、逐 SHA 复跑）
 
 **工程门（`6eaef2b` 实测）**：`make test` → `178 tests, 0 failed`；`make format-check` → 零输出；
@@ -141,7 +141,7 @@ M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
 **工程门（`2193802` 实测）**：`make test` → `184 tests, 0 failed`（本步动到的三个 spec 单跑 `41 tests, 0 failed`）；
 `make format-check` 零输出、`make lint` → `0 warnings / 0 errors in 35 files`。stderr 行数在 **0/1** 之间浮动
 （retry 用例的 1ms 超时告警，不参与断言）—— Step 14 定论。
-**工程门（`a4b3551` 实测）**：`make test` → **`244 tests, 0 failed`**（空闲连跑两次一致）、`make format-check` 零输出、
+**工程门（`c2990be` 实测）**：`make test` → **`250 tests, 0 failed`**（空闲连跑两次一致）、`make format-check` 零输出、
 `make lint` → `0 warnings / 0 errors in 46 files`（本步只动文档，用例数不变）。
 
 ## 里程碑依赖
