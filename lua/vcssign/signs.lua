@@ -89,6 +89,26 @@ local BASE_LINK = {
   untracked = 'VcssignAdd',
 }
 
+--- Theme-provided groups tried, in order, before `BASE_LINK` is used.
+---
+--- `GitSigns*` is deliberately absent: those names belong to another plugin,
+--- and depending on them would make vcssign's colours silently follow a
+--- highlight no theme has to provide.  What is left is gitsigns' own fallback
+--- chain without that prefix (`highlight.lua:72-83`), and it is tried only
+--- because many themes give `DiffAdd` / `DiffChange` / `DiffDelete` a
+--- background and *no* foreground: the sign text then falls back to
+--- `SignColumn`'s colour instead of a contrasty one.  A theme that defines
+--- none of these keeps the pre-chain behaviour exactly, because the last
+--- resort is still `BASE_LINK` (`topdelete` reuses the `delete` list).
+---@type table<string, string[]>
+local FALLBACKS = {
+  add = { 'GitGutterAdd', 'SignifySignAdd', 'DiffAddedGutter' },
+  change = { 'GitGutterChange', 'SignifySignChange', 'DiffModifiedGutter' },
+  delete = { 'GitGutterDelete', 'SignifySignDelete', 'DiffRemovedGutter' },
+  changedelete = { 'GitGutterChangeDelete', 'SignifySignChangeDelete' },
+  untracked = { 'GitGutterAdd', 'SignifySignAdd', 'DiffAddedGutter' },
+}
+
 --- The whole-line (`Ln`) group of each type that has one.  `delete` and
 --- `topdelete` are absent on purpose (see `place`): their sign anchors on a
 --- line that is still in the buffer, so a whole-line diff highlight would be
@@ -116,6 +136,38 @@ local STAGED_FADE = 0.5
 local function resolved(name)
   local ok, hl = pcall(api.nvim_get_hl, 0, { name = name, link = false })
   return ok and hl or {}
+end
+
+--- Does `name` carry a colour, directly or through its link chain?
+---
+--- The same test gitsigns' `is_hl_set` makes (`highlight.lua:227-236`): a
+--- group a theme has only touched with e.g. `bold` is not a usable sign
+--- colour, and an undefined group resolves to an empty table.
+---@param name string
+---@return boolean
+local function is_set(name)
+  local hl = resolved(name)
+  local color = hl.fg
+    or hl.bg
+    or hl.reverse
+    or hl.ctermfg
+    or hl.ctermbg
+    or (hl.cterm and hl.cterm.reverse)
+  return color ~= nil
+end
+
+--- The first candidate the theme has actually coloured, or `default` when it
+--- has coloured none of them.
+---@param candidates string[]
+---@param default string
+---@return string
+local function pick(candidates, default)
+  for _, name in ipairs(candidates) do
+    if is_set(name) then
+      return name
+    end
+  end
+  return default
 end
 
 --- `fg` blended toward `bg`; `factor` 1 keeps `fg`, 0 returns `bg`.
@@ -157,9 +209,11 @@ function M.define_highlights()
     api.nvim_set_hl(0, name, { link = target, default = true })
   end
 
-  -- Plain groups first, then Nr / Ln / Cul, so each link resolves.
+  -- Plain groups first, then Nr / Ln / Cul, so each link resolves.  The
+  -- candidate chain is resolved here, at definition time, against whatever the
+  -- theme has defined by now — hence the `ColorScheme` re-run in `autocmds`.
   for _, ty in ipairs(ORDER) do
-    link(M.hl_name(ty), BASE_LINK[ty])
+    link(M.hl_name(ty), pick(FALLBACKS[ty] or FALLBACKS.delete, BASE_LINK[ty]))
   end
   for _, ty in ipairs(ORDER) do
     link(M.hl_name(ty, nil, 'Nr'), M.hl_name(ty))
@@ -228,11 +282,15 @@ function M.place(bufnr, hunks, opts)
   local show_text = config.get().signcolumn
   local numhl = config.get().signs.numhl
   local linehl = config.get().signs.linehl
+  local culhl = config.get().signs.culhl
   local priority = opts.priority or M.PRIORITY
   local line_count = api.nvim_buf_line_count(bufnr)
 
   api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
 
+  -- `culhl` is not part of this test: Neovim applies `cursorline_hl_group` to
+  -- the sign cell, which does not exist without the text (gitsigns skips the
+  -- placement the same way).
   if not show_text and not numhl and not linehl then
     -- `signcolumn = false` and no highlight wanted: nothing this layer drew
     -- could be seen, so the buffer is left without extmarks (gitsigns skips the
@@ -260,6 +318,7 @@ function M.place(bufnr, hunks, opts)
       priority = priority,
       number_hl_group = numhl and M.hl_name(ty, staged, 'Nr') or nil,
       line_hl_group = want_ln and M.hl_name(ty, staged, 'Ln') or nil,
+      cursorline_hl_group = culhl and M.hl_name(ty, staged, 'Cul') or nil,
     })
     placed = placed + 1
   end

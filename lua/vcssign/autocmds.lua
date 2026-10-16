@@ -120,6 +120,15 @@ function M.setup()
     end
   end)
 
+  -- A colorscheme loaded (or switched) after the first attach must re-resolve
+  -- the sign groups' candidate chain: `signs.define_highlights` picks the
+  -- theme's git-sign group when it runs, and it only fills groups that are
+  -- still default definitions, so a user's own overrides survive the re-run.
+  -- gitsigns re-runs its highlight setup on the same event (`highlight.lua`).
+  subscribe('ColorScheme', function()
+    attach.define_highlights()
+  end)
+
   -- Focus is the reliable fallback on Windows, where a file changed by another
   -- program (`git checkout` in a terminal, an editor outside nvim) may produce
   -- no event we can see.  Both halves are needed: the repositories re-probe

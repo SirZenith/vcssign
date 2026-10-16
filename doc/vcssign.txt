@@ -324,12 +324,14 @@ signcolumn                                         *vcssign-config-signcolumn*
     Enable/disable the sign text in the sign column.
 
     When disabled the signs carry no text, but `signs.numhl` /
-    `signs.linehl` still get their highlights.
+    `signs.linehl` still get their highlights.  `signs.culhl` needs
+    the sign text: it is the highlight of the sign cell on the cursor
+    line (shown when 'cursorline' is set).
 
     vcssign never writes the window's 'signcolumn' option, so set it
-    yourself to a value that shows the column: Neovim's default 'auto'
-    opens it as soon as there is a sign to show, while 'no' and 'number'
-    hide it.
+    yourself: 'auto' (Neovim's default) opens the column as soon as there
+    is a sign to show, 'yes' keeps it open, and 'number' draws the signs
+    in the 'number' column, sharing it with the line numbers.
 
 rev                                                       *vcssign-config-rev*
     Type: `string`, Default: `index`
@@ -598,6 +600,18 @@ worktree group's foreground blended 1:1 with `Normal`'s background, so the
 staged layer is a step dimmer and the two layers on one line never look
 alike; when the colours cannot be read (a `cterm`-only colorscheme, say)
 they fall back to a link to the matching worktree group.
+
+The group a sign uses is picked when the highlights are resolved: the first
+of the colorscheme's git-sign groups that is actually coloured wins --
+`GitGutterAdd` / `SignifySignAdd` / `DiffAddedGutter` for `add`, the
+matching `GitGutter*` / `SignifySign*` names for the other types (with
+`DiffModifiedGutter` for `change`, `DiffRemovedGutter` for `delete`, and
+the `add` names again for `untracked`).  Only when the theme colours none
+of them does the group link to `DiffAdd` / `DiffChange` /
+`DiffDelete`.  The chain is gitsigns' own list without its
+`GitSigns*` names; it exists because many colorschemes give `DiffAdd` and
+friends a background only, which would leave the sign text in the sign
+column's colour.
 
                                                          *hl-VcssignAdd*
 VcssignAdd

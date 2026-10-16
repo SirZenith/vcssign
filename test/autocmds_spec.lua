@@ -102,6 +102,8 @@ return {
         'BufWritePost',
         'BufDelete',
         'BufWipeout',
+        -- `ColorScheme` re-resolves the sign groups' candidate chain.
+        'ColorScheme',
         'DirChanged',
         'FocusGained',
         'VimLeavePre',
@@ -112,6 +114,9 @@ return {
       -- BufEnter handlers would attach every buffer twice.
       autocmds.setup()
       eq(#vim.api.nvim_get_autocmds({ group = autocmds.group_name, event = 'BufEnter' }), 1)
+      -- The `ColorScheme` handler is one global autocmd, not one per buffer: a
+      -- second `setup()` must not double it either.
+      eq(#vim.api.nvim_get_autocmds({ group = autocmds.group_name, event = 'ColorScheme' }), 1)
     end),
   },
   {
