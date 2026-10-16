@@ -95,7 +95,7 @@ M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
 2. `repo_manager.ensure`（新）与 `get_by_path` 的语义差：嵌套仓库时内层文件会被判给已 attach 的外层仓库。
 3. 路径未解析就传给 `ensure` → `base.normalize(nil)` 静默变成「cwd 下的相对路径」（实测字符串 `v:/null`）。
 
-## M5 · 测试与工程化（05，P4，M1 起并行）
+## M5 · 测试与工程化（05，P4，M1 起并行）—— ✅ 完成（174/174；CI 仍 backlog）
 
 - [x] `scripts/make_test_repos.sh`：幂等生成全部 fixture（已实测：从零重建 + 连续两次跑均正确）（05 §2）
 - [x] `scripts/run_tests.sh` + `test/run.lua` + `test/helpers.lua`：TAP 输出、exit code、svn 缺失 SKIP、
@@ -106,10 +106,12 @@ M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
       （**可变的临时仓库**，不碰 M1 断言依赖的共享 fixture）、`sh` / `write` / `wait_for` / `uv_count` / `with_repo`、
       `capture_notify`（含 `vim.schedule` 排空，否则 `log` 的 warn 会绕过桩）、`screen_line` / `screen_line_at`（读屏幕单元格）
 - [x] spec（M3 部分）：`renderer_spec`（15 用例，纯函数）+ `sidebar_spec`（18 用例，真实仓库/窗口/按键）
-- [ ] spec（后续里程碑）：`actions_spec`（stage/unstage/commit 全链路，M4；**必须**在副本仓库上跑真实命令）
-- [ ] `stylua.toml` / `.luacheckrc` / `Makefile`（test/format/lint）（05 §4）
-- [ ] `doc/vcssign.txt` 初版手写（05 §5）
-- [ ] CI（backlog）：ubuntu+windows matrix
+- [x] spec（后续里程碑）：`actions_spec`（24 用例，M4；在副本仓库上跑真实 stage/unstage/commit 并用 VCS 自身核对）
+- [x] `stylua.toml` / `.luacheckrc` / `Makefile`（help/tools/fixtures/test/format/format-check/lint）+ `scripts/tools.sh`
+      （钉版本 stylua 2.3.1 / luacheck 1.2.0 到 `deps/`）；`format-check` 零输出、`lint` 0 警告（05 §4）
+- [x] `doc/vcssign.txt` 初版手写（8 节 254 行）+ `test/doc_spec.lua`（7 用例：配置键 / 子命令 / 状态 / 高亮 /
+      键位动作 / API / `:helptags` tag 唯一）（05 §5）
+- [ ] CI（backlog，**未做**）：ubuntu+windows matrix——本机无 GitHub 远端，写了也无法验证；接入步骤见 05 §4
 
 ## 里程碑依赖
 
@@ -399,3 +401,32 @@ waiter 陈旧语义文档化、`!!`/`X`/`I` 前向兼容注释。`get_by_path` �
 （exec 四条结束路径都关定时器、D19 在 M4 新代码里成立、钩子隔离、`<f-args>` 无注入面、diff 缓冲复用与
 `bufhidden=wipe` 不冲突等），并指出 6 条「已声明的取舍，保留」（最近 marker 解析、每缓冲区一次 attach、
 `HEAD` 对比策略、unborn/untracked 的 diff 边界、插件的容量、退出不杀在飞命令）。
+
+## 附录 J · M5 实况与工程门（Windows 11 · nvim 0.12.4）
+
+新增（3 个文件 + 7 个用例）：
+
+| 文件 | 内容 |
+|------|------|
+| `stylua.toml` | 2 空格 / 单引号 / 100 列 / 行尾保留（gitsigns 同款） |
+| `.luacheckrc` | `std='lua51'`、`globals={'vim'}`、spec 的 `ok`/`eq`/`check` 只读全局、排除 `deps/`/`temp/`/`impl/`、`max_line_length=120` |
+| `scripts/tools.sh` | 钉版本下载工具到 `deps/`：stylua v2.3.1（4 个平台 asset）、luacheck v1.2.0（Windows exe；其它平台 symlink PATH 上的） |
+| `Makefile` | `help`（默认）/ `tools` / `fixtures` / `test [FILTER=]` / `format` / `format-check` / `lint`，依赖只负责凑前置件 |
+| `doc/vcssign.txt` | 254 行 8 节；tag `*vcssign.txt*` … `*vcssign-arch*`、`*:Vcssign*`；`doc/tags` 不入库 |
+| `test/doc_spec.lua` | 7 用例：文件形状 / tag 唯一且被 `:helptags` 索引 / 配置键与取值 / 子命令 / 键位动作 / 状态与高亮组 / 公共 API |
+
+工程门实测：
+
+```
+make format-check   → 零输出（34 个文件：19 lua + 15 test）
+make lint           → Total: 0 warnings / 0 errors in 34 files
+make test           → 174 tests, 0 failed（两遍一致；stderr 仅 1 行预期重试告警）
+```
+
+- 工具版本：stylua 2.3.1、luacheck 1.2.0（PUC-Rio Lua 5.4）。
+- 本机原先没有 `make`：`scoop install make` 装了 4.4.1 才验证 Makefile（环境准备，不进仓库）。
+- luacheck 抓到的 4 处都不是风格问题，而是「删了也不报错」的未使用变量/函数与两处遮蔽
+  （`test/sidebar_spec.lua` 的 `win`、`test/cli_spec.lua` 的局部函数、`test/autocmds_spec.lua` 的 `elsewhere`、
+  `lua/vcssign/actions.lua` 里遮蔽 `err` 的变量）；只删/改名，行为不变。
+- `git update-index --chmod=+x scripts/*.sh`：本机 `core.filemode=false`，POSIX 克隆要有可执行位只能这么改。
+- 遗留 backlog：CI workflow（本机无远端可验证）、`scripts/gen_help.lua`（从 config schema 生成配置段）。

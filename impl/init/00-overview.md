@@ -189,6 +189,9 @@ vcssign/
 | D32 | 侧边栏持有自己的 manager 引用（`sidebar:<system>|<root>`，`repo_manager.hold`），缓冲区在就持有；`ensure` 的引用是「每仓库一个」(`cmd:<root>`) | 侧边栏缓冲区比窗口活得久：没有这条引用，「关掉仓库里最后一个文件」会把用户正在看的列表一起拆掉（M4 审查 major）；每仓库一个引用同时解决「重复命令累积引用」 |
 | D33 | 动作条目按**身份**绑定仓库：`abspath(repo.root, entry.rel_path) == entry.path` 才认 | `rel_path` 是渲染它的那个 root 的相对路径；仓库套仓库时「包含该路径的最深仓库」是另一个仓库，会把外层的相对路径交给内层（M4 审查 major） |
 | D34 | 只读窥视（`get_status`/`get_entries`）按**最近 marker** 解析、只读缓存、不阻塞；仓库未跟踪时返回 nil/`{}` 并在后台**每路径最多一次**预热，用共享的 `get_status` 引用 | 与命令层的 `ensure` 同一套解析规则（不然嵌套仓库会被父仓库的缓存冒充）；不按路径钉住仓库，避免集成方查过的每个目录都挂一个监听 |
+| D35 | 格式/静态检查工具**钉版本**并由 `scripts/tools.sh` 下到 `deps/`（stylua 2.3.1 / luacheck 1.2.0，gitignored，gitsigns 同款布局） | `format-check` 只有在工具版本固定时才可复现；二进制不入库 |
+| D36 | 检查的文件集从 `git ls-files 'lua/**/*.lua' 'test/*.lua' 'scripts/*.lua'` 取，`impl/`、`temp/`、`deps/` 排除 | 新加（已 `git add`）的文件不会漏检，计划文档与 fixture 不该被格式化 |
+| D37 | `doc/tags` 不入库（`.gitignore`）；手写帮助文件由 `test/doc_spec.lua` 与代码对齐：配置键 / 子命令 / 状态 / 高亮组 / 键位动作 / 公共 API 逐项必须在文档里出现，并额外在 `temp/_spec/` 的副本上跑一次 `:helptags` 验证 tag 唯一 | 没有生成器时（05 §5），文档漂移只能靠断言拦；生成物不入库是 gitsigns 的做法 |
 
 ## 5. 风险与待验证项
 
@@ -206,4 +209,4 @@ vcssign/
 | M2 仓库运行时 | 02 | ✅ 完成（81/81）：Repo 缓存 + 监听置脏 + 防抖刷新，手动改文件后 1s 内状态变化可观测 |
 | M3 侧边栏 UI | 03 | ✅ 完成（107/107）：窗口/缓冲区生命周期 + 双 sign 状态列（屏幕单元格断言）+ 高亮 + 按键；`:Vcssign` 命令族仍属 M4 |
 | M4 命令与动作 | 04 | ✅ 完成（167/167，含审查修复）：`:Vcssign` 全部子命令（含 `diff`/`debug`）+ 真实按键与命令同一条路；git stage/unstage/commit 都用 VCS 自身核对过，svn 无 stage 且 commit + `svn log` 可查；生命周期 autocmd 与 `VimLeavePre` 清理有句柄级断言（04 §6/§7） |
-| M5 测试与工程化 | 05 | `make test` / `make format` 在 Windows 与 CI（Linux）都跑通 |
+| M5 测试与工程化 | 05 | ✅ 完成（174/174）：`stylua.toml` / `.luacheckrc` / `Makefile`（help/tools/fixtures/test/format/format-check/lint）+ 钉版本的 `scripts/tools.sh`；`make format-check` 零输出、`make lint` 0 警告、`make test` 174/174；`doc/vcssign.txt`（8 节）由 `doc_spec` 7 用例逐项守着（05 §4–§6）。CI workflow 仍是 backlog（本机无远端可验证） |
