@@ -144,6 +144,34 @@ M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
 **工程门（`a3e41fd` 实测）**：`make test` → **`250 tests, 0 failed`**（空闲连跑两遍一致）、`make format-check` 零输出、
 `make lint` → `0 warnings / 0 errors in 46 files`（本步只动文档，用例数不变）。
 
+**工程门（`a3e41fd` 实测）**：`make test` → **`250 tests, 0 failed`**（空闲连跑两遍一致）、`make format-check` 零输出、
+`make lint` → `0 warnings / 0 errors in 46 files`（本步只动文档，用例数不变）。
+
+### M6 之后：按用户要求做的三处 gitsigns 对齐
+
+> 都是 M6 交付之后用户实测/点名要的，不是 §6 表里的步骤；实现细节见 `07` §6.1 末尾三条与 §6.3。
+
+- `d743bba` `fix(attach)` —— **noice 崩溃**（用户实测）：`WinEnter` → `reapply_signcolumn` 会在别人的
+  `nvim_win_call`（`:Noice history`）里写 `'signcolumn'`，而**写入窗口已有的值也会触发 `OptionSet`**
+  （探针实测：同一个值写三次 = 三次事件），那条处理器链一炸就记在 `attach.lua:302` 上。当时修法是
+  「先读后比 + `pcall` + 失效窗口跳过」（250 → 253 用例）。
+- `55255cb` `refactor(signs)` —— **`signcolumn` 交给 gitsigns 的语义**：`config.signcolumn` 改成**布尔**
+  （默认 `true`，只决定要不要写 `sign_text`；为 `false` 且 `numhl`/`linehl` 也关着时连 extmark 都不放），
+  **插件从不写窗口的 `'signcolumn'`** —— 上面那次修复的整条路径（`set_signcolumn` /
+  `reapply_signcolumn` / `WinEnter` 订阅 / 告警）连同删掉，这类崩溃不再有机会发生
+  （253 → 250 用例；`attach_spec` 25 → 23，`autocmds_spec` 去掉两条窗口用例）。
+- `f66b074` `feat(blame)` —— **行内 blame 全面对齐 gitsigns**：`current_line_blame_opts` 全套
+  （`virt_text` / `virt_text_pos`（含 `right_align`）/ `virt_text_priority` / `delay` 500 → 1000 /
+  `ignore_whitespace` / `use_focus` / `extra_opts`）、`current_line_blame_formatter` +
+  `_nc`、新模块 `lua/vcssign/blame_formatter.lua`（gitsigns 的占位符表 + `:<strftime>` + `%R` 相对时间 +
+  函数式 formatter）、模块级事件 augroup + 单个 extmark（`id = 1`）+ `vim.b.vcssign_blame_line[_dict]`；
+  适配器补齐 porcelain 字段与 `orig_lnum`、`-w`、`extra_opts`，svn 从 `<date>` 解析 `author_time`。
+  顺手修掉一个竞态（取数回来时「还要不要这个装饰」要再判一次）（250 → 260 用例；
+  `blame_formatter_spec` 7 例、`blame_spec` 8 → 11）。
+
+**工程门（`f66b074` 实测）**：`make test` → **`260 tests, 0 failed`**、`make format-check` 零输出、
+`make lint` → `0 warnings / 0 errors in 48 files`；stderr 只剩 `repo_spec` retry 那一行。
+
 ## 里程碑依赖
 
 ```
