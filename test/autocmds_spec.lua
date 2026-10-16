@@ -102,6 +102,7 @@ return {
         'BufWritePost',
         'BufDelete',
         'BufWipeout',
+        'WinEnter',
         'DirChanged',
         'FocusGained',
         'VimLeavePre',
@@ -112,6 +113,30 @@ return {
       -- BufEnter handlers would attach every buffer twice.
       autocmds.setup()
       eq(#vim.api.nvim_get_autocmds({ group = autocmds.group_name, event = 'BufEnter' }), 1)
+    end),
+  },
+  {
+    name = 'a window that opens later gets the configured sign column',
+    fn = guarded(function()
+      with_config({ signcolumn = 'yes:2' }, function()
+        autocmds.setup()
+        local dir = repo_dir('autocmds-signcolumn')
+        edit_file(dir)
+        local bufnr = vim.api.nvim_get_current_buf()
+        helpers.wait_for(function()
+          local st = attach.state(bufnr)
+          return st ~= nil and st.attached
+        end, 'the buffer to attach')
+
+        -- `attach` ran before this window existed, so it starts from the
+        -- global value; `WinEnter` is what puts `config.signcolumn` on it.
+        vim.cmd('split')
+        local win = vim.api.nvim_get_current_win()
+        vim.wo[win].signcolumn = 'no'
+        vim.api.nvim_exec_autocmds('WinEnter', { buffer = bufnr })
+        eq(vim.wo[win].signcolumn, 'yes:2')
+        vim.cmd('close')
+      end)
     end),
   },
   {

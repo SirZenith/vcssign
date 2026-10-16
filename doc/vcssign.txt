@@ -103,7 +103,8 @@ vcssign 把 Git / Subversion 仓库里的改动直接反映到窗口的 `'signco
 
 `signcolumn` ('auto')~
   写进 `'signcolumn'` 的值：`'auto'` 只在别的插件已经开了这一列时显示 sign。
-  设为 `false` 表示**不碰** `'signcolumn'`。
+  设为 `false` 表示**不碰** `'signcolumn'`；这时如果你的全局值是 `'no'` 或
+  `'number'`（会把这列藏起来），插件会提示一次，因为那样看不到任何 sign。
 
 `rev` ('index')~
   拿缓冲区和哪个基线比：`'index'`（git 的暂存区 / svn 的 BASE）、`'HEAD'`，
@@ -229,8 +230,8 @@ vcssign 把 Git / Subversion 仓库里的改动直接反映到窗口的 `'signco
     <leader>hb                 blame_line                 这一行的 blame
     <leader>hd                 diffthis                   和基线打开 diff
     <leader>hD                 diffthis_rev               和指定 rev 打开 diff
-    <leader>hq                 setqflist                  把 hunk 放进 quickfix
-    <leader>hQ                 setqflist_all              全部 hunk 放进 quickfix
+    <leader>hq                 setqflist                  把 hunk 放进 quickfix（未实现）
+    <leader>hQ                 setqflist_all              全部 hunk 放进 quickfix（未实现）
     <leader>tw                 toggle_word_diff           开 / 关词级 diff
     <leader>tb                 toggle_current_line_blame  开 / 关行内 blame
 

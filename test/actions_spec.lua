@@ -913,4 +913,64 @@ return {
       vim.fn.delete(dir, 'rf')
     end),
   },
+  {
+    -- The reviewer's F8: `\ No newline at end of file` is only exercised by
+    -- `hunk_spec` (which builds the patch directly), never through an action.
+    name = 'reset_hunk copes with a file whose last line has no newline',
+    fn = guarded(function()
+      local dir = helpers.git_repo('actions-no-eol')
+      -- `writefile` without the 'b' flag adds a trailing newline; 'b' writes the
+      -- lines exactly as given, so the file genuinely ends without one.
+      vim.fn.writefile({ 'one', 'two' }, dir .. '/base.txt', 'b')
+      helpers.sh({ 'git', 'add', 'base.txt' }, dir)
+      helpers.sh({ 'git', 'commit', '-qm', 'no trailing newline' }, dir)
+      local path = dir .. '/base.txt'
+      local bufnr = open_attached(path)
+
+      -- Drop the last line and save: `reset_hunk` refuses an unsaved buffer
+      -- (D45), and the hunk's removed side now ends at EOF without a newline.
+      vim.api.nvim_buf_set_lines(bufnr, 1, 2, false, {})
+      vim.cmd('write')
+      helpers.wait_for(function()
+        return #attach.hunks(bufnr) == 1
+      end, 'the deletion to be seen')
+      put_cursor(bufnr, 1)
+      local seen = collect_until_answered(function()
+        actions.reset_hunk(nil, { bufnr = bufnr })
+      end)
+      eq(seen[1].message, 'vcssign: discarded base.txt (line 1)')
+
+      -- `readfile(..., 'b')` is the point: the restored file must end without a
+      -- newline again, exactly as the index has it.
+      eq(vim.fn.readfile(path, 'b'), { 'one', 'two' })
+      eq(git_diff(dir), '')
+      helpers.wait_for(function()
+        return vim.deep_equal(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), { 'one', 'two' })
+      end, 'the buffer to reload')
+    end),
+  },
+  {
+    -- The other half of F8: an empty *tracked* file has an empty blob in the
+    -- index, so the hunk's removed side is `-0,0` — the shape a zero-context
+    -- patch needs its own test for.
+    name = 'stage_hunk stages the first line of an empty, tracked file',
+    fn = guarded(function()
+      local dir = helpers.git_repo('actions-empty-file')
+      vim.fn.writefile({}, dir .. '/empty.txt')
+      helpers.sh({ 'git', 'add', 'empty.txt' }, dir)
+      helpers.sh({ 'git', 'commit', '-qm', 'empty file' }, dir)
+      local bufnr = open_attached(dir .. '/empty.txt')
+
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { 'first' })
+      helpers.wait_for(function()
+        return #attach.hunks(bufnr) == 1
+      end, 'the added line to be seen')
+      put_cursor(bufnr, 1)
+      local seen = collect_until_answered(function()
+        actions.stage_hunk(nil, { bufnr = bufnr })
+      end)
+      eq(seen[1].message, 'vcssign: staged empty.txt (line 1)')
+      eq(helpers.sh({ 'git', 'show', ':empty.txt' }, dir):gsub('%s+$', ''), 'first')
+    end),
+  },
 }

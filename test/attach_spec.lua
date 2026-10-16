@@ -364,13 +364,23 @@ return {
       eq(manager.count(), 1)
       ok(#attach.hunks(bufnr) > 0, 'the accessors stay truthful while off')
 
-      -- An edit while off must not schedule any work: `mark_dirty` returns
-      -- before the debounce, so the hunks stay exactly as they were (the added
-      -- count would be 2 if they had been recomputed).
+      -- An edit while off must not schedule any work: `mark_dirty` returns before
+      -- the debounce, so a spy on the debounced callable itself sees nothing — a
+      -- stronger claim than "the hunks still look stale", and the wait is what
+      -- makes it a claim about the 200ms debounce having been skipped.
+      local toggle_state = attach.state(bufnr)
+      local debounced = toggle_state.refresh
+      local scheduled = 0
+      toggle_state.refresh = function()
+        scheduled = scheduled + 1
+        return debounced()
+      end
       api.nvim_buf_set_lines(bufnr, 0, -1, false, { 'base', 'new', 'extra' })
       vim.wait(300, function()
         return false
       end)
+      toggle_state.refresh = debounced
+      eq(scheduled, 0, 'no refresh was scheduled while the switch was off')
       eq(attach.hunks(bufnr)[1].added.count, 1, 'the stale hunk was not recomputed')
       eq(signs.sign_count(bufnr), 0)
 
@@ -472,6 +482,77 @@ return {
       eq(attach.toggle(bufnr), nil)
       eq(attach.state(bufnr), nil)
       api.nvim_buf_delete(bufnr, { force = true })
+    end),
+  },
+  {
+    name = 'a repository that goes away lets the buffer go, and a later attach rebuilds it',
+    fn = guarded(function()
+      local dir = helpers.git_repo('attach-abandoned')
+      helpers.write(dir .. '/base.txt', 'changed\n')
+      local bufnr = open(dir .. '/base.txt')
+      attach_now(bufnr)
+      ok(signs.sign_count(bufnr) > 0, 'the signs are up to begin with')
+
+      -- What `rm -rf .git` ends in: the repository is disposed, every buffer
+      -- holding it is deactivated (`repo:on_delete`).
+      manager.get(dir):dispose()
+      local st = attach.state(bufnr)
+      eq(st.attached, false, 'the buffer lets go of the repository')
+      eq(st.abandoned, true, 'and marks the state recoverable')
+      eq(signs.sign_count(bufnr), 0, 'the signs go with it')
+      eq(attach.count(), 0)
+
+      -- The next `BufEnter` (or an explicit attach) must pick it up again:
+      -- without the `abandoned` flag the dead state would be handed back and
+      -- the buffer would stay sign-free forever.
+      local again = attach.attach(bufnr)
+      ok(again ~= st, 'a fresh state, not the dead one')
+      helpers.wait_for(function()
+        local now = attach.state(bufnr)
+        return now ~= nil and now.attached and now.buf_text ~= nil
+      end, 'the buffer to attach again')
+      ok(signs.sign_count(bufnr) > 0, 'and the signs come back')
+    end),
+  },
+  {
+    name = 'a buffer that found no repository is picked up by an explicit refresh',
+    fn = guarded(function()
+      -- Deliberately *not* `scratch_dir`: that lives inside this plugin's own
+      -- repository, so detection would legitimately find it.
+      local dir = vim.fn.tempname()
+      vim.fn.mkdir(dir, 'p')
+      vim.fn.writefile({ 'base' }, dir .. '/base.txt')
+      local bufnr = open(dir .. '/base.txt')
+      local st = attach_now(bufnr)
+      eq(st.enabled, false, 'there is no repository yet')
+      eq(attach.count(), 0)
+
+      -- `git init` behind the plugin's back.  `BufEnter` keeps the cached
+      -- "no repository" answer on purpose (one detection per file outside a
+      -- working copy is enough), so the way back is the explicit refresh.
+      helpers.sh({ 'git', 'init', '-q', '-b', 'main' }, dir)
+      helpers.sh({ 'git', 'add', 'base.txt' }, dir)
+      helpers.sh({
+        'git',
+        '-c',
+        'user.name=t',
+        '-c',
+        'user.email=t@t',
+        'commit',
+        '-qm',
+        'init',
+      }, dir)
+      api.nvim_buf_set_lines(bufnr, 0, -1, false, { 'changed' })
+      attach.refresh(bufnr)
+      helpers.wait_for(function()
+        return signs.sign_count(bufnr) > 0
+      end, 'the revived buffer to draw its signs')
+
+      local now = attach.state(bufnr)
+      ok(now ~= st, 'a fresh state, not the cached no-repository answer')
+      eq(now.attached, true)
+      eq(attach.count(), 1, 'and the repository is held again')
+      vim.fn.delete(dir, 'rf')
     end),
   },
 }
