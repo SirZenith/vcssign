@@ -348,14 +348,14 @@ commit = { message_input = 'input' },
 | 11 | `blame.lua`（`current_line_blame` + `blame_line` 浮窗）+ `revdiff.lua`（`diffthis [rev]`）；各约 6 | ✅ **已完成**（`22ad24a`，229 → **244** 用例，全绿；`blame_spec` 8 + `revdiff_spec` 7） |
 | 12 | 文档与帮助回写（`00`–`06`、`doc/vcssign.txt`、`doc_spec`） | ✅ **已完成**（`a4b3551`，用例数仍 **244**，全绿；`doc_spec` 6/6 单跑） |
 | 13 | 独立审查（`code-reviewer` 审 M6 起点..HEAD）+ 修复 | ✅ **已完成**（审查 runId `del_mvas87sc_mefj`，完整报告 `temp/m6_review.md`；修复 `c2990be`，244 → **250** 用例，全绿） |
-| 14 | 终验（全量两遍幂等、stderr 合同、`git diff --check` 干净、逐 SHA 复跑） | ⬜ 待做（入口见 §6.2 / §6.4） |
+| 14 | 终验（全量两遍幂等、stderr 合同、`git diff --check` 干净、逐 SHA 复跑） | ✅ **已完成**（`a3e41fd`；M6 收尾，**250/250** 两遍全绿、stderr 只剩 retry 那一行、逐 SHA 复跑见 §6.1） |
 
 > **减法步骤（Step 1）的判据是「删干净 + 全绿 + 文档/`doc_spec` 同步」**，不追求功能完整；
 > 功能在 Step 3+ 逐步补回。`Repo` 本体到 Step 2 才动，Step 1 只删调用者，以保 `repo_spec` 可跑。
 
 ---
 
-### §6.1 已落地（截至 `c2990be`）
+### §6.1 已落地（截至 `a3e41fd`）
 
 | SHA | 提交 | 验证（`make test`） |
 |---|---|---|
@@ -635,27 +635,65 @@ window is not run twice` 只在全量里红（`repo_spec` 单跑 20/20）。原�
 `doc/vcssign.txt` 的三处措辞（`watch` / `retry_*` / `debug`）一并更正；用例数不变，`doc_spec` 6/6。
 **`impl/init/06` 与 `07` 的 §6 / §6.1 保持逐 SHA 记录，不当作「设计要求」读。**
 
-**Step 13 已完成**（`c2990be`）：`code-reviewer` 只读审 `080379c^..HEAD`，结论「没有 blocker」，抓到
-F1（attach 死状态）与 F2（`hq` / `hQ` 假绿灯）两个必须修的，加上 F3 / F4 / F7 / F8 / F10 五条就地修的
-小项；F5（`patch_of` 用过期的 `base_text`）与 F9（11 份 spec 复制 `guarded`）进 §10 backlog。其余 12 条
-「确认没问题」（exec 恰好一次且不留 timer、D19 在 `on_lines` / `on_reload` 成立、`M.ready` 的 waiter
-三条销毁路径都会 settle、能力门齐全、D45 落实、stdin 契约与 svn 退 0 冲突解析、双层 sign 不重叠、
-D46 无新依赖、`cli.report_no_repo` 静默 `attach cancelled`）留在报告 `temp/m6_review.md` 里
-（`temp/` 不入库，结论已摘进本节与 §6.3）。
+**Step 14（终验 = M6 收尾，`a3e41fd`）**：五条判据全部落地。
 
-**Step 14 要做的事（终验）**：
+1. **全量两遍幂等**：`sh scripts/run_tests.sh` 连跑两次，两次都 **`250 tests, 0 failed`**（退出码 0）。逐 spec 用例数
+   （合 250）：`actions` 32 / `attach` 22 / `autocmds` 13 / `config` 7 / `diff` 10 / `doc` 7 / `exec` 13 / `hunk` 20 /
+   `nav` 13 / `preview` 7 / `repo` 20 / `revdiff` 7 / `signs` 14 / `vcs_git` 14 / `vcs_registry` 8 / `vcs_svn` 13 /
+   `worddiff` 9 / `blame` 8 / `cli` 13。
+2. **stderr 合同**：stdout / stderr 分开重定向后，两次运行的 stderr **都只剩 `repo_spec` retry 用例那一行**
+   （`exec_timeout_ms = 1` 的超时告警，无结尾换行，`wc -l` = 0）—— 就是 `05-testing-infra.md` 记的「0 或 1 行」。
+   为此先清掉了 4 行测试自造噪音（`hs` 用例没包 `collect` 的通知、裸 `:write` 的文件名回显两行、
+   `signcolumn = false` 的一次性告警、以及「删掉目录后留下文件已不存在的修改中缓冲区」导致的 `E211`），
+   四个都改成了断言或显式清理（`a3e41fd`）。
+3. **`git diff --check 080379c^..HEAD` 干净**；`make format-check` 零输出；`make lint` → `0 warnings / 0 errors in 46 files`。
+4. **逐 SHA 复跑**（`temp/step14_rerun.sh`，每个提交 `git checkout <sha> && sh scripts/run_tests.sh`）：
 
-1. **全量两遍**：`make test` 连跑两次，两次都全绿且用例数一致。顺序敏感的红要先查是不是**探针计数**
-   被别的仓库带跑（Step 10 的 `5942dd9` 就是这类）；`repo_spec` 对负载敏感，**不要**与 `svnadmin` /
-   `svn patch` 并发跑。
-2. **stderr 合同**：进程 stderr 只应有 retry 用例那条 1ms 超时告警（在 0 / 1 行之间浮动）——断言
-   「0 或 1 行」，或把它捕获掉（`05-testing-infra.md` 记着这条）。
-3. **`git diff --check` 干净**（M6 全程）与 `make format-check` 零输出 / `make lint` 0 警告。
-4. **逐 SHA 复跑**：按 §6.2 的 `git stash push -u -- <文件>` 流程，对 `080379c` 起到 HEAD 的每个提交
-   `git checkout <sha> && make test`（`git log --oneline 080379c..HEAD` 就是清单；docs 提交可以只在
-   全量里带过）。
-5. 把 §7 的 10 条验收逐条对照一遍（能自动断言的都已在 spec 里），然后收尾：本文档与 `06-todo.md` /
-   `00-overview.md` 同步到「M6 完成」的最终状态。
+| 提交 | 用例 | 结果 | 主题 |
+|---|---|---|---|
+| `080379c` | 125 | ✅ | refactor!: 退役侧边栏，改为行级 sign 骨架（M6 起点） |
+| `3ecbdd7` | 128 | **❌ 3 failed** | refactor(repo)!: Repo 降级为元数据会话，exec 支持 |
+| `5e8e485` | 158 | **❌ 2 failed** | feat(diff): hunk 模型与内置 diff 引擎（M6 Step |
+| `7acc713` | 150 | **❌ 2 failed** | feat(vcs)!: 适配器改为基线文本 / 跟踪判定 / blame / |
+| `f1d1735` | 150 | ✅ | fix(repo): 根目录加非递归 watch，工作副本被删时才可能发现 |
+| `e6c4f1b` | 151 | ✅ | fix(vcs): svn 追踪判定改用 svn info，并更正 07 的 |
+| `6eaef2b` | 178 | ✅ | feat(attach): sign 渲染与逐缓冲 attach 管线（M6 |
+| `2193802` | 184 | ✅ | feat(attach): 自动触发、生命周期与逐缓冲开关（M6 Step  |
+| `4bfe0ce` | 189 | ✅ | feat(signs): git 暂存态双层 sign（M6 Step 7） |
+| `f54b6af` | 202 | ✅ | feat(nav): ]c / [c hunk 导航与默认键位（M6 Ste |
+| `a5e544a` | 213 | ✅ | feat(actions): hunk 级暂存 / 撤销 / 丢弃与整缓冲区 |
+| `5942dd9` | 213 | ✅ | fix(test): 把 repo_spec 的探针计数限定到被测仓库 |
+| `1317890` | 229 | ✅ | feat(signs): 词级 diff 与 hunk 预览（M6 Step |
+| `22ad24a` | 244 | **❌ 1 failed** | feat(blame): 当前行 blame 与 diffthis / re |
+| `c2990be` | 250 | ✅ | fix(attach): 死状态复活、signcolumn 告警与默认键位的 |
+| `a3e41fd` | 250 | ✅ | fix(test): 终验的 stderr 合同——把插件输出与 E211  |
+
+   docs-only 提交（`9b4eb90`、`7f9a88d`、`0183ed4`、`11dcdf0`、`042a3b5`、`24555fb`、`2885291`、`1583f69`、`a4b3551`、`ea3b09e`、`8020245`）不单独复跑：它们的 Lua / test 树与父提交相同（`impl/` 与 `doc/vcssign.txt` 只被
+   `doc_spec` 读，而 HEAD 的全量两遍已覆盖），代码状态由父提交的复跑覆盖。
+   表里的 3 个红是**已知的 Step 2 回归**（`3ecbdd7` / `5e8e485` / `7acc713`）：`repo_spec: a vanished .git
+   disposes the repository and frees every handle`（`test/repo_spec.lua:356`）与 `repo_spec: deleting an svn
+   working copy cancels its watcher too`（`test/repo_spec.lua:378`）—— libuv 不报告被监听目录自身消失，
+   `f1d1735` 用根目录非递归 watch 修掉，Step 2 的交接说明（§6.1）当时就记过。`22ad24a` 那 1 个失败**不可
+   重复**：该 SHA 单独连跑两次都是 `244 tests, 0 failed`（与 §6.3 记的 `repo_spec` 元数据用例对负载敏感同源）。
+5. **§7 验收对照**（10 条 → 断言它们的 spec）：
+
+| §7 | 断言处 |
+|---|---|
+| 1 sign 逐行对位 | `signs_spec`（14）+ `attach_spec`（22，含屏幕单元格 `helpers.screen_line_at`） |
+| 2 svn 工作副本同样显示 | `attach_spec` + `actions_spec` + `vcs_svn_spec`（13） |
+| 3 编辑 / `:e!` / 外部改动 / `git add` 之后 200ms 内更新 | `autocmds_spec`（13，含 `BufWritePost` 与 reload）+ `attach_spec` |
+| 4 git 暂存态第二层（不重叠） | `attach_spec`（4 例）+ `signs_spec`（高亮与 `place` 的 staged 层） |
+| 5 `]c` / `[c` / `3]c` / 环绕 | `nav_spec`（13） |
+| 6 `hs` / `hr` / `hS` / `hu`（含未保存拒绝、svn 能力门） | `actions_spec`（32）+ `cli_spec`（13） |
+| 7 `word_diff` / `deleted_preview` / `:Vcssign preview_hunk` | `worddiff_spec`（9）+ `preview_spec`（7） |
+| 8 `hb` / `current_line_blame` | `blame_spec`（8） |
+| 9 `:Vcssign diffthis [rev]` | `revdiff_spec`（7） |
+| 10 headless 断言 + `make` 全绿 + 文档一致 | 全量 250 + `doc_spec`（7）+ 本节 |
+
+**M6 的交接**：里程碑到此结束，`main` 上 HEAD 的代码状态与本节记录一致。下一步的选择留给用户，
+候选都在 §10 backlog（`diff.use_external`、`max_diff_lines`、rev 补全、内存内 patch、`:Vcssign setqflist`、
+svn hunk 级丢弃的替代、`patch_of` 的基线新鲜度、`guarded` 收进 helpers）。**M6 期间刻意没做的三件事**
+（D46：不引入 async 框架 / 不新增依赖 / 不动 D19）在 `09-*` 之后的任何一步都仍然有效。
 
 
 
