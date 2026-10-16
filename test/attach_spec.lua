@@ -238,121 +238,40 @@ return {
     end),
   },
   {
-    name = "config.signcolumn is applied to the buffer's window",
+    name = 'signcolumn = false draws no sign text and leaves the window option alone',
     fn = guarded(function()
-      config.setup({ signcolumn = 'yes:2' })
-      local dir = helpers.git_repo('attach-signcolumn')
+      -- `signcolumn` is gitsigns': a boolean deciding whether `sign_text` is
+      -- written at all.  vcssign never touches the window's `'signcolumn'` --
+      -- writing that option from a `WinEnter` handler fires `OptionSet` even for
+      -- the value the window already has, which is how `:Noice history` broke
+      -- (07 §6.3).
+      config.setup({ signcolumn = false })
+      local dir = helpers.git_repo('attach-signcolumn-off')
       helpers.write(dir .. '/base.txt', 'base\nnew\n')
       local bufnr, win = open(dir .. '/base.txt')
+      vim.wo[win].signcolumn = 'yes:2'
 
       attach_now(bufnr)
-      eq(vim.wo[win].signcolumn, 'yes:2')
-
-      -- `false` means "do not touch the option".
-      config.setup({ signcolumn = false })
-      local dir2 = helpers.git_repo('attach-signcolumn-off')
-      helpers.write(dir2 .. '/base.txt', 'base\nnew\n')
-      local bufnr2, win2 = open(dir2 .. '/base.txt')
-      vim.wo[win2].signcolumn = 'no'
-
-      -- `false` 且全局是 `no` / `number` 时插件会提示一次（07 §8）——这条告警本身
-      -- 也在断言里，否则它只是 stderr 上的噪音（终验的 stderr 合同）。
-      local seen = helpers.capture_notify(function()
-        attach_now(bufnr2)
-      end)
-      eq(vim.wo[win2].signcolumn, 'no', '`false` leaves the window option alone')
-      eq(seen[1] and seen[1].message, 'vcssign: `signcolumn` is no, so no signs will show')
-      eq(seen[1] and seen[1].level, vim.log.levels.WARN, 'and it told the user why')
+      eq(vim.wo[win].signcolumn, 'yes:2', "the window option stays the user's")
+      eq(attach.hunks(bufnr)[1].added.count, 1, 'the hunks are still computed')
+      eq(signs.sign_count(bufnr), 0, 'and nothing is drawn: no text, no highlight')
     end),
   },
   {
-    name = 'the sign column is only written to a window that needs it',
+    name = 'numhl still gets its extmark when the sign text is off',
     fn = guarded(function()
-      -- Writing `'signcolumn'` fires `OptionSet` *even for the value the window
-      -- already has* (measured: the same value written three times fires it
-      -- three times).  Re-applying it on every `WinEnter` therefore fires other
-      -- plugins' handlers while they are in the middle of opening a window --
-      -- which is how vcssign broke `:Noice history` (07 §6.3).  Unchanged windows
-      -- are left alone now.
-      config.setup({ signcolumn = 'yes:2' })
-      local dir = helpers.git_repo('attach-signcolumn-quiet')
-      helpers.write(dir .. '/base.txt', 'base\nnew\n')
-      local bufnr = open(dir .. '/base.txt')
-
-      attach_now(bufnr)
-      local win = api.nvim_get_current_win()
-      eq(vim.wo[win].signcolumn, 'yes:2')
-
-      local fired = 0
-      local function counting()
-        return api.nvim_create_autocmd('OptionSet', {
-          pattern = 'signcolumn',
-          callback = function()
-            fired = fired + 1
-          end,
-        })
-      end
-
-      -- The re-apply is driven directly: `autocmds` is not set up in this spec,
-      -- and the `WinEnter` subscription has its own case there.  What a window
-      -- does *not* need is a write, because the write fires `OptionSet`.
-      local id = counting()
-      attach.reapply_signcolumn(bufnr)
-      api.nvim_del_autocmd(id)
-      eq(fired, 0, 'a window that already has the value is not written to')
-
-      -- A window that is missing the value still gets it, once.
-      vim.wo[win].signcolumn = 'no'
-      id = counting()
-      attach.reapply_signcolumn(bufnr)
-      api.nvim_del_autocmd(id)
-      eq(vim.wo[win].signcolumn, 'yes:2', 'the window takes the value back')
-      eq(fired, 1, 'and that write happened once')
-    end),
-  },
-  {
-    name = 'a window that is gone by the time it is written to is skipped',
-    fn = guarded(function()
-      -- `win_findbuf` can name a window that is being torn down; touching it
-      -- would raise straight into the caller.  Spying on `win_findbuf` is the
-      -- only way to hand the function a window id that never was.
-      config.setup({ signcolumn = 'yes:2' })
-      local dir = helpers.git_repo('attach-signcolumn-stale')
+      config.setup({ signcolumn = false, signs = { numhl = true } })
+      local dir = helpers.git_repo('attach-signcolumn-numhl')
       helpers.write(dir .. '/base.txt', 'base\nnew\n')
       local bufnr = open(dir .. '/base.txt')
       attach_now(bufnr)
 
-      local real = vim.fn.win_findbuf
-      vim.fn.win_findbuf = function()
-        return { 9999 }
-      end
-      local passed, werr = pcall(attach.reapply_signcolumn, bufnr)
-      vim.fn.win_findbuf = real
-
-      ok(passed, 'a window id that is gone does not raise: ' .. tostring(werr))
-    end),
-  },
-  {
-    name = "another plugin's failing OptionSet handler cannot break the re-apply",
-    fn = guarded(function()
-      config.setup({ signcolumn = 'yes:2' })
-      local dir = helpers.git_repo('attach-signcolumn-hostile')
-      helpers.write(dir .. '/base.txt', 'base\nnew\n')
-      local bufnr = open(dir .. '/base.txt')
-      attach_now(bufnr)
-      vim.wo[api.nvim_get_current_win()].signcolumn = 'no'
-
-      local id = api.nvim_create_autocmd('OptionSet', {
-        pattern = 'signcolumn',
-        callback = function()
-          error('boom from another plugin')
-        end,
+      local marks = api.nvim_buf_get_extmarks(bufnr, signs.namespace(false), 0, -1, {
+        details = true,
       })
-      local passed, werr = pcall(attach.reapply_signcolumn, bufnr)
-      api.nvim_del_autocmd(id)
-
-      ok(passed, 'the re-apply survives: ' .. tostring(werr))
-      eq(vim.wo[api.nvim_get_current_win()].signcolumn, 'yes:2', 'and the column is applied')
+      eq(#marks, 1, 'one extmark')
+      eq(marks[1][4].sign_text, nil, 'with no sign text')
+      eq(marks[1][4].number_hl_group, 'VcssignAddNr', 'but the number highlight')
     end),
   },
   {

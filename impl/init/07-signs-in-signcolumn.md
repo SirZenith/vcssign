@@ -59,7 +59,7 @@ git 与 svn 同时交付（基线 git=index、svn=BASE），能力差异用 `Vcs
   文档：`nvim/runtime/doc/lua.txt:4985-5058`。
 - `vim.system` 支持 `stdin = string|string[]|true`（`lua.txt:4960-4963`），`text=true` 把 stdout/stderr 的 `\r\n` 归一为 `\n`。
 - extmark 的 `sign_text/sign_hl_group/number_hl_group/line_hl_group/priority` 可作 sign 列（0.10+；本机 0.12.4）；
-  sign 列必须开着，附着缓冲区要设 `vim.wo[bufnr].signcolumn`。
+  sign 列必须开着才看得见；插件**不**代设窗口选项（M6 之后对齐 gitsigns，见 §6.1 末条）。
 - 测试基建已够用：`helpers.{git_repo,svn_repo,svn_checkout,git_worktree,wait_for,uv_count,screen_line,capture_notify,with_repo,scratch_dir,entry,cleanup}` + `scripts/run_tests.sh` + `make test/lint/format-check`。
 
 ---
@@ -157,7 +157,7 @@ signs = {
   max_file_length = 40000,
 },
 signs_staged = { add = {...}, change = {...}, delete = {...}, ... },  -- git：已暂存那一层
-signcolumn = 'auto',            -- false = 不改动 'signcolumn'
+signcolumn = true,              -- gitsigns 语义：是否画 sign 文本；插件从不改窗口的 'signcolumn'
 rev = 'index',                  -- 'index' | 'HEAD' | 任意 rev/rev 表达式
 attach_to_untracked = true,
 update_debounce_ms = 200,       -- 注意：M2 旧默认 300（为 `git add` 事件风暴选的），需改并同步 doc/config_spec
@@ -530,6 +530,13 @@ window is not run twice` 只在全量里红（`repo_spec` 单跑 20/20）。原�
 不写）、失效窗口跳过、写用 `pcall`；`attach_spec` 三条新用例（值未变 0 次 OptionSet、值变了正好
 1 次、失效窗口 id 不抛错）。细节见 §6.3 末条。
 
+**M6 之后的对齐（用户要求）：`signcolumn` 交给 gitsigns 的语义**。上面那条 3 里的 `set_signcolumn` /
+`reapply_signcolumn` / `WinEnter` 订阅与那次告警**全部删掉**了。现在 `config.signcolumn` 是**布尔**
+（默认 `true`），与 gitsigns 的 `signcolumn` 一致，只决定 `signs.place` 是否写 `sign_text`；为 `false`
+时如果 `signs.numhl` / `signs.linehl` 也都关着，`place` 连 extmark 都不放（gitsigns `signs.lua` 同款
+短路）。插件**从不写窗口的 `'signcolumn'`** —— 它是窗口选项，由用户自己设（Neovim 默认 `'auto'` 有
+sign 就开列）。这样 noice 那类崩溃不是靠「先比后写」绕开，而是整条写窗口选项的路径都不存在了。
+
 ### §6.2 怎么推进后续步骤（工作契约）
 
 1. **路标就是 §6 的表**。一步一提交，标题沿用仓库既有风格：`feat(scope): 中文摘要（M6 Step N）` /
@@ -734,7 +741,7 @@ svn hunk 级丢弃的替代、`patch_of` 的基线新鲜度、`guarded` 收进 h
   为基准比对；差异记入本文，必要时为个别场景保留外部 diff 回退位（D39 的 `use_external`）。
 - **svn 无法做 hunk 级 revert** → 落 tempname 临时补丁（`svn patch --strip 0`）；若反向补丁也不可用，
   该能力报「不支持」并只提供整文件 `svn revert`（能力门 + 明确提示）。
-- **`signcolumn=no` 的缓冲区看不见 sign** → attach 时设 `vim.wo[bufnr].signcolumn`；全局 `signcolumn` 为 `no`/`number` 时给一次性告警。
+- **`signcolumn=no` 的缓冲区看不见 sign** → 用户自己把 `'signcolumn'` 设成会显示的值（Neovim 默认 `auto` 就行）；插件不代设窗口选项（M6 之后对齐 gitsigns，见 §6.1 末条）。
 - **大文件/超长行** → `max_file_length` 拒绝 + 计数上限；word-diff 只在 hunk 行内做（§5.6 有耗时数据）。
 - **CRLF / autocrlf** → `exec` 的 `text=true` 归一 + `ignore_cr_at_eol`；专门用例（Step 3）覆盖。
 - **`Repo` 收敛会挪动 spec 计数与 stderr 合同** → Step 2 内同步改 `05-testing-infra.md` 与 `02-repo-runtime.md` 的计数/stderr 声明。

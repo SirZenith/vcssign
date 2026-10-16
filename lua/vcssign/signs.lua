@@ -225,12 +225,20 @@ function M.place(bufnr, hunks, opts)
   -- The staged layer only exists for git, whose `signs_staged` has no
   -- numhl/linehl/culhl of its own; those always come from the worktree set.
   local cs = (staged and config.get().signs_staged or config.get().signs) or {}
+  local show_text = config.get().signcolumn
   local numhl = config.get().signs.numhl
   local linehl = config.get().signs.linehl
   local priority = opts.priority or M.PRIORITY
   local line_count = api.nvim_buf_line_count(bufnr)
 
   api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
+
+  if not show_text and not numhl and not linehl then
+    -- `signcolumn = false` and no highlight wanted: nothing this layer drew
+    -- could be seen, so the buffer is left without extmarks (gitsigns skips the
+    -- placement the same way).
+    return 0
+  end
 
   local placed = 0
   ---@param lnum integer  1-based
@@ -245,7 +253,9 @@ function M.place(bufnr, hunks, opts)
     -- `delete`/`topdelete` anchor on a line that is *not* removed, so no `Ln`.
     local want_ln = linehl and ty ~= 'delete' and ty ~= 'topdelete'
     api.nvim_buf_set_extmark(bufnr, ns, lnum - 1, 0, {
-      sign_text = (sign and sign.text) or '?',
+      -- `sign_text = nil` is "no sign", which is what `signcolumn = false`
+      -- asks for; the extmark itself is only there for numhl/linehl then.
+      sign_text = show_text and ((sign and sign.text) or '?') or nil,
       sign_hl_group = M.hl_name(ty, staged),
       priority = priority,
       number_hl_group = numhl and M.hl_name(ty, staged, 'Nr') or nil,
