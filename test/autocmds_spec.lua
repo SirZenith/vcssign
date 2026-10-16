@@ -195,11 +195,14 @@ return {
       -- this is the Windows fallback path the event exists for.
       helpers.write(dir .. '/external.txt', 'from outside\n')
 
+      -- `Repo` does not cache status any more (D38), so the refresh pass itself
+      -- is what the event can be asserted against.
+      local passes = helpers.count_refreshes(repo)
       -- A headless editor never receives terminal focus, so the event is
       -- delivered the way the editor would deliver it.
       vim.api.nvim_exec_autocmds('FocusGained', {})
       helpers.wait_for(function()
-        return helpers.entry(helpers.status_entries(repo), 'external.txt') ~= nil
+        return passes() > 0
       end, 'the external change to be picked up')
     end),
   },
@@ -291,14 +294,14 @@ return {
       local repo = manager.get_by_path(dir)
       eq(helpers.uv_count('fs_event') > 0, true, 'there is a watcher to leak')
 
-      -- Let the first status run land first: an `exec` command that is still
-      -- in flight keeps its own timeout timer until the child answers, and
-      -- VimLeavePre (which does not kill running commands) cannot change that.
-      -- What is asserted here is the settled case: nothing the plugin *owns*
-      -- survives the teardown.
+      -- Let the first liveness probe land first: an `exec` command that is
+      -- still in flight keeps its own timeout timer until the child answers,
+      -- and VimLeavePre (which does not kill running commands) cannot change
+      -- that.  What is asserted here is the settled case: nothing the plugin
+      -- *owns* survives the teardown.
       helpers.wait_for(function()
         return repo.has_loaded and not repo.is_updating
-      end, 'the first status run to finish')
+      end, 'the first liveness probe to finish')
 
       vim.api.nvim_exec_autocmds('VimLeavePre', {})
       eq(manager.count(), 0, 'no repositories')

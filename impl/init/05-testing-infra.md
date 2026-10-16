@@ -351,6 +351,27 @@ Summary of conflicts:
 - stderr 合同不变：仍是**恰好 1 行**（同 Step 2 那条 `rev-parse --show-toplevel`），Step 3 没有新增告警。
 - `diff.lua` / `hunk.lua` 是**纯函数**（D39：不起外部 `git diff`），`hunk_spec` / `diff_spec` 只依赖 `vim.text.diff`。
 
+### M6 Step 4 之后的实况（150 用例）
+
+适配器换成交互原语后，`status` 解析链的用例整批退役，新接口的用例补上：
+
+| spec | 用例数 | 变化 |
+|------|--------|------|
+| config / doc | 7 + 6 | 不变（`linematch` 只改取值，`doc_spec` 不查取值） |
+| exec / repo | 13 + 20 | 不变 |
+| `vcs_git_spec` | **16 → 14** | 删 9 条 status/`parse_status`（矩阵、绝对路径、rename `orig_path`、冲突、linked worktree 干净、四条列映射、子目录不重复根）；加 7 条：show 读 index 基线而非工作区、`is_tracked` 对未跟踪返回 false、`blame` 逐行归属 + `-L` 窗口、`apply_patch --cached` 正/反、`apply_patch` 工作区正/反、补丁缺尾 `\n` → `corrupt patch`、`revert` 回到 index |
+| `vcs_svn_spec` | **18 → 12** | 删 13 条 status/`parse_line`/`parse_status`（固定列映射、真实 tree conflict、switched 列 5、CRLF/孤立 CR、状态矩阵…）；加 7 条：caps 新键、show 的 `BASE`/显式 rev/未纳管报错、`is_tracked`、`blame --xml` 解析（本地已改行 rev=`-`）、`apply_patch` 正向/反向/**只认 strip 0 方言**、拒绝 hunk 报错且删临时补丁文件、`revert` 回 BASE |
+| `vcs_registry_spec` | 8 | 不变（stub 用空 caps，不碰键名） |
+| `autocmds_spec` | 10 | 不变（`FocusGained` 用例改数 refresh pass） |
+| `actions_spec` | 19 | 用例数不变；删掉 `entry_of`/`entry`/`wait_for_domain`，改用真实 VCS 查询 + `helpers.count_refreshes`；两条改名为「diff shows a unified diff of the worktree change」「diff uses the configured baseline: the index by default」，一条改为「a path is acted on in the deepest repository containing it」 |
+| `cli_spec` | 11 | 不变（只有「the public API refreshes without a prior attach」换观测点） |
+
+- `test/helpers.lua`：删掉 `status_set` / `entry` / `status_entries`（唯一消费者是上表里改掉的那些用例），
+  新增 `count_refreshes(repo)`——把实例的 `_do_refresh` 换成一个计数器，因为 D38 之后「刷新落地了」
+  只剩机制可观测（`refresh_now` 是 `self:_do_refresh()` 动态查找，实例字段能遮蔽方法）。
+- 工程门：`make test` = **`150 tests, 0 failed`**（158 − 8）；`make format-check` 干净；`make lint` = `Total: 0 warnings / 0 errors in 31 files`。
+- stderr 合同不变：仍是**恰好 1 行**（同 Step 2/3 那条 `rev-parse --show-toplevel`），本步没有新增告警。
+
 ## 7. M5 实测与踩坑
 
 - stylua 100 列 vs 120 列：100 列重排 18 文件 383 行，120 列 10 文件 156 行；两者都过 `--check`，选 100 只为与 gitsigns 一致。

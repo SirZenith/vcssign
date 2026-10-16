@@ -1,55 +1,41 @@
 --- M1 acceptance: svn adapter.
---- Covers impl/init/01-vcs-adapter.md §7.2 (status matrix, fixed-column parsing,
---- `wc-root` detection) and §7.5 (capability errors).
+--- Covers impl/init/01-vcs-adapter.md §7.2 (`wc-root` detection) and §7.5
+--- (capability errors), plus the M6 sign primitives of
+--- impl/init/07-signs-in-signcolumn.md §3.1 / §5.3.
 local helpers = require('helpers')
 
 local svn = require('vcssign.vcs.svn')
 
 local repo = helpers.fixture('svn-repo')
-local conflict_repo = helpers.fixture('svn-conflict-a')
-local switch_repo = helpers.fixture('svn-switch')
 
---- `temp/svn-repo` as prepared by scripts/make_test_repos.sh:
---- MM (content+property), ! missing, ? unversioned (incl. a space + UTF-8 name),
---- D, A, R replaced, plus an added directory with a file in it.
-local EXPECTED_REPO = {
-  'base.txt:-/modified',
-  'missing.txt:-/missing',
-  'new.txt:-/untracked',
-  'old.txt:-/deleted',
-  'prop.txt:-/added',
-  'repl.txt:-/replaced',
-  'sp ace 名.txt:-/untracked',
-  'sub2:-/added',
-  'sub2/q.txt:-/added',
-}
+--- Scratch working copies, built once per name (a fresh server each time).
+--- The shared `temp/svn-server` fixture is only read.
+---@type table<string, string>
+local scratch_repos = {}
 
---- Build an svn status line: seven status columns, one space, then the path.
----@param columns string  exactly 7 characters
----@param path string
----@return string
-local function status_line(columns, path)
-  assert(#columns == 7, 'a status line has exactly 7 status columns')
-  return columns .. ' ' .. path
+---@param name string
+---@return string dir  working copy
+local function repo_named(name)
+  if not scratch_repos[name] then
+    scratch_repos[name] = helpers.svn_repo(name)
+  end
+  return scratch_repos[name]
 end
 
----@return vcssign.StatusEntry[]
-local function fixture_status()
-  local err, entries = helpers.wait(function(cb)
-    svn.status(repo, cb)
-  end)
-  eq(err, nil)
-  return entries
-end
+--- A zero-context patch in the dialect `svn patch --strip 0` accepts: bare
+--- filenames, no `a/`+`b/` prefixes (see the strip case below).
+local BARE_PATCH = '--- base.txt\n+++ base.txt\n@@ -1 +1 @@\n-base\n+patched\n'
 
 return {
   {
-    name = 'capabilities advertise no staging area',
+    name = 'capabilities advertise no staging area, but the sign primitives',
     fn = function()
       eq(svn.capabilities.stage, false)
-      eq(svn.capabilities.unstage, false)
+      eq(svn.capabilities.staged_signs, false)
+      eq(svn.capabilities.revert_hunk, true)
+      eq(svn.capabilities.blame, true)
+      eq(svn.capabilities.show_rev, true)
       eq(svn.capabilities.commit, true)
-      eq(svn.capabilities.diff, true)
     end,
   },
   {
@@ -79,132 +65,6 @@ return {
     end,
   },
   {
-    name = 'status reports the whole fixture matrix',
-    fn = function()
-      eq(helpers.status_set(fixture_status()), EXPECTED_REPO)
-    end,
-  },
-  {
-    name = 'status anchors paths at the working copy root, not at the cwd',
-    fn = function()
-      -- Regression guard: `svn status <target>` prints paths relative to the
-      -- *cwd*, which is what the vcs-helper.nvim reference got wrong.
-      for _, entry in ipairs(fixture_status()) do
-        eq(entry.path, vim.fs.joinpath(repo, entry.rel_path), 'path of ' .. entry.rel_path)
-        eq(
-          entry.rel_path:match('^temp[/\\]'),
-          nil,
-          'rel_path must not be anchored at the process cwd: ' .. entry.rel_path
-        )
-      end
-    end,
-  },
-  {
-    name = 'status converts Windows backslashes to "/"',
-    fn = function()
-      local entry = helpers.entry(fixture_status(), 'sub2/q.txt')
-      ok(entry, 'sub2/q.txt must be reported')
-      eq(entry.path, repo .. '/sub2/q.txt')
-    end,
-  },
-  {
-    name = 'parse_line maps the first column to the status vocabulary',
-    fn = function()
-      local cases = {
-        { status_line('M      ', 'a.txt'), 'modified' },
-        { status_line('A      ', 'a.txt'), 'added' },
-        { status_line('D      ', 'a.txt'), 'deleted' },
-        { status_line('R      ', 'a.txt'), 'replaced' },
-        { status_line('C      ', 'a.txt'), 'conflicted' },
-        { status_line('?      ', 'a.txt'), 'untracked' },
-        { status_line('!      ', 'a.txt'), 'missing' },
-        { status_line('I      ', 'a.txt'), 'ignored' },
-        { status_line('X      ', 'a.txt'), 'external' },
-        { status_line('~      ', 'a.txt'), 'obstructed' },
-        { status_line('    S  ', 'a.txt'), 'switched' },
-      }
-      for _, case in ipairs(cases) do
-        local entry = svn.parse_line(case[1], repo)
-        ok(entry, 'expected an entry for: ' .. case[1])
-        eq(entry.status.worktree, case[2], 'status of: ' .. case[1])
-        eq(entry.status.index, nil, 'svn never reports an index status')
-      end
-    end,
-  },
-  {
-    name = 'parse_line treats a property-only change as modified',
-    fn = function()
-      local entry = svn.parse_line(status_line(' M     ', 'prop.txt'), repo)
-      ok(entry, 'property modifications must be reported')
-      eq(entry.status.worktree, 'modified')
-    end,
-  },
-  {
-    name = 'parse_line treats a tree conflict as conflicted',
-    fn = function()
-      local entry = svn.parse_line(status_line('      C', 'tree.txt'), repo)
-      ok(entry, 'tree conflict victims must be reported')
-      eq(entry.status.worktree, 'conflicted')
-    end,
-  },
-  {
-    name = 'parse_line skips conflict explanations and status summaries',
-    fn = function()
-      eq(svn.parse_line('      >   local edit, incoming delete upon update', repo), nil)
-      eq(svn.parse_line('Status against revision:  5', repo), nil)
-      eq(svn.parse_line('', repo), nil)
-    end,
-  },
-  {
-    name = 'parse_line keeps spaces and non-ASCII bytes in the path',
-    fn = function()
-      local entry = svn.parse_line(status_line('?      ', 'sp ace 名.txt'), repo)
-      ok(entry, 'the path must be read from column 9, not split on whitespace')
-      eq(entry.rel_path, 'sp ace 名.txt')
-      eq(entry.path, repo .. '/sp ace 名.txt')
-    end,
-  },
-  {
-    name = 'parse_status tolerates CRLF line endings',
-    fn = function()
-      local entries = svn.parse_status(status_line('M      ', 'crlf.txt') .. '\r\n', repo)
-      eq(#entries, 1)
-      eq(entries[1].rel_path, 'crlf.txt')
-    end,
-  },
-  {
-    name = 'parse_status strips a lone trailing CR',
-    fn = function()
-      local entries = svn.parse_status(status_line('M      ', 'cr.txt') .. '\r', repo)
-      eq(#entries, 1)
-      eq(entries[1].rel_path, 'cr.txt')
-    end,
-  },
-  {
-    name = 'status reports a real tree conflict from column 7',
-    fn = function()
-      -- `temp/svn-conflict-a` was built by editing a file locally that another
-      -- working copy deleted upstream.  svn then prints column 7 = C, an
-      -- explanation line starting with '>' and a "Summary of conflicts:"
-      -- trailer; only the file itself may survive parsing.
-      local err, entries = helpers.wait(function(cb)
-        svn.status(conflict_repo, cb)
-      end)
-      eq(err, nil)
-      eq(helpers.status_set(entries), { 'f.txt:-/conflicted' })
-    end,
-  },
-  {
-    name = 'status reports a switched subdirectory from column 5',
-    fn = function()
-      local err, entries = helpers.wait(function(cb)
-        svn.status(switch_repo, cb)
-      end)
-      eq(err, nil)
-      eq(helpers.status_set(entries), { 'sub:-/switched' })
-    end,
-  },
-  {
     name = 'unsupported capabilities fail with an error, not a crash',
     fn = function()
       local stage_err = helpers.wait(function(cb)
@@ -229,6 +89,165 @@ return {
       eq(err, nil)
       ok(text:match('Index: base%.txt'), 'expected a unified diff header')
       ok(text:match('%+mod'), 'expected the worktree content in the diff')
+    end,
+  },
+  {
+    name = "show reads BASE for 'index', an explicit revision, and refuses the unmanaged",
+    fn = function()
+      local dir = repo_named('vcs-svn-show')
+      local err, base = helpers.wait(function(cb)
+        svn.show(dir, 'index', 'base.txt', cb)
+      end)
+      eq(err, nil)
+      eq(base, 'base\n', "'index' is svn's BASE (D42)")
+
+      -- Move BASE forward, so 'index' and revision 1 can be told apart.
+      helpers.write(dir .. '/base.txt', 'second\n')
+      helpers.sh({ 'svn', 'commit', '-q', '-m', 'second', dir .. '/base.txt' })
+      local berr, head = helpers.wait(function(cb)
+        svn.show(dir, 'index', 'base.txt', cb)
+      end)
+      eq(berr, nil)
+      eq(head, 'second\n', 'BASE follows the last commit')
+      local rerr, first = helpers.wait(function(cb)
+        svn.show(dir, '1', 'base.txt', cb)
+      end)
+      eq(rerr, nil)
+      eq(first, 'base\n', 'an explicit revision reads that revision')
+
+      helpers.write(dir .. '/u.txt', 'u\n')
+      local uerr, utext = helpers.wait(function(cb)
+        svn.show(dir, 'index', 'u.txt', cb)
+      end)
+      eq(utext, nil, 'there is no BASE blob to read')
+      ok(uerr and uerr:find('is not under version control', 1, true), uerr)
+    end,
+  },
+  {
+    name = 'is_tracked reads the first status column',
+    fn = function()
+      local dir = repo_named('vcs-svn-tracked')
+      helpers.write(dir .. '/u.txt', 'u\n')
+
+      local terr, tracked = helpers.wait(function(cb)
+        svn.is_tracked(dir, 'base.txt', cb)
+      end)
+      eq(terr, nil)
+      eq(tracked, true)
+
+      local ferr, untracked = helpers.wait(function(cb)
+        svn.is_tracked(dir, 'u.txt', cb)
+      end)
+      eq(ferr, nil)
+      eq(untracked, false)
+    end,
+  },
+  {
+    name = 'blame reads revisions and authors out of the xml, marking local edits',
+    fn = function()
+      local dir = repo_named('vcs-svn-blame')
+      helpers.write(dir .. '/base.txt', 'a\nb\nc\n')
+      helpers.sh({ 'svn', 'commit', '-q', '-m', 'three', dir .. '/base.txt' })
+      local author = (helpers.sh({ 'svn', 'info', '--show-item', 'last-changed-author', dir })):gsub(
+        '%s+$',
+        ''
+      )
+      -- Line 2 is only in the working copy: `svn blame` reports no commit for it.
+      helpers.write(dir .. '/base.txt', 'a\nB\nc\n')
+
+      local err, result = helpers.wait(function(cb)
+        svn.blame(dir, 'base.txt', {}, cb)
+      end)
+      eq(err, nil)
+      eq(result.max_lineno, 3)
+      eq(result.lines[1].rev, '2', 'the revision the line came from')
+      eq(result.lines[1].author, author)
+      eq(result.lines[2].rev, '-', 'a locally modified line has no revision')
+      eq(result.lines[2].author, '-')
+      eq(result.lines[3].rev, '2')
+      ok(author ~= '' and author ~= '-', 'the working copy has a real author')
+    end,
+  },
+  {
+    name = 'apply_patch applies, reverses, and only accepts the strip-0 dialect',
+    fn = function()
+      local dir = repo_named('vcs-svn-patch')
+
+      local err = helpers.wait(function(cb)
+        svn.apply_patch(dir, BARE_PATCH, {}, cb)
+      end)
+      eq(err, nil)
+      eq(vim.fn.readfile(dir .. '/base.txt'), { 'patched' })
+      ok(
+        helpers.sh({ 'svn', 'diff', dir .. '/base.txt' }):find('+patched', 1, true),
+        'svn agrees the working copy changed'
+      )
+
+      -- Dropping a hunk is the reverse patch (D41).
+      local rerr = helpers.wait(function(cb)
+        svn.apply_patch(dir, BARE_PATCH, { reverse = true }, cb)
+      end)
+      eq(rerr, nil)
+      eq(vim.fn.readfile(dir .. '/base.txt'), { 'base' })
+      eq(helpers.sh({ 'svn', 'diff', dir .. '/base.txt' }), '', 'and is clean again')
+
+      -- Measured boundary (§5.3 said otherwise): at `--strip 0` a `git diff`
+      -- header keeps its `a/`+`b/` components and the hunk is rejected.  The
+      -- patch a caller writes therefore must not carry them.
+      local git_style = '--- a/base.txt\n+++ b/base.txt\n@@ -1 +1 @@\n-base\n+patched\n'
+      local gerr = helpers.wait(function(cb)
+        svn.apply_patch(dir, git_style, {}, cb)
+      end)
+      ok(gerr and gerr:find('did not apply cleanly', 1, true), gerr)
+      eq(vim.fn.readfile(dir .. '/base.txt'), { 'base' }, 'nothing was applied')
+    end,
+  },
+  {
+    name = 'apply_patch reports a rejected hunk and removes its temporary file',
+    fn = function()
+      local dir = repo_named('vcs-svn-patch-conflict')
+      helpers.write(dir .. '/base.txt', 'something else\n')
+
+      -- svn exits 0 on a conflict, so the adapter has to read stdout; and the
+      -- patch file it wrote (svn 1.14.5 refuses stdin) is its to remove.
+      local tempnames = {}
+      local real_tempname = vim.fn.tempname
+      vim.fn.tempname = function()
+        local path = real_tempname()
+        tempnames[#tempnames + 1] = path
+        return path
+      end
+      local callok, callerr = pcall(function()
+        local err = helpers.wait(function(cb)
+          svn.apply_patch(dir, BARE_PATCH, {}, cb)
+        end)
+        ok(err ~= nil, 'a hunk that cannot apply must be reported, not silently dropped')
+        ok(err:find('did not apply cleanly', 1, true), err)
+      end)
+      vim.fn.tempname = real_tempname
+      if not callok then
+        error(callerr, 0)
+      end
+
+      ok(#tempnames >= 1, 'the patch must have gone through a temporary file')
+      for _, path in ipairs(tempnames) do
+        eq(vim.uv.fs_stat(path), nil, 'the temporary patch file must be removed: ' .. path)
+      end
+      eq(vim.fn.readfile(dir .. '/base.txt'), { 'something else' }, 'the file is untouched')
+    end,
+  },
+  {
+    name = 'revert throws the working copy back to BASE',
+    fn = function()
+      local dir = repo_named('vcs-svn-revert')
+      helpers.write(dir .. '/base.txt', 'changed\n')
+
+      local err = helpers.wait(function(cb)
+        svn.revert(dir, 'base.txt', cb)
+      end)
+      eq(err, nil)
+      eq(vim.fn.readfile(dir .. '/base.txt'), { 'base' })
+      eq(helpers.sh({ 'svn', 'diff', dir .. '/base.txt' }), '', 'and svn agrees it is clean')
     end,
   },
 }

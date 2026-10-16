@@ -1,18 +1,20 @@
 --- svn adapter.
 ---
 --- See impl/init/01-vcs-adapter.md §5.  Everything here was verified against a
---- real working copy (svn 1.14.5 on Windows), which is why the parser is
---- column-based rather than whitespace-based:
----   * paths are printed verbatim (spaces, UTF-8 bytes, no quoting), so only a
----     fixed column offset can separate status from path;
----   * Windows working copies print backslashes and CRLF line endings;
----   * tree conflict victims get a *continuation* line right after them, and a
----     worktree with any conflict prints a `Summary of conflicts:` trailer.
----     Neither starts with a recognised status column, which is exactly why the
----     parser drops anything it does not understand instead of pattern-matching
----     for what it expects.
+--- real working copy (svn 1.14.5 on Windows).  The three things that shape the
+--- code:
+---   * paths are printed verbatim (spaces, UTF-8 bytes, no quoting), so the
+---     adapter always hands svn an absolute path argument and never re-parses
+---     one out of svn's output;
+---   * `blame --xml` splits attributes and elements across lines, so the parser
+---     is structure-tolerant rather than line-oriented (measured: 43.9ms for
+---     200 lines vs 141.1ms for the plain-text form);
+---   * `svn patch` cannot read a patch from stdin — 1.14.5 answers with
+---     `svn.EXE: invalid option:` — so a temporary file carries it, and because
+---     a *rejected* hunk still exits 0 (§5.3) the outcome has to be read out of
+---     stdout instead of the exit code.
 ---
---- svn has no index, so every entry carries only a worktree status.
+--- svn has no index: the staging baseline (`rev == 'index'`) is BASE (D42).
 local exec = require('vcssign.exec')
 local base = require('vcssign.vcs.base')
 
@@ -22,9 +24,11 @@ M.name = 'svn'
 M.keyfile = '.svn'
 M.capabilities = {
   stage = false, -- svn has no staging area
-  unstage = false,
+  staged_signs = false,
+  revert_hunk = true, -- a reverse `svn patch` drops a hunk (measured)
+  blame = true,
+  show_rev = true,
   commit = true,
-  diff = true,
 }
 
 local SVN = { 'svn', '--non-interactive' }
@@ -87,104 +91,108 @@ function M.get_root_async(path, cb)
   )
 end
 
--- ▏ status ───────────────────────────────────────────────────────────────────
+-- ▏ the sign primitives ─────────────────────────────────────────────────────
 
---- First status column: the item's own state.
----
---- `X` (an externals definition) and `I` (ignored) never appear today: the
---- status command passes `--ignore-externals` and nothing asks svn for
---- ignored files.  Both are kept so changing the command line later needs
---- no parser change.
-local ITEM_MAP = {
-  A = 'added',
-  C = 'conflicted',
-  D = 'deleted',
-  I = 'ignored',
-  M = 'modified',
-  R = 'replaced',
-  X = 'external',
-  ['?'] = 'untracked',
-  ['!'] = 'missing',
-  ['~'] = 'obstructed',
-}
-
---- Parse one `svn status` line.  Layout (from `svn help status`):
----   1 item · 2 properties · 3 locked · 4 history · 5 switched/external ·
----   6 repo lock · 7 tree conflict, then one space, then the path at column 9.
----
---- Anything that does not look like a status line yields nil: the explanation
---- lines following a tree conflict, the `Summary of conflicts:` trailer, and the
---- `Status against revision:` line (when svn decides to print it).
----@param line string
+--- Absolute argument for every file-scoped svn command.  svn prints paths
+--- verbatim and Windows working copies use backslashes, so keeping the path
+--- absolute and handing it straight to argv avoids a re-parse that could not
+--- round-trip a name containing spaces.
 ---@param root string
----@return vcssign.StatusEntry?
-function M.parse_line(line, root)
-  -- Tree conflict explanations and any other continuation output.
-  if line:match('^%s*>') or #line < 9 then
-    return nil
-  end
-  local cols = line:sub(1, 7)
-  local item, prop, switched, tree = cols:sub(1, 1), cols:sub(2, 2), cols:sub(5, 5), cols:sub(7, 7)
-
-  ---@type vcssign.StatusType?
-  local status
-  if tree == 'C' or prop == 'C' then
-    -- A conflict is the most severe thing that can be said about a file.
-    status = 'conflicted'
-  elseif item == ' ' then
-    status = prop == 'M' and 'modified' or nil
-  else
-    status = ITEM_MAP[item]
-  end
-  if not status and switched == 'S' then
-    status = 'switched'
-  end
-  if not status and switched == 'X' then
-    -- Column 5 `X`: a versioned file created by an externals definition.
-    status = 'external'
-  end
-  if not status then
-    return nil
-  end
-
-  local rel = line:sub(9)
-  if rel == '' then
-    return nil
-  end
-  -- Windows working copies report `sub\deeper\file.txt`; on POSIX a backslash is
-  -- an ordinary file name character, so the conversion must stay platform-local.
-  if exec.is_windows then
-    rel = rel:gsub('\\', '/')
-  end
-  return base.make_entry(root, rel, { worktree = status })
+---@param rel string
+---@return string
+local function abspath(root, rel)
+  return base.abspath(root, rel)
 end
 
----@param stdout string
+--- Baseline text of `rel` as of `rev`, with `'index'` mapped to `BASE` — the
+--- git-index equivalent (D42).
+---
+--- Measured (§5.3): an unversioned target exits non-zero with
+--- `svn: warning: W200005: '<abs>' is not under version control` followed by
+--- `svn: E200009: Could not cat all targets because some targets don't exist`;
+--- `-r 99` on a repository with fewer revisions answers
+--- `svn: E160006: No such revision 99`; `-r PREV` on revision 0 answers
+--- `svn: E195012: Unable to find repository location ... in revision 0`.
 ---@param root string
----@return vcssign.StatusEntry[]
-function M.parse_status(stdout, root)
-  local entries = {}
-  for _, line in ipairs(exec.split_lines(stdout)) do
-    local entry = M.parse_line(line, root)
-    if entry then
-      entries[#entries + 1] = entry
-    end
-  end
-  return entries
-end
-
----@param root string
----@param cb fun(err: string?, entries: vcssign.StatusEntry[]?)
-function M.status(root, cb)
-  exec.run(build({ 'status', '--ignore-externals' }), { cwd = root }, function(err, res)
+---@param rev string  a revision, or 'index' for BASE
+---@param rel string
+---@param cb fun(err: string?, text: string?)
+function M.show(root, rev, rel, cb)
+  local r = rev == 'index' and 'BASE' or rev
+  exec.run(build({ 'cat', '-r', r, abspath(root, rel) }), { cwd = root }, function(err, res)
     if err then
       return cb(err)
     end
-    local ok, entries = pcall(M.parse_status, res.stdout, root)
-    if not ok then
-      return cb('svn: failed to parse status output: ' .. tostring(entries))
+    cb(nil, res.stdout)
+  end)
+end
+
+--- Whether `rel` is under version control, decided by the first status column:
+--- `?` is "not under version control".
+---
+--- Known wart (§5.3): a path that does not exist at all produces *no* status
+--- output (exit 0), so it reads as tracked.  Callers that care must stat the
+--- file first; the baseline path in Step 9 does, because it has to read the
+--- file anyway.
+---@param root string
+---@param rel string
+---@param cb fun(err: string?, tracked: boolean?)
+function M.is_tracked(root, rel, cb)
+  exec.run(build({ 'status', '--', abspath(root, rel) }), { cwd = root }, function(err, res)
+    if err then
+      return cb(err)
     end
-    cb(nil, entries)
+    local first = exec.split_lines(res.stdout)[1]
+    cb(nil, not (first and first:sub(1, 1) == '?'))
+  end)
+end
+
+--- Parse `svn blame --xml` into `{[lineno] = vcssign.BlameLine}`.
+---
+--- svn spreads one `<entry>` over several lines and omits the whole `<commit>`
+--- element for a line that only exists in the working copy, which is how a
+--- locally modified line is recognised (`rev = '-'`, `author = '-'`).
+---@param stdout string
+---@return vcssign.BlameResult
+function M.parse_blame(stdout)
+  local lines = {}
+  local max_lineno = 0
+  for attrs, body in stdout:gmatch('<entry%s*([^>]*)>(.-)</entry>') do
+    local lineno = tonumber(attrs:match('line%-number="(%d+)"'))
+    if lineno then
+      local revision = body:match('<commit%s+revision="(%d+)"')
+      lines[lineno] = {
+        rev = revision or '-',
+        author = (revision and body:match('<author>(.-)</author>')) or '-',
+      }
+      if lineno > max_lineno then
+        max_lineno = lineno
+      end
+    end
+  end
+  return { lines = lines, max_lineno = max_lineno }
+end
+
+--- Per-line attribution, whole file.
+---
+--- svn has no `-L` line window (`opts` is accepted for interface symmetry and
+--- ignored); the cache that keeps this from costing a process per sign lives in
+--- `blame.lua`.  Blaming the working copy — rather than `-r BASE` — is
+--- deliberate: the uncommitted lines are exactly the ones a user needs marked.
+---@param root string
+---@param rel string
+---@param _opts vcssign.BlameOpts
+---@param cb fun(err: string?, result: vcssign.BlameResult?)
+function M.blame(root, rel, _opts, cb)
+  exec.run(build({ 'blame', '--xml', abspath(root, rel) }), { cwd = root }, function(err, res)
+    if err then
+      return cb(err)
+    end
+    local ok, result = pcall(M.parse_blame, res.stdout)
+    if not ok then
+      return cb('svn: failed to parse blame output: ' .. tostring(result))
+    end
+    cb(nil, result)
   end)
 end
 
@@ -192,6 +200,71 @@ end
 
 M.stage = base.unsupported('stage')
 M.unstage = base.unsupported('unstage')
+
+--- Apply a unified diff to the working copy.
+---
+--- The patch goes through a temporary file because svn 1.14.5 refuses stdin.
+--- `--strip N` drops N leading path components, which is measured to matter:
+--- a bare unidiff (`--- f`) and svn's own format (with `Index:`) apply at
+--- `--strip 0`, while a git-style patch (`--- a/f` / `+++ b/f`) is *rejected*
+--- there and only applies at `--strip 1` (`--strip 2` fails outright with
+--- `svn: E195018: Cannot strip 2 components from 'f.txt'`).  We keep
+--- `--strip 0` (the svn-native dialect) and require callers to emit bare
+--- headers; `hunk.compose` must not add the `a/`+`b/` prefixes.
+---
+--- A conflict is NOT an error to svn (§5.3): it exits 0 and writes
+--- `<file>.svnpatch.rej` while printing `C         <path>` and
+--- `>         rejected hunk ...`.  The rejection is therefore read from stdout
+--- and turned into an error here.  The `.rej` file is left behind so the user
+--- can inspect the conflict; only our own temporary patch file is removed.
+---@param root string
+---@param patch string
+---@param opts vcssign.PatchOpts
+---@param cb fun(err: string?)
+function M.apply_patch(root, patch, opts, cb)
+  opts = opts or {}
+  local tmp = vim.fn.tempname()
+  local fd = vim.uv.fs_open(tmp, 'w', 384)
+  if not fd then
+    return cb('svn: cannot create a temporary patch file')
+  end
+  vim.uv.fs_write(fd, patch, 0)
+  vim.uv.fs_close(fd)
+
+  local args = { 'patch', '--strip', '0' }
+  if opts.reverse then
+    args[#args + 1] = '--reverse-diff'
+  end
+  args[#args + 1] = tmp
+
+  exec.run(build(args), { cwd = root }, function(err, res)
+    pcall(vim.uv.fs_unlink, tmp)
+    if err then
+      return cb(err)
+    end
+    local rejected
+    for _, line in ipairs(exec.split_lines(res.stdout)) do
+      if line:match('^C%s') or line:find('rejected hunk', 1, true) then
+        rejected = rejected or line
+      end
+    end
+    if rejected then
+      return cb('svn: patch did not apply cleanly: ' .. rejected:gsub('%s+', ' '):gsub('^%s+', ''))
+    end
+    cb(nil)
+  end)
+end
+
+--- Throw the working copy back to BASE: `svn revert <abs>` (measured to drop
+--- the modification outright, including a deleted file).
+---@param root string
+---@param rel string
+---@param cb fun(err: string?)
+function M.revert(root, rel, cb)
+  exec.run(build({ 'revert', abspath(root, rel) }), { cwd = root }, function(err)
+    cb(err)
+  end)
+end
 
 ---@param root string
 ---@param files string[]

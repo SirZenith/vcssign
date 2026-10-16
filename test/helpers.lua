@@ -68,67 +68,25 @@ function M.eq(actual, expected, msg)
   end
 end
 
---- Canonical, comparable view of a status list: `rel_path:index/worktree`
---- strings, sorted by `rel_path` so expectations read in path order.
----@param entries vcssign.StatusEntry[]
----@return string[]
-function M.status_set(entries)
-  local rows = {}
-  for _, entry in ipairs(entries) do
-    rows[#rows + 1] = {
-      rel_path = entry.rel_path,
-      text = string.format(
-        '%s:%s/%s',
-        entry.rel_path,
-        entry.status.index or '-',
-        entry.status.worktree or '-'
-      ),
-    }
-  end
-  table.sort(rows, function(a, b)
-    return a.rel_path < b.rel_path
-  end)
-  local out = {}
-  for i, row in ipairs(rows) do
-    out[i] = row.text
-  end
-  return out
-end
-
----@param entries vcssign.StatusEntry[]
----@param rel_path string
----@return vcssign.StatusEntry?
-function M.entry(entries, rel_path)
-  for _, entry in ipairs(entries) do
-    if entry.rel_path == rel_path then
-      return entry
-    end
-  end
-  return nil
-end
-
---- A live snapshot of what the VCS says about a repository.
+--- Watch how many refresh passes a repository starts.
 ---
---- `Repo` stopped caching status in M6 (D38), so a spec that needs to *see* the
---- status asks the adapter itself.  `vim.wait` pumps the event loop while the
---- async command runs, which keeps every call site synchronous.
+--- `Repo` stopped caching status in M6 (D38), so "the refresh landed" can no
+--- longer be read off the repository: it has to be asserted through the
+--- mechanism.  The instance method shadows the metatable one and every caller
+--- (`refresh_now`, the debounce, the finish re-run) looks it up dynamically on
+--- `self`.
 ---@param repo vcssign.Repo
----@return vcssign.StatusEntry[]
-function M.status_entries(repo)
-  local done, result = false, nil
-  local ok = pcall(repo.system.status, repo.root, function(err, entries)
-    result = (not err and entries) or {}
-    done = true
-  end)
-  if not ok then
-    return {}
+---@return fun(): integer passes how many `_do_refresh` calls happened so far
+function M.count_refreshes(repo)
+  local passes = 0
+  local real = repo._do_refresh
+  repo._do_refresh = function(self, ...)
+    passes = passes + 1
+    return real(self, ...)
   end
-  if not done then
-    vim.wait(5000, function()
-      return done
-    end, 10)
+  return function()
+    return passes
   end
-  return result or {}
 end
 
 -- ▏ scratch fixtures ──────────────────────────────────────────────────────────
