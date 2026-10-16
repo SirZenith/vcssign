@@ -151,6 +151,50 @@ return {
     end),
   },
   {
+    name = 'setup() attaches the buffer a window shows, a late load included',
+    fn = guarded(function()
+      reset()
+      local dir = repo_dir('autocmd-late-setup')
+      -- The file (and with it `BufReadPost` / `BufEnter`) comes first and the
+      -- plugin is configured only afterwards — what a lazy trigger on
+      -- `BufEnter` does.  The event that would have attached the buffer has
+      -- already fired, so the sweep in `setup()` is the only thing left.
+      edit_file(dir)
+      autocmds.setup()
+      local bufnr = vim.fn.bufnr(dir .. '/base.txt')
+      helpers.wait_for(function()
+        local st = attach.state(bufnr)
+        return st ~= nil and st.attached and st.buf_text ~= nil
+      end, 'the buffer opened before setup() to be attached and rendered')
+      eq(attach.count(), 1)
+      ok(signs.sign_count(bufnr) > 0, 'and the modified line is signposted')
+    end),
+  },
+  {
+    name = 'setup() leaves a loaded buffer that no window shows to its own BufEnter',
+    fn = guarded(function()
+      reset()
+      local dir = repo_dir('autocmd-late-setup-hidden')
+      -- The sweep follows the windows, not the loaded buffer list: a buffer
+      -- nobody shows is attached by its `BufEnter` when it becomes visible,
+      -- and a plugin configured late must not mount repositories for the
+      -- whole session's leftovers.
+      edit_file(dir)
+      vim.cmd('enew')
+      autocmds.setup()
+      vim.wait(200, function()
+        return false
+      end)
+      eq(attach.count(), 0, 'nothing is attached while the file is hidden')
+      vim.cmd('buffer ' .. vim.fn.bufnr(dir .. '/base.txt'))
+      helpers.wait_for(function()
+        local st = attach.state(vim.fn.bufnr(dir .. '/base.txt'))
+        return st ~= nil and st.attached
+      end, 'showing the buffer again to attach it through `BufEnter`')
+      eq(attach.count(), 1)
+    end),
+  },
+  {
     name = 'reloading the buffer re-attaches it and redraws',
     fn = guarded(function()
       reset()
