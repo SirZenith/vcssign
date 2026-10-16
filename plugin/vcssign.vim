@@ -18,6 +18,6 @@ end, {
   complete = function(arglead, cmdline)
     return require('vcssign.cli').complete(arglead, cmdline)
   end,
-  desc = 'vcssign: file status signs (refresh, diff, commit, debug)',
+  desc = 'vcssign: file status signs (toggle, refresh, diff, commit, debug)',
 })
 EOF

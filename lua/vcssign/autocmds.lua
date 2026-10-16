@@ -1,11 +1,16 @@
---- Editor-wide lifecycle: when to attach, when to refresh, when to clean up.
+--- Editor-wide lifecycle: which autocmd attaches a buffer to the signs
+--- pipeline, which one refreshes it, which one cleans up.
 ---
---- Everything here is a *trigger*; the policy (one cache per root, reference
---- counting, debouncing a storm of refreshes into one command) lives in
---- `repo_manager` and `repo`.  Keeping the split means this file has no state
---- of its own beyond "which buffer is already attached", which is what makes it
---- safe to `setup()` twice.
---- See impl/init/04-commands-actions.md §4.
+--- Step 6 moved the per-buffer policy (baseline, debounce, on/off switch) into
+--- `attach.lua`; what is left here is only the *trigger* layer.  That split is
+--- what keeps `setup()` safe to run twice: this module owns nothing but the
+--- augroup and the two manager hooks, so there is no state to leak.
+--- The plan (04 §4) put a 100ms debounce around attach calls to absorb
+--- `BufEnter` storms; `attach.attach` answers a second call for a buffer it
+--- already holds with a table lookup instead, which does not delay the very
+--- first attach after opening a file — the one the user is waiting for.
+--- See impl/init/07-signs-in-signcolumn.md §6.
+local attach = require('vcssign.attach')
 local config = require('vcssign.config')
 local log = require('vcssign.log')
 local manager = require('vcssign.repo_manager')
@@ -13,18 +18,6 @@ local manager = require('vcssign.repo_manager')
 local M = {}
 
 M.group_name = 'vcssign'
-
---- Buffer reference tokens, so re-entering a buffer does not attach it twice.
----
---- The plan (04 §4) puts a 100ms debounce around attach calls inside
---- `repo_manager` to absorb `BufEnter` storms.  It is done here instead, by
---- remembering what each buffer is already attached to: the storm is one
---- *buffer* being entered repeatedly, and a debounce would also delay the very
---- first attach after opening a file — which is the one the user is waiting
---- for.  `repo_manager.attach` is idempotent for `(ref, path)` anyway, so this
---- only saves work, it does not change behaviour.
----@type table<integer, string>  bufnr -> path it was attached for
-M._attached = {}
 
 ---@type fun()[]
 M._unsubscribe = {}
@@ -42,41 +35,19 @@ local function fire_config_hook(name, repo)
   end
 end
 
---- Attach the repository containing `bufnr`'s file, if it has one.
+--- Attach `bufnr` to the signs pipeline.
+---
+--- Every eligibility check (unnamed, non-file buftype, missing on disk, too
+--- long) lives in `attach.attach`, which is idempotent for a buffer it already
+--- holds and re-attaches after `on_detach` (`:e!`, `:saveas`).
 ---@param bufnr integer
 function M.attach_buffer(bufnr)
-  if not vim.api.nvim_buf_is_valid(bufnr) or not vim.api.nvim_buf_is_loaded(bufnr) then
-    return
-  end
-  -- Only ordinary, on-disk files belong to a repository.  A `nofile` buffer
-  -- (a picker, a terminal, a quickfix list) either has no name or has one
-  -- that means nothing on disk.
-  if vim.bo[bufnr].buftype ~= '' then
-    return
-  end
-  local name = vim.api.nvim_buf_get_name(bufnr)
-  if name == '' then
-    return
-  end
-  if M._attached[bufnr] == name then
-    return
-  end
-  M._attached[bufnr] = name
-  manager.attach('buf:' .. bufnr, name, function(err, repo)
-    if not repo then
-      -- Not an error: most files are not in a repository.
-      M._attached[bufnr] = nil
-      log.debug('buffer %d: %s', bufnr, err or 'no repository')
-      return
-    end
-    log.debug('buffer %d attached to %s', bufnr, repo.root)
-  end)
+  attach.attach(bufnr)
 end
 
 ---@param bufnr integer
 function M.detach_buffer(bufnr)
-  M._attached[bufnr] = nil
-  manager.detach('buf:' .. bufnr)
+  attach.detach(bufnr)
 end
 
 ---@param cwd string
@@ -87,6 +58,11 @@ function M.attach_cwd(cwd)
   manager.attach('cwd', cwd, function(err, repo)
     log.debug('cwd %s: %s', cwd, repo and repo.root or (err or 'no repository'))
   end)
+end
+
+--- Re-read the baseline of every attached buffer (the `FocusGained` sweep).
+function M.refresh_buffers()
+  attach.refresh_all()
 end
 
 --- Create the `vcssign` augroup and wire the lifecycle events.
@@ -110,9 +86,19 @@ function M.setup()
   end)
 
   -- A buffer that goes away releases its reference; otherwise the last
-  -- reference to a repository could outlive its only buffer.
+  -- reference to a repository could outlive its only buffer.  (`on_detach` in
+  -- `attach.lua` is the other side of the same guarantee — either one alone
+  -- can miss a path, so both are wired.)
   subscribe({ 'BufDelete', 'BufWipeout' }, function(args)
     M.detach_buffer(args.buf)
+  end)
+
+  -- The worktree and the index may disagree again the moment the file lands on
+  -- disk.  `on_lines` already covers an edit, but `:w` can happen with no text
+  -- change at all (a write after an external edit), so the event gets its own
+  -- refresh.
+  subscribe('BufWritePost', function(args)
+    attach.refresh(args.buf)
   end)
 
   subscribe('DirChanged', function(args)
@@ -133,17 +119,21 @@ function M.setup()
 
   -- Focus is the reliable fallback on Windows, where a file changed by another
   -- program (`git checkout` in a terminal, an editor outside nvim) may produce
-  -- no event we can see.  Debounced inside `Repo`, so a burst of focuses costs
-  -- one status run.
+  -- no event we can see.  Both halves are needed: the repositories re-probe
+  -- (and notice that they were deleted), the buffers re-read their baseline.
+  -- `Repo` debounces its own refresh, so a burst of focuses stays cheap.
   subscribe('FocusGained', function()
+    M.refresh_buffers()
     for _, repo in ipairs(manager.all()) do
       repo:refresh()
     end
   end)
 
-  -- Nothing may outlive the session: dispose of every repository and its
-  -- watchers.  Releasing the handles is the part that must not be skipped.
+  -- Nothing may outlive the session: forget the buffers and dispose of every
+  -- repository with its watchers.  Releasing the handles is the part that must
+  -- not be skipped.
   subscribe('VimLeavePre', function()
+    attach.forget_all()
     manager.dispose_all()
   end)
 
@@ -166,7 +156,6 @@ function M.disable()
     cancel()
   end
   M._unsubscribe = {}
-  M._attached = {}
 end
 
 return M

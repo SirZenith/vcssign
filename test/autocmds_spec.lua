@@ -1,19 +1,23 @@
 --- Lifecycle autocmd specs.
 ---
 --- Two things are worth testing here and nothing else is: that a *trigger*
---- (entering a file, `:cd`, focus) actually reaches the repository layer, and
---- that nothing outlives its buffer or the session.  The policy (one cache per
---- root, one command per debounce window) is `repo_spec`'s job.
---- See impl/init/04-commands-actions.md §4, §6.
+--- (entering a file, writing it, `:cd`, focus) actually reaches the signs
+--- pipeline, and that nothing outlives its buffer or the session.  The policy
+--- (one cache per root, one command per debounce window) is `repo_spec`'s job;
+--- the pipeline itself is `attach_spec`'s.
+--- See impl/init/07-signs-in-signcolumn.md §6.
+local attach = require('vcssign.attach')
 local autocmds = require('vcssign.autocmds')
 local config = require('vcssign.config')
 local helpers = require('helpers')
 local manager = require('vcssign.repo_manager')
+local signs = require('vcssign.signs')
 
---- Repositories, autocmds, windows, cwd: everything a case can leave behind, in
---- the order that does not re-enter.
+--- Repositories, buffers, autocmds, windows, cwd: everything a case can leave
+--- behind, in the order that does not re-enter.
 local function reset()
   autocmds.disable()
+  attach.forget_all()
   manager.dispose_all()
   vim.cmd('silent! tabonly')
   if #vim.api.nvim_tabpage_list_wins(0) > 1 then
@@ -95,6 +99,7 @@ return {
       for _, event in ipairs({
         'BufReadPost',
         'BufEnter',
+        'BufWritePost',
         'BufDelete',
         'BufWipeout',
         'DirChanged',
@@ -110,29 +115,100 @@ return {
     end),
   },
   {
-    name = 'opening a file attaches its repository, once per buffer',
+    name = 'opening a file attaches it and draws its signs, once per buffer',
     fn = guarded(function()
       reset()
       autocmds.setup()
       local dir = repo_dir('autocmd-bufenter')
       edit_file(dir)
+      local bufnr = vim.fn.bufnr(dir .. '/base.txt')
       helpers.wait_for(function()
-        return attached(dir)
-      end, 'the repository to be attached')
+        local st = attach.state(bufnr)
+        return st ~= nil and st.attached and st.buf_text ~= nil
+      end, 'the buffer to be attached and rendered')
       local repo = manager.get_by_path(dir)
       local refs = manager.ref_count(repo.root)
       ok(refs >= 1, 'at least the buffer reference')
+      eq(attach.count(), 1)
+      ok(signs.sign_count(bufnr) > 0, 'and the modified line is signposted')
 
-      -- Re-entering the same buffer must not add another reference: `BufEnter`
-      -- fires on every window switch, and the references are what keep the
-      -- repository (and its watcher) alive.
+      -- Re-entering the same buffer must not attach it twice: `BufEnter` fires
+      -- on every window switch, and both the reference and the pipeline state
+      -- are keyed by buffer.
       vim.cmd('enew')
-      vim.cmd('buffer ' .. vim.fn.bufnr(dir .. '/base.txt'))
+      vim.cmd('buffer ' .. bufnr)
       vim.wait(100, function()
         return false
       end)
       eq(manager.ref_count(repo.root), refs)
       eq(manager.count(), 1, 'and no second repository appeared')
+      eq(attach.count(), 1, 'and no second pipeline state either')
+    end),
+  },
+  {
+    name = 'reloading the buffer re-attaches it and redraws',
+    fn = guarded(function()
+      reset()
+      autocmds.setup()
+      local dir = repo_dir('autocmd-reload')
+      edit_file(dir)
+      local bufnr = vim.fn.bufnr(dir .. '/base.txt')
+      helpers.wait_for(function()
+        local st = attach.state(bufnr)
+        return st ~= nil and st.attached and st.buf_text ~= nil
+      end, 'the buffer to be attached')
+
+      -- Changed on disk behind the editor's back, then `:e!`: the buffer is
+      -- unloaded (which fires the attach pipeline's `on_detach`) and read
+      -- again (BufReadPost).  Both halves have to come back, or the signs
+      -- would silently stay behind on the old state.
+      helpers.write(dir .. '/base.txt', 'changed\nextra\n')
+      vim.cmd('edit!')
+      helpers.wait_for(function()
+        local hunks = attach.hunks(bufnr)
+        return attach.state(bufnr) ~= nil and #hunks == 1 and hunks[1].added.count == 2
+      end, 'the reloaded buffer to be re-attached and re-drawn')
+      eq(attach.count(), 1, 'exactly one state, not a leaked one')
+      ok(signs.sign_count(bufnr) > 0)
+      eq(manager.ref_count(dir), 1, 'and the reference is still held exactly once')
+    end),
+  },
+  {
+    name = 'BufWritePost re-reads the baseline right away',
+    fn = guarded(function()
+      reset()
+      autocmds.setup()
+      local dir = repo_dir('autocmd-bufwrite')
+      edit_file(dir)
+      local bufnr = vim.fn.bufnr(dir .. '/base.txt')
+      helpers.wait_for(function()
+        local st = attach.state(bufnr)
+        return st ~= nil and st.attached and st.buf_text ~= nil
+      end, 'the buffer to be attached')
+
+      -- The index catches up with the worktree outside the editor: now the
+      -- *baseline* moved, and a write is the trigger that re-reads it.
+      helpers.sh({ 'git', '-C', dir, 'add', 'base.txt' })
+      local calls = {}
+      local real = attach.refresh
+      attach.refresh = function(b, cb)
+        calls[#calls + 1] = b
+        return real(b, cb)
+      end
+      local ok, err = pcall(function()
+        -- A headless editor writes no files in these cases, so the event is
+        -- delivered the way the editor would deliver it.
+        vim.api.nvim_exec_autocmds('BufWritePost', { buffer = bufnr })
+        helpers.wait_for(function()
+          return #attach.hunks(bufnr) == 0
+        end, 'the write to re-read the baseline')
+      end)
+      attach.refresh = real
+      if not ok then
+        error(err, 0)
+      end
+      eq(calls, { bufnr }, 'the write reached the buffer refresh')
+      eq(signs.sign_count(bufnr), 0, 'and the sign went away with the hunk')
     end),
   },
   {
@@ -143,16 +219,18 @@ return {
       local file = vim.fn.tempname() .. '.txt'
       vim.fn.mkdir(vim.fs.dirname(file), 'p')
       vim.fn.writefile({ 'hello' }, file)
-      local bufnr = vim.fn.bufnr(file)
       local seen = collect(function()
         vim.cmd('edit ' .. vim.fn.fnameescape(file))
+        local bufnr = vim.api.nvim_get_current_buf()
         -- Detection is asynchronous (two VCS probes here), so wait for it to
         -- come up empty rather than for a wall-clock guess.
         helpers.wait_for(function()
-          return autocmds._attached[bufnr] == nil
+          local st = attach.state(bufnr)
+          return st ~= nil and st.enabled == false
         end, 'the detection to come up empty')
       end)
       eq(manager.count(), 0)
+      eq(attach.count(), 0, 'no sign pipeline either')
       -- And nothing was said about it either: most files are not in a
       -- repository, and a notification per file would be unusable.
       eq(#seen, 0, 'no message about a file that is simply not in a repository')
@@ -177,6 +255,7 @@ return {
       helpers.wait_for(function()
         return not attached(dir)
       end, 'the repository to be released with its last buffer')
+      eq(attach.state(bufnr), nil, 'the pipeline state went with it')
       eq(helpers.uv_count('fs_event'), 0, 'and its watcher closed')
     end),
   },
@@ -302,9 +381,18 @@ return {
       helpers.wait_for(function()
         return repo.has_loaded and not repo.is_updating
       end, 'the first liveness probe to finish')
+      -- The buffer's own pipeline reads the baseline in `exec` commands of its
+      -- own, so wait for it to have drawn its signs: only then is no `exec`
+      -- still in flight holding a timeout timer.
+      local bufnr = vim.fn.bufnr(dir .. '/base.txt')
+      helpers.wait_for(function()
+        local st = attach.state(bufnr)
+        return st ~= nil and st.attached and st.buf_text ~= nil
+      end, 'the buffer pipeline to settle')
 
       vim.api.nvim_exec_autocmds('VimLeavePre', {})
       eq(manager.count(), 0, 'no repositories')
+      eq(attach.count(), 0, 'no attached buffers')
       eq(helpers.uv_count('fs_event'), 0, 'no watch handles')
       eq(helpers.uv_count('timer'), 0, 'and no timers')
     end),
