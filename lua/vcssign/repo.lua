@@ -367,6 +367,13 @@ function M:_init_watch()
   -- when a buffer is signed, from the index/HEAD the VCS exposes, so no
   -- directory under the root needs a handle of its own any more.
   self:_watch(self.metadata_path, RECURSIVE_FS_EVENT)
+  -- Liveness watch.  libuv never reports the *watched directory itself*
+  -- going away (verified on Windows: renaming `.git` away fires nothing on
+  -- a handler watching `.git`, while a non-recursive handler on the root
+  -- reports the rename at once).  Without it a deleted working copy would
+  -- keep the repository -- and every handle it holds -- alive until some
+  -- unrelated refresh happened to fail.
+  self:_watch(self.root, false)
 end
 
 ---@private
