@@ -36,7 +36,7 @@
 
 - 动作层的分派规则（按 `VcsCaps` 能力分派）见
   `loop/archive/commands/2026-10-16T17-33-54-commands-and-actions.md` §2。
-- 命令族现状（`cli.lua` + `plugin/vcssign.vim`）见同文档 §3。
+- 命令族现状（`cli.lua` + `plugin/vcssign.lua`）见同文档 §3。
 - 「不做 `:Gitsigns` 那类命令族」是有意差异，理由见
   `loop/knowledge/ecosystem/prior-art.md`；本文件里的 `setqflist` / `select_hunk` 等正是当时
   列入 backlog、「等用户点名」的那些。

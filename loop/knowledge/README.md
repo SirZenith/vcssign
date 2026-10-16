@@ -30,8 +30,11 @@ API 语义、生态先例、测试方法。`knowledge/` 回答 **"为什么这�
 以这里为准：
 
 - `.luacheckrc` 的 `exclude_files` 从 `impl/**` 改为 `loop/**`（`impl/` 目录已删除）。
-- `LUA_FILES` / lint 的文件集仍来自 `git ls-files 'lua/**/*.lua' 'test/*.lua' 'scripts/*.lua'`，
+- `LUA_FILES` 的文件集在 2026-10-16 之后加了 `'plugin/*.lua'`：现在是
+  `git ls-files 'lua/**/*.lua' 'test/*.lua' 'scripts/*.lua' 'plugin/*.lua'`，
   结论不变：未 `git add` 的新文件不会被检查。
+- 命令注册从 `plugin/vcssign.vim` 改为 `plugin/vcssign.lua`（Neovim 启动时会 source
+  `plugin/**/*.lua`）；知识文档正文里出现旧文件名的以这里为准。
 - 计划文档的引用路径从早期的 `impl` 目录改为 `loop/archive/` 下按模块归档的文档
   （`00`–`07` 与路径的对照表见 [`../archive/README.md`](../archive/README.md)）。
 
