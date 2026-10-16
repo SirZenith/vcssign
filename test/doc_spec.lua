@@ -1,13 +1,11 @@
 --- Documentation spec: the help file and the code have to agree.
 ---
 --- `doc/vcssign.txt` is hand written (M5, 05 §5) — there is no generator — so
---- nothing but a test stops it from drifting away from `config.lua`,
---- `cli.lua` and `renderer.lua`.  Each case pins one of those links.
+--- nothing but a test stops it from drifting away from `config.lua` and
+--- `cli.lua`.  Each case pins one of those links.
 ---
---- No external binaries: this spec runs everywhere `renderer_spec` does.
+--- No external binaries: this spec runs everywhere.
 local config = require('vcssign.config')
-local renderer = require('vcssign.sidebar.renderer')
-local status_type = require('vcssign.status_type')
 
 local cli = require('vcssign.cli')
 local helpers = require('helpers')
@@ -113,16 +111,20 @@ M[#M + 1] = {
     table.sort(keys)
     all_documented(keys, 'configuration key')
     -- The section names, not just the top level key: a user reads the doc for
-    -- `sidebar.width`, not for `sidebar`.
+    -- `signs.add`, not for `signs`.
     all_documented({
-      'sidebar.position',
-      'sidebar.width',
-      'sidebar.group_by',
-      'sidebar.keymaps',
+      'signs.add',
+      'signs.change',
+      'signs_staged',
+      'signcolumn',
+      'rev',
+      'keymaps',
       'diff.mode',
+      'diff.algorithm',
       'commit.message_input',
+      'current_line_blame_opts.delay',
     }, 'nested option')
-    for _, key in ipairs({ 'left', 'right', 'float', 'vertical', 'input' }) do
+    for _, key in ipairs({ 'vertical', 'split', 'myers', 'index', 'input', 'auto' }) do
       ok(mentions(key), string.format('the value %q the config accepts is documented', key))
     end
   end,
@@ -140,7 +142,7 @@ M[#M + 1] = {
   name = 'every default keymap action is documented',
   fn = function()
     local actions = {}
-    for _, action in pairs(config.defaults.sidebar.keymaps) do
+    for _, action in pairs(config.defaults.keymaps) do
       if type(action) == 'string' and not vim.tbl_contains(actions, action) then
         actions[#actions + 1] = action
       end
@@ -151,27 +153,12 @@ M[#M + 1] = {
 }
 
 M[#M + 1] = {
-  name = 'every status, symbol and highlight group is documented',
-  fn = function()
-    all_documented(vim.tbl_keys(status_type.default_symbol), 'status')
-    all_documented(vim.tbl_keys(renderer.highlights), 'highlight group')
-    all_documented(vim.tbl_keys(status_type.default_sign_hl_group), 'sign highlight group')
-  end,
-}
-
-M[#M + 1] = {
   name = 'the public API surface is documented',
   fn = function()
     all_documented({
       'setup',
-      'open',
-      'close',
-      'toggle',
       'refresh',
-      'get_status',
-      'get_entries',
     }, 'API function')
-    ok(mentions('vcssign://'), 'the sidebar buffer name scheme is documented')
   end,
 }
 

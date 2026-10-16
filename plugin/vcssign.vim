@@ -1,4 +1,4 @@
-" vcssign: file status sidebar for git and svn.
+" vcssign: file status signs for git and svn.
 "
 " Thin on purpose (impl/init/04-commands-actions.md §1): the command is
 " registered here, and the Lua module tree is only loaded when it is first
@@ -18,6 +18,6 @@ end, {
   complete = function(arglead, cmdline)
     return require('vcssign.cli').complete(arglead, cmdline)
   end,
-  desc = 'vcssign: file status sidebar (toggle, open, close, refresh, stage, unstage, diff, commit, debug)',
+  desc = 'vcssign: file status signs (refresh, diff, commit, debug)',
 })
 EOF

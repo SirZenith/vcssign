@@ -1,4 +1,4 @@
---- Action specs: stage / unstage / commit / diff / open / refresh.
+--- Action specs: stage / unstage / commit / diff / refresh.
 ---
 --- These are the cases where the plugin does something *irreversible* to a
 --- repository, so every claim is checked against the VCS itself (`git diff
@@ -11,12 +11,9 @@ local autocmds = require('vcssign.autocmds')
 local config = require('vcssign.config')
 local helpers = require('helpers')
 local manager = require('vcssign.repo_manager')
-local renderer = require('vcssign.sidebar.renderer')
-local sidebar = require('vcssign.sidebar')
 
 --- Back to a clean editor between cases.
 local function reset()
-  sidebar.forget_all()
   manager.dispose_all()
   autocmds.disable()
   vim.cmd('silent! tabonly')
@@ -155,14 +152,6 @@ local function modified_repo(name)
   return repo, dir
 end
 
---- The window showing `bufnr`, or nil.
----@param bufnr integer
----@return integer?
-local function win_of(bufnr)
-  local win = vim.fn.bufwinid(bufnr)
-  return win == -1 and nil or win
-end
-
 --- Does `text` contain a line that is exactly `line`?
 ---
 --- Lua patterns have no multiline flag, so `^foo$` matches only at the very
@@ -178,14 +167,6 @@ local function has_line(text, line)
     end
   end
   return false
-end
-
---- Compare two paths regardless of how each side spells its separators.
----@param a string
----@param b string
----@return boolean
-local function same_path(a, b)
-  return vim.fs.normalize(a) == vim.fs.normalize(b)
 end
 
 ---@param repo vcssign.Repo
@@ -248,7 +229,7 @@ return {
         actions.unstage(entry(repo, 'base.txt'))
       end)
       -- System-scoped phrasing, no `vcssign:` prefix: the same sentence the
-      -- sidebar's capability gate uses (03 §5).
+      -- capability gate uses.
       eq(seen[1].message, 'svn: no staging area')
       eq(seen[2].message, 'svn: no staging area')
       eq(seen[1].level, vim.log.levels.INFO, 'a missing capability is not an error')
@@ -297,7 +278,7 @@ return {
         'feat: change base'
       )
       ok(seen[1].message:find('committed base.txt', 1, true), seen[1].message)
-      -- The index is clean again, so the sidebar's list empties out.
+      -- The index is clean again, so the status empties out.
       helpers.wait_for(function()
         return #repo:entries() == 0
       end, 'the status to become clean')
@@ -482,80 +463,6 @@ return {
     end),
   },
   {
-    name = 'open refuses a file the VCS reports as deleted',
-    fn = guarded(function()
-      reset()
-      local dir = helpers.git_repo('actions-open-deleted')
-      vim.fn.delete(dir .. '/base.txt')
-      local repo = attach_ready('spec:actions-open-deleted', dir)
-      helpers.wait_for(function()
-        local found = entry_of(repo, 'base.txt')
-        return found ~= nil and found.status.worktree == 'deleted'
-      end, 'the deletion to be reported')
-
-      local seen = collect(function()
-        actions.open(entry(repo, 'base.txt'))
-      end)
-      ok(seen[1].message:find('has been deleted', 1, true), seen[1].message)
-      eq(vim.api.nvim_buf_get_name(0), '', 'nothing was opened in its place')
-    end),
-  },
-  {
-    name = 'open from the sidebar keeps the sidebar and uses another window',
-    fn = guarded(function()
-      reset()
-      local repo, dir = modified_repo('actions-open')
-      local win = sidebar.open(repo)
-      local sidebar_buf = vim.api.nvim_win_get_buf(win)
-      helpers.wait_for(function()
-        for _, item in ipairs(renderer.items(sidebar_buf)) do
-          if item.entry and item.entry.rel_path == 'base.txt' then
-            return true
-          end
-        end
-        return false
-      end, 'the sidebar to list the file')
-      vim.api.nvim_win_set_cursor(win, { 1, 0 })
-
-      actions.open(entry(repo, 'base.txt'))
-      ok(
-        same_path(vim.api.nvim_buf_get_name(0), dir .. '/base.txt'),
-        'the file is in the current window'
-      )
-      ok(win_of(sidebar_buf) ~= nil, 'and the sidebar is still on screen')
-      ok(vim.api.nvim_get_current_win() ~= win, 'the sidebar window was not taken over')
-    end),
-  },
-  {
-    name = 'open with tab = true opens the file in a new tab',
-    fn = guarded(function()
-      reset()
-      local repo, dir = modified_repo('actions-open-tab')
-      actions.open(entry(repo, 'base.txt'), { tab = true })
-      eq(#vim.api.nvim_list_tabpages(), 2)
-      ok(same_path(vim.api.nvim_buf_get_name(0), dir .. '/base.txt'))
-    end),
-  },
-  {
-    name = 'open notices a file that vanished before the next status run',
-    fn = guarded(function()
-      reset()
-      local repo, dir = modified_repo('actions-open-vanished')
-      local target = entry(repo, 'base.txt')
-      vim.fn.delete(dir .. '/base.txt')
-      -- The cache still says "modified": the action has to look at the disk too.
-      local seen = collect(function()
-        actions.open(target)
-      end)
-      ok(seen[1].message:find('does not exist', 1, true), seen[1].message)
-      eq(vim.api.nvim_buf_get_name(0), '')
-      helpers.wait_for(function()
-        local found = entry_of(repo, 'base.txt')
-        return found ~= nil and found.status.worktree == 'deleted'
-      end, 'the stale cache to be corrected in the background')
-    end),
-  },
-  {
     name = 'refresh re-reads the repository without waiting for the debounce',
     fn = guarded(function()
       reset()
@@ -624,25 +531,6 @@ return {
       eq(entry_of(outer_repo, 'inner/') ~= nil, true, 'and the row is still there')
       -- The inner repository was not refreshed by that action.
       eq(entry_of(inner_repo, 'brand-new.txt'), nil)
-    end),
-  },
-  {
-    name = 'open gives the file a window of its own when only sidebars are on screen',
-    fn = guarded(function()
-      reset()
-      local repo, dir = modified_repo('actions-open-only-sidebar')
-      local win = sidebar.open(repo)
-      local sidebar_buf = vim.api.nvim_win_get_buf(win)
-      eq(#vim.api.nvim_tabpage_list_wins(0), 2, 'the sidebar split the editor window')
-      -- Collapse to the sidebar alone: there is no ordinary window left.
-      vim.cmd('only')
-      eq(#vim.api.nvim_tabpage_list_wins(0), 1)
-      eq(vim.api.nvim_get_current_buf(), sidebar_buf)
-
-      actions.open(entry(repo, 'base.txt'))
-      eq(#vim.api.nvim_tabpage_list_wins(0), 2, 'a window was created for the file')
-      ok(same_path(vim.api.nvim_buf_get_name(0), dir .. '/base.txt'))
-      ok(win_of(sidebar_buf) ~= nil, 'the sidebar is still on screen')
     end),
   },
   {

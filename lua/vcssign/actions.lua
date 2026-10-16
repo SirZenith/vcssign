@@ -1,21 +1,18 @@
 --- The action layer: the only place that turns user intent into VCS commands.
 ---
---- Everything above it (the sidebar's keymaps, the `:Vcssign` commands) asks
---- for a *file* and an *intent*; everything below it (the adapters) runs one
---- command.  So this file is where the interesting policy lives: which file an
---- action applies to, which capability it needs, which command variant a status
---- implies (index vs worktree diff, "staged or not" for a commit), and what the
---- user is told when the answer is no.
+--- Everything above it (the `:Vcssign` commands, the hunk keymaps to come)
+--- asks for a *file* and an *intent*; everything below it (the adapters) runs
+--- one command.  So this file is where the interesting policy lives: which file
+--- an action applies to, which capability it needs, which command variant a
+--- status implies (index vs worktree diff, "staged or not" for a commit), and
+--- what the user is told when the answer is no.
 ---
---- Every action takes the same target — a `StatusEntry` from the sidebar, a path
---- from a command, or nothing at all (then: the file of the current buffer, or
---- the entry under the cursor when the sidebar itself has focus).
+--- Every action takes the same target — a `StatusEntry`, a path from a command,
+--- or nothing at all (then: the file of the current buffer).
 --- See impl/init/04-commands-actions.md §2.
 local config = require('vcssign.config')
 local log = require('vcssign.log')
 local manager = require('vcssign.repo_manager')
-local renderer = require('vcssign.sidebar.renderer')
-local sidebar = require('vcssign.sidebar')
 local base = require('vcssign.vcs.base')
 
 local uv = vim.uv
@@ -29,7 +26,7 @@ local function info(fmt, ...)
 end
 
 --- A system-scoped refusal (`svn: no staging area`) reads as the *system*
---- talking, and both the sidebar keys and this layer phrase it the same way —
+--- talking, and both the hunk keys and this layer phrase it the same way —
 --- so it gets no `vcssign:` prefix.
 ---@param fmt string
 ---@param ... any
@@ -52,25 +49,10 @@ end
 ---@field entry vcssign.StatusEntry?  what the VCS last said about the file
 ---@field status vcssign.FileStatus?
 
---- The entry under the cursor when the sidebar is the current buffer: that is
---- what "no argument" means for `:Vcssign stage` typed inside the sidebar.
----@return vcssign.StatusEntry?
-local function sidebar_cursor_entry()
-  local bufnr = vim.api.nvim_get_current_buf()
-  if vim.bo[bufnr].filetype ~= 'vcssign' then
-    return nil
-  end
-  return renderer.entry_at(bufnr, vim.api.nvim_win_get_cursor(0)[1] - 1)
-end
-
---- Default target: the sidebar row under the cursor, else the current buffer's
---- file, else the cwd (a `:Vcssign refresh` from an empty scratch buffer).
----@return vcssign.StatusEntry|string
+--- Default target: the current buffer's file, else the cwd (a `:Vcssign
+--- refresh` from an empty scratch buffer).
+---@return string
 local function default_target()
-  local entry = sidebar_cursor_entry()
-  if entry then
-    return entry
-  end
   local name = vim.api.nvim_buf_get_name(0)
   if name ~= '' then
     return name
@@ -78,14 +60,14 @@ local function default_target()
   return uv.cwd() or '.'
 end
 
---- The repository a sidebar entry came from.
+--- The repository a status entry came from.
 ---
 --- Identity, not "deepest": `entry.rel_path` is relative to the root that
 --- listed the row, so when a repository is nested inside another *attached*
 --- one, the deepest repository containing `entry.path` is often not the one
---- that rendered the row (the outer list shows a nested checkout as a single
---- `?? inner/` row).  Handing a path relative to the outer root to the inner
---- repository would stage or diff the wrong tree — or nothing at all.
+--- that produced the entry (an outer listing shows a nested checkout as a
+--- single `?? inner/` row).  Handing a path relative to the outer root to the
+--- inner repository would stage or diff the wrong tree — or nothing at all.
 ---@param entry vcssign.StatusEntry
 ---@return vcssign.Repo?
 local function repo_of(entry)
@@ -103,7 +85,7 @@ end
 local function resolve(target)
   target = target or default_target()
   if type(target) == 'table' then
-    -- A sidebar entry: it already carries the paths, and the entry itself is
+    -- A status entry: it already carries the paths, and the entry itself is
     -- what the user pointed at (so its status is the one to reason about).
     local repo = repo_of(target)
     if not repo then
@@ -136,85 +118,6 @@ local function resolve(target)
   }
 end
 
--- ▏ open ─────────────────────────────────────────────────────────────────────
-
---- A window that is not showing a sidebar, or nil when every window is one.
----
---- Opening a file from the sidebar must not replace the sidebar: `:edit` in the
---- sidebar's own window would swap the list out for the file (and `bufhidden =
---- hide` would leave the list orphaned in no window at all).
----@return integer?
-local function editor_window()
-  ---@param win integer
-  ---@return boolean
-  local function usable(win)
-    -- A floating window (a picker, a hover, our own future float) is not "the
-    -- editor", and neither is a terminal, a quickfix list or another plugin's
-    -- sidebar: `:edit` there would be a surprise.
-    if vim.api.nvim_win_get_config(win).relative ~= '' then
-      return false
-    end
-    local buf = vim.api.nvim_win_get_buf(win)
-    return vim.bo[buf].buftype == '' and vim.bo[buf].filetype ~= 'vcssign'
-  end
-
-  local current = vim.api.nvim_get_current_win()
-  if usable(current) then
-    return current
-  end
-  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
-    if usable(win) then
-      return win
-    end
-  end
-  return nil
-end
-
---- Open a file in an editor window (never in the sidebar's own window).
----@param target vcssign.StatusEntry|string|nil
----@param opts? { tab?: boolean }
-function M.open(target, opts)
-  local t, err = resolve(target)
-  if not t then
-    return fail(err)
-  end
-  local status = t.status
-  if status and (status.worktree == 'deleted' or status.worktree == 'missing') then
-    -- The VCS says the file is gone; `:edit` would silently create an empty
-    -- buffer that looks like a file full of nothing.
-    return info('%s has been deleted', t.rel_path)
-  end
-  if uv.fs_stat(t.path) == nil then
-    -- Either the cache is stale (an external `rm` we have not seen yet) or the
-    -- file is only missing in the worktree; both mean "do not open it".
-    t.repo:mark_dirty()
-    return info('%s does not exist', t.rel_path)
-  end
-
-  local escaped = vim.fn.fnameescape(t.path)
-  ---@type boolean, any
-  local ok, open_err
-  if opts and opts.tab then
-    ok, open_err = pcall(vim.cmd, 'tabedit ' .. escaped)
-  else
-    local win = editor_window()
-    if win == nil then
-      -- Nothing but sidebars (and other non-ordinary windows) on screen: give
-      -- the file a window of its own rather than taking the sidebar's.
-      ok, open_err = pcall(vim.cmd, 'vsplit ' .. escaped)
-    else
-      vim.api.nvim_set_current_win(win)
-      ok, open_err = pcall(vim.cmd, 'edit ' .. escaped)
-    end
-  end
-  if not ok then
-    -- `:vsplit` fails for want of room (E36), and this runs inside an async
-    -- command callback: an uncaught error would surface as "Error in callback"
-    -- instead of as an answer to the key the user pressed.
-    fail(tostring(open_err))
-  end
-end
-
 -- ▏ diff ─────────────────────────────────────────────────────────────────────
 
 --- The buffer a file's diff is shown in, reused across `d` presses: pressing
@@ -222,7 +125,7 @@ end
 ---@param t vcssign.Target
 ---@return integer
 local function diff_buffer(t)
-  local name = sidebar.bufname(t.repo.system.name, t.repo.root) .. '/' .. t.rel_path
+  local name = 'vcssign://' .. t.repo.system.name .. '/' .. t.repo.root .. '/' .. t.rel_path
   for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
     if vim.api.nvim_buf_is_valid(bufnr) and vim.api.nvim_buf_get_name(bufnr) == name then
       if vim.api.nvim_buf_is_loaded(bufnr) then
@@ -255,8 +158,8 @@ local function show_diff(t, text)
   local lines = vim.split(text, '\n', { plain = true, trimempty = true })
   local ok, err = pcall(vim.api.nvim_buf_set_lines, bufnr, 0, -1, false, lines)
   if vim.api.nvim_buf_is_valid(bufnr) then
-    -- Read-only, for the sidebar's reason: an accidental edit would make
-    -- the buffer lie about the diff it is supposed to be showing.
+    -- Read-only: an accidental edit would make the buffer lie about the diff
+    -- it is supposed to be showing.
     vim.bo[bufnr].modifiable = false
   end
   if not ok then
@@ -289,11 +192,10 @@ end
 
 --- Which side of the working copy to diff against.
 ---
---- A file whose change is *only* in the index (i.e. the row the user pressed
---- `d` on sits in the sidebar's Staged group) diffs the index — `git diff
+--- A file whose change is *only* in the index diffs the index — `git diff
 --- --cached` is the only way to see what a commit would record.  A file with
 --- worktree changes diffs against the index/HEAD, which is what "what have I
---- changed since" means for an unstaged row.
+--- changed since" means for an unstaged change.
 ---@param t vcssign.Target
 ---@return boolean
 local function cached_diff(t)
@@ -350,8 +252,8 @@ local function stage_like(target, action)
       return fail(cmd_err)
     end
     info('%s %s', action == 'stage' and 'staged' or 'unstaged', t.rel_path)
-    -- Straight away, not debounced: the user is looking at the list, and the
-    -- status has almost certainly just changed (the row moves between groups).
+    -- Straight away, not debounced: the status has almost certainly just
+    -- changed.
     repo:refresh_now()
   end)
 end

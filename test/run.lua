@@ -48,23 +48,19 @@ local REQUIRES = {
   vcs_svn_spec = { 'svn' },
   vcs_registry_spec = { 'git', 'svn' },
   repo_spec = { 'git', 'svn' },
-  sidebar_spec = { 'git', 'svn' },
   autocmds_spec = { 'git' },
   actions_spec = { 'git', 'svn', 'svnadmin' },
   cli_spec = { 'git', 'svn', 'svnadmin' },
 }
 
 local DEFAULT_SPECS = {
-  'status_type_spec',
   'config_spec',
   'exec_spec',
   'vcs_git_spec',
   'vcs_svn_spec',
   'vcs_registry_spec',
   'repo_spec',
-  'renderer_spec',
   'doc_spec',
-  'sidebar_spec',
   'autocmds_spec',
   'actions_spec',
   'cli_spec',

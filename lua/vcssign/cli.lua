@@ -9,33 +9,23 @@ local actions = require('vcssign.actions')
 local log = require('vcssign.log')
 local manager = require('vcssign.repo_manager')
 local registry = require('vcssign.vcs')
-local sidebar = require('vcssign.sidebar')
 
 local M = {}
 
 --- Subcommands, in the order `:Vcssign` lists and completes them.
 ---@type string[]
 M.subcommands = {
-  'toggle',
-  'open',
-  'close',
   'refresh',
-  'stage',
-  'unstage',
   'diff',
   'commit',
   'debug',
 }
 
---- Where a command with no path argument points: the repository of the sidebar
---- the cursor is in, else the current buffer's file, else the cwd.
+--- Where a command with no path argument points: the current buffer's file,
+--- else the cwd.
 ---@return string
 local function current_path()
   local bufnr = vim.api.nvim_get_current_buf()
-  local state = sidebar.state_of_buf(bufnr)
-  if state then
-    return state.repo.root
-  end
   local name = vim.api.nvim_buf_get_name(bufnr)
   if name ~= '' then
     return name
@@ -46,7 +36,7 @@ end
 --- Tell the user that a path belongs to no repository.
 ---
 --- Shared with the public API (`vcssign/init.lua`), so a path-less
---- `require('vcssign').toggle()` and `:Vcssign toggle` answer the same way.
+--- `require('vcssign').refresh()` and `:Vcssign refresh` answer the same way.
 ---@param path string
 ---@param err string?
 function M.report_no_repo(path, err)
@@ -86,27 +76,6 @@ end
 local commands = {}
 
 ---@param path string
-commands.toggle = function(path)
-  with_repo(path or current_path(), function(repo)
-    sidebar.toggle(repo)
-  end)
-end
-
----@param path string
-commands.open = function(path)
-  with_repo(path or current_path(), function(repo)
-    sidebar.open(repo)
-  end)
-end
-
----@param path string
-commands.close = function(path)
-  with_repo(path or current_path(), function(repo)
-    sidebar.close(repo)
-  end)
-end
-
----@param path string
 commands.refresh = function(path)
   with_repo(path or current_path(), function(repo)
     repo:refresh_now()
@@ -115,10 +84,9 @@ end
 
 -- The file-level commands attach first (so they work before any buffer did)
 -- but hand the *original* argument to the action: `actions` decides which file
--- "no argument" means (the sidebar's cursor row, then the current buffer), and
--- passing the resolved root instead would turn `stage` into "stage the whole
--- repository".
-for _, name in ipairs({ 'stage', 'unstage', 'diff', 'commit' }) do
+-- "no argument" means (the current buffer's file), and passing the resolved
+-- root instead would turn `diff` into "diff the whole repository".
+for _, name in ipairs({ 'diff', 'commit' }) do
   commands[name] = function(path)
     local target = path
     with_repo(path or current_path(), function()
@@ -134,12 +102,7 @@ local function debug_report()
     return a.root < b.root
   end)
   local lines = {
-    string.format(
-      '%d repositories, %d sidebars (%d on screen)',
-      #repos,
-      sidebar.count(),
-      sidebar.open_count()
-    ),
+    string.format('%d repositories', #repos),
   }
   for _, repo in ipairs(repos) do
     local flags = {}
@@ -187,7 +150,7 @@ end
 ---@param args string[]  `params.fargs` from the command
 function M.run(args)
   args = args or {}
-  local name = args[1] or 'toggle'
+  local name = args[1] or 'refresh'
   local handler = commands[name]
   if not handler then
     return log.notify_error(

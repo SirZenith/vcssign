@@ -1,14 +1,14 @@
-*vcssign.txt*   多版本（git / svn）文件状态侧边栏                    *vcssign*
+*vcssign.txt*   多版本（git / svn）行级 sign 状态                    *vcssign*
 
                             VCSSIGN
 
-vcssign 把仓库的工作区状态汇总成一个可操作的侧边栏：git 的暂存区与工作区、
-svn 的工作副本，各自一行一个文件，按严重度排序，按键就能打开 / 看 diff /
-暂存 / 提交。它同时支持一棵目录里存在多个仓库（含嵌套仓库，各归各的）。
+vcssign 把 Git / Subversion 仓库里的改动直接反映到窗口的 `'signcolumn'`：
+每个 hunk 在行号旁画一个 sign（新增 / 修改 / 删除 …），git 的暂存区与工作区
+分别用两套 sign 表示。它同时支持一棵目录里存在多个仓库（含嵌套仓库，各归各的）。
 
   环境：在 Neovim 0.12.4、git 2.55、svn 1.14.5 上开发与测试。代码里较新的
   API 是 |vim.system|（0.10 起）；更早的 Neovim 未验证。
-  实现计划（架构决策 D1–D35、里程碑 M0–M5）在仓库的 `impl/init/*.md`。
+  实现计划（架构决策 D1–D46、里程碑 M0–M6）在仓库的 `impl/init/*.md`。
 
 ==============================================================================
 目录                                                        *vcssign-contents*
@@ -16,11 +16,10 @@ svn 的工作副本，各自一行一个文件，按严重度排序，按键就�
   1. 安装与设置 .................................. |vcssign-install|
   2. 配置 ........................................ |vcssign-config|
   3. 命令 ........................................ |vcssign-commands|
-  4. 侧边栏与按键 ................................ |vcssign-sidebar|
-  5. 状态与符号 .................................. |vcssign-symbols|
-  6. Lua API ..................................... |vcssign-api|
-  7. 高亮组 ...................................... |vcssign-highlights|
-  8. 架构 ........................................ |vcssign-arch|
+  4. 行级 sign 与按键 ............................ |vcssign-signs|
+  5. Lua API ..................................... |vcssign-api|
+  6. 高亮组 ...................................... |vcssign-highlights|
+  7. 架构 ........................................ |vcssign-arch|
 
 ==============================================================================
 1. 安装与设置                                              *vcssign-install*
@@ -31,7 +30,8 @@ svn 的工作副本，各自一行一个文件，按严重度排序，按键就�
       'you/vcssign',
       config = function()
         require('vcssign').setup({
-          sidebar = { width = 40, position = 'right' },
+          signs = { add = { text = '▎' } },
+          signcolumn = 'auto',
         })
       end,
     }
@@ -39,7 +39,7 @@ svn 的工作副本，各自一行一个文件，按严重度排序，按键就�
 `setup()` 是**可选**的：所有层都有默认值，`plugin/vcssign.vim` 会注册
 |:Vcssign|，`require('vcssign')` 的 API 也能直接调。但**自动挂载**（打开文件
 时后台发现仓库、随编辑刷新）由 `setup()` 打开的自动命令负责——不调用它，
-`:Vcssign toggle` 这类显式动作仍然照常工作。
+`:Vcssign refresh` 这类显式动作仍然照常工作。
 
 `setup()` 每次都是从**默认值**出发合并你给的表（不是叠加到上一次调用上）：
 第二次调用没有提到的键会退回默认值。
@@ -56,54 +56,98 @@ svn 的工作副本，各自一行一个文件，按严重度排序，按键就�
   单条 VCS 命令的超时；超时会被杀死并报告。
 
 `watch` (true)~
-  用文件系统监听发现变化。关掉之后只有显式刷新（`:Vcssign refresh`、`r`
-  键、`FocusGained`）会更新状态。
+  用文件系统监听发现变化。关掉之后只有显式刷新（`:Vcssign refresh`、
+  `FocusGained`）会更新状态。
 
-`update_debounce_ms` (300)~
-  刷新请求的合并窗口。一次 `git add` 会摸到 `.git` 下十来个文件，去抖把
-  它们合并成一轮 `git status`（实测）。
+`update_debounce_ms` (200)~
+  缓冲区编辑的防抖窗口：编辑停下来之后才重算 hunk。200ms 与 gitsigns 的
+  `update_debounce` 同阶。
 
 `retry_delay_ms` (1000) / `retry_max_ms` (30000)~
   一次 `status` 失败后的首次重试延迟与指数退避上限；期间继续用上一次的
-  缓存渲染，只警告一次。
+  缓存，只警告一次。
 
 `log_level` ('warn')~
   插件日志级别。面向用户的**回答**（「没有仓库」、能力不足、动作失败）
   不受它限制，一定会显示。
 
+`signs`~
+  未暂存改动的 sign。六种 hunk 键——`signs.add`、`signs.change`、
+  `signs.delete`、`signs.topdelete`、`signs.changedelete`、`signs.untracked`
+  ——各自给 `text`（sign 列里的字符）以及可选的 `numhl` / `linehl` /
+  `culhl`（行号 / 整行 / 光标行高亮）： >
+
+    signs = {
+      add          = { text = '▎' },
+      change       = { text = '▎' },
+      delete       = { text = '▁' },
+      topdelete    = { text = '‾' },
+      changedelete = { text = '~' },
+      untracked    = { text = '┆' },
+      numhl        = false,
+      linehl       = false,
+      culhl        = false,
+    }
+
+`signs_staged`~
+  git **已暂存**改动用的另一套 sign，字段与 `signs` 的六种 hunk 相同： >
+
+    signs_staged = {
+      add          = { text = '▎' },
+      change       = { text = '▎' },
+      delete       = { text = '▁' },
+      topdelete    = { text = '‾' },
+      changedelete = { text = '~' },
+      untracked    = { text = '┆' },
+    }
+
+`signcolumn` ('auto')~
+  写进 `'signcolumn'` 的值：`'auto'` 只在别的插件已经开了这一列时显示 sign。
+  设为 `false` 表示**不碰** `'signcolumn'`。
+
+`rev` ('index')~
+  拿缓冲区和哪个基线比：`'index'`（git 的暂存区 / svn 的 BASE）、`'HEAD'`，
+  或该 VCS 认识的任意版本名。
+
+`attach_to_untracked` (true)~
+  未跟踪的文件也挂载、也画 sign。
+
+`max_file_length` (40000)~
+  缓冲区行数超过它就完全不画 sign（大文件保命）。
+
+`word_diff` (false)~
+  在 hunk 内部做词级 diff，把改动标得更精确。
+
+`deleted_preview` (false)~
+  被删除的行用虚拟行预览。
+
+`current_line_blame` (false)~
+  在当前行末尾实时显示 blame。
+
+`current_line_blame_opts`~
+  行内 blame 的选项：`current_line_blame_opts.delay`（毫秒，默认 500）与
+  `virt_text_pos`（默认 `'eol'`）。
+
+`keymaps`~
+  hunk 动作的按键表：`{ lhs = '动作名' }`，值为 `false` 表示**不绑定**该键
+  （留给用户；整个表设为 `false` 则禁用所有默认映射）。默认见
+  |vcssign-keymaps|。
+
 `diff.mode` ('vertical')~
   看 diff 时开竖分屏（'vertical'）还是横分屏（'split'）。diff 缓冲区只读、
-  定 `filetype=diff`、按「文件 + 窗口」复用。
+  定 `filetype=diff`。
+
+`diff.use_external` (false) / `diff.algorithm` ('myers')~
+  diff 默认用内置的 `vim.text.diff`（svn 没有本地 diff 后端，内置实现让
+  git / svn 行为一致）；`diff.algorithm` 可取 'myers' / 'minimal' /
+  'patience' / 'histogram'。
+
+`diff.indent_heuristic` / `diff.linematch` / `diff.ignore_cr_at_eol`~
+  缩进对齐启发、hunk 内逐词精修、以及把行尾 CR 当作换行的一部分。
 
 `commit.message_input` ('input')~
   提交信息怎么问：'input' 用 |vim.ui.input| 的单行提示。'buffer' 在计划里，
   尚未实现——会警告并回落到 'input'。
-
-`sidebar.position` ('right')~
-  侧边栏开在哪：'right' / 'left'。'float' 同样尚未实现，会警告并回落到
-  'right'。非法的取值也按 'right' 处理。
-
-`sidebar.width` (40)~
-  分屏宽度（列）。行文本预算 = 宽度 - 4 个 sign 单元格 - 1 空格，最少 10 列。
-
-`sidebar.group_by` ('status')~
-  'status'：git 分成 Staged / Unstaged / Untracked 三组。'none'：扁平列表。
-  svn 没有暂存区，永远是扁平的（没有 index 域，分组会是假话）。
-
-`sidebar.keymaps`~
-  按键表：`{ lhs = '动作名' }`，值为 `false` 表示**不绑定**该键（留给用户）。
-  默认： >
-
-    keymaps = {
-      ['<cr>'] = 'open',
-      t        = 'open_tab',
-      d        = 'diff',
-      s        = 'stage',
-      u        = 'unstage',
-      r        = 'refresh',
-      q        = 'close',
-      ['?']    = 'help',
-    }
 
 `on_attach` / `on_detach` (nil)~
   仓库被挂载 / 卸载时调用的函数（`fun(repo)`）。可选，每次调用时查找，
@@ -113,96 +157,59 @@ svn 的工作副本，各自一行一个文件，按严重度排序，按键就�
 3. 命令                                                    *vcssign-commands*
 
                                                         *:Vcssign*
-:Vcssign {sub} [path]   执行子命令。省略 `[path]` 时依次看：侧边栏缓冲区
-                        所属仓库 → 当前缓冲区的文件 → 当前目录。
+:Vcssign {sub} [path]   执行子命令。省略 `[path]` 时依次看：当前缓冲区的
+                        文件 → 当前目录。
 
   子命令（也会被补全）： >
 
-    :Vcssign toggle     开 / 关侧边栏；已开且已聚焦则关闭，未聚焦则聚焦
-    :Vcssign open       打开侧边栏
-    :Vcssign close      关闭侧边栏
     :Vcssign refresh    立刻刷新（跳过去抖），不等 fs 监听
-    :Vcssign stage      暂存侧边栏光标行的文件（git 专有）
-    :Vcssign unstage    取消暂存（git 专有）
-    :Vcssign diff       看光标行的 diff
+    :Vcssign diff       看这个文件的 diff
     :Vcssign commit     提交（git：已暂存的；svn：工作副本里该文件）
     :Vcssign debug      打印已挂载仓库、缓存与监听状态的诊断信息
 
-`stage` / `unstage` / `diff` 会**先查能力**：svn 没有暂存区，于是得到一句
-说明而不是静默失败。`path` 参数可以是文件、目录或仓库根；不在任何仓库里
-时明确回答「没有仓库」（INFO，不是错误）。
+`diff` 会**先查能力**：不支持 diff 的系统会得到一句说明而不是静默失败。
+`path` 参数可以是文件、目录或仓库根；不在任何仓库里时明确回答「没有仓库」
+（INFO，不是错误）。
 
 ==============================================================================
-4. 侧边栏与按键                                            *vcssign-sidebar*
+4. 行级 sign 与按键                                         *vcssign-signs*
 
-每个仓库一个侧边栏缓冲区（名字是 `vcssign://<system>/<root>`），同一个
-仓库重复打开会复用同一个缓冲区和窗口。`q` 只关窗口，缓冲区留着——再打开
-是瞬间的，列表不会闪回占位符。缓冲区被 `:bwipeout` 之后，所属仓库的引用
-才释放（引用计数，见 |vcssign-arch|）。
+挂载之后，每次编辑停顿 `update_debounce_ms` 毫秒，缓冲区就和 `rev` 基线
+（默认 index / BASE）做一次 diff，把每个 hunk 画到 `'signcolumn'`。git 的
+暂存改动用 `signs_staged`，未暂存改动用 `signs`，因此同一个文件两边的改动
+可以同时看见。
 
-默认按键（在侧边栏缓冲区里，全是 buffer-local）： >
+默认按键（全是 buffer-local）：                               *vcssign-keymaps* >
 
-    <cr>    打开光标行的文件（在普通窗口里，不会占掉侧边栏自己的窗口）
-    t       在新标签页打开
-    d       看这个文件的 diff
-    s       暂存（git）
-    u       取消暂存（git）
-    r       立刻刷新
-    q       关闭侧边栏
-    ?       回显当前生效的按键表
+    lhs                        action                     说明
+    [c                         prev_hunk                  跳到上一个 hunk
+    ]c                         next_hunk                  跳到下一个 hunk
+    <leader>hs                 stage_hunk                 暂存该 hunk（git）
+    <leader>hr                 reset_hunk                 还原该 hunk
+    <leader>hS                 stage_buffer               暂存整个缓冲区（git）
+    <leader>hu                 undo_stage_hunk            取消暂存该 hunk（git）
+    <leader>hR                 reset_buffer               还原整个缓冲区
+    <leader>hp                 preview_hunk               浮动窗口预览该 hunk
+    <leader>hb                 blame_line                 这一行的 blame
+    <leader>hd                 diffthis                   和基线打开 diff
+    <leader>hD                 diffthis_rev               和指定 rev 打开 diff
+    <leader>hq                 setqflist                  把 hunk 放进 quickfix
+    <leader>hQ                 setqflist_all              全部 hunk 放进 quickfix
+    <leader>tw                 toggle_word_diff           开 / 关词级 diff
+    <leader>tb                 toggle_current_line_blame  开 / 关行内 blame
 
-光标行是分组标题或占位行时，动作会回答「这一行没有文件」。文件被删除
-（或已经不在了）时 `open` 拒绝打开——`:edit` 会造出一个看似正常的空缓冲区。
-
-行文本：路径**留尾去头**（保文件名），失败横幅与分组标题**留头去尾**（保
-信息开头），截断处用 `…`。失败时侧边栏不会被旧内容盖住，而是显示失败原因。
-
-==============================================================================
-5. 状态与符号                                              *vcssign-symbols*
-
-git 有两个域：index（`git status --short` 的 X 列，暂存区）与 worktree
-（Y 列）。侧边栏用两格 sign 列把它们并排显示——index 在左，worktree 在右，
-和 XY 列的读法一致；列太窄时保留左边的（暂存态）。svn 只有一个域。
-
-  符号 ~
-    M   modified      内容被改（git worktree / svn 第 1 列）
-    A   added         新增且已纳入版本控制（git index）
-    D   deleted       被删除
-    R   renamed       改名（git index，带原路径）
-    U   untracked     未跟踪（git `??`）
-    I   ignored       被忽略
-    T   typechange    类型变了（文件 ↔ 符号链接等）
-    !   conflicted    冲突 / svn missing
-    R   replaced      svn：被替换（历史不同的同名文件）
-    S   switched      svn：目录被 switch 到别的 URL
-    X   external      svn：外部定义（externals）
-    ~   obstructed    svn：工作副本里挡路的异物
-
-排序：先按严重度（conflicted > missing > modified > replaced > typechange >
-deleted > renamed > added > untracked > obstructed > switched > external >
-ignored），同严重度按路径字典序。顺序在 test/renderer_spec.lua 里被逐字钉住。
+（这一里程碑先把侧边栏退掉，sign 渲染与这些动作由随后的步骤接上。）
 
 ==============================================================================
-6. Lua API                                                    *vcssign-api*
+5. Lua API                                                    *vcssign-api*
 
 `setup({opts})` ~
-  合并配置、定义高亮、启动生命周期自动命令。返回 `require('vcssign')`。
+  合并配置、启动生命周期自动命令。返回 `require('vcssign')`。
 
-`open({path})` / `close({path})` / `toggle({path})` / `refresh({path})` ~
-  侧边栏的四个动词。`path` 可省（同 |:Vcssign| 的解析规则）。仓库还没被
-  跟踪时会**先挂载再执行**，所以它可以是你按下的第一个映射。返回 nil；
-  错误以通知形式给出。
-
-`get_status({path})` ~
-  缓存里某个文件的状态（`vcssign.FileStatus`），还没有结果时返回 `nil`；
-  绝不阻塞。仓库未被跟踪时会在后台把它热起来，之后再调就能拿到答案。
-  适合做状态栏集成： >
-    local s = require('vcssign').get_status(vim.api.nvim_buf_get_name(0))
-    print(s and s.worktree or '')
-
-`get_entries({path})` ~
-  侧边栏所显示的整份条目列表（`vcssign.StatusEntry[]`）；同样不阻塞，
-  冷调用返回空表并在后台热缓存。
+`refresh({path})` ~
+  立刻刷新 `path` 所属仓库（跳过去抖）。`path` 可省（同 |:Vcssign| 的解析
+  规则）。仓库还没被跟踪时会**先挂载再执行**，所以它可以是你按下的第一个
+  映射。返回 nil；错误以通知形式给出。
 
 `require('vcssign.cli').run(fargs)` ~
   |:Vcssign| 的实现，等价于 `:Vcssign {fargs}`。
@@ -212,39 +219,28 @@ ignored），同严重度按路径字典序。顺序在 test/renderer_spec.lua �
 回调都在主循环）写在 `impl/init/01-vcs-api.md` 与 `02-repo-runtime.md`。
 
 ==============================================================================
-7. 高亮组                                                *vcssign-highlights*
+6. 高亮组                                                *vcssign-highlights*
 
-全部用 `default = true` 定义，配色方案或用户都能覆盖，`setup()` 不会覆盖已有
-定义。
-
-  行文本：`VcssignAdded` `VcssignModified` `VcssignDeleted` `VcssignRenamed`
-  `VcssignUntracked` `VcssignIgnored` `VcssignConflicted` `VcssignHeader`
-  `VcssignError` `VcssignUnknown`
-
-  符号列：`VcssignSignAdded` `VcssignSignModified` `VcssignSignDeleted`
-  `VcssignSignRenamed` `VcssignSignUntracked` `VcssignSignIgnored`
-  `VcssignSignConflicted` `VcssignSignUnknown`
-
-链接目标见 `lua/vcssign/status_type.lua` 与
-`lua/vcssign/sidebar/renderer.lua`（`M.highlights`）。
+sign 的高亮组由 `signs` 里每个 hunk 的名字派生（`VcssignSignAdd` 等），
+`numhl` / `linehl` / `culhl` 可逐项覆盖；都用 `default = true` 定义，配色
+方案或用户都能覆盖，`setup()` 不会覆盖已有定义。
 
 ==============================================================================
-8. 架构                                                       *vcssign-arch*
+7. 架构                                                       *vcssign-arch*
 
 自下而上，每层只认识下面一层：
 
   `vcssign.vcs.*`        git / svn 适配器：命令、输出解析、能力声明
-  `vcssign.repo`         一个仓库的运行时：状态缓存、fs 监听、刷新去抖、
+  `vcssign.repo`         一个仓库的会话：基线内容、fs 监听、刷新去抖、
                          失败退避重试
   `vcssign.repo_manager` 路径 → 仓库的查找，引用计数式挂载与卸载
-  `vcssign.sidebar.*`    行模型与渲染、窗口 / 缓冲区生命周期与按键绑定
-  `vcssign.actions`      唯一的「意图 → VCS 命令」层（打开/diff/暂存/提交）
+  `vcssign.actions`      唯一的「意图 → VCS 命令」层（diff / 暂存 / 提交）
   `vcssign.cli`          |:Vcssign| 的分派与补全
   `vcssign.autocmds`     attach / detach / 外部变更 / 退出清理
 
 设计要点：所有外部命令的回调都被切回主循环（绝不从 libuv 的 fast-event 里
 碰 vim API）；回调一律错误优先；订阅者与钩子经 `pcall` 隔离，一个坏钩子不会
-拖垮刷新；侧边栏只持有引用，不反向依赖仓库内部的刷新细节。
+拖垮刷新。
 
 测试脚手架：`scripts/make_test_repos.sh` 建 fixture，`scripts/run_tests.sh` 在
 headless nvim 里跑 TAP（`test/run.lua` + `test/*_spec.lua`）；`make test` /

@@ -13,8 +13,8 @@ return {
     name = 'nested tables merge key by key',
     fn = function()
       eq(
-        config.merge({ sidebar = { width = 40, position = 'right' } }, { sidebar = { width = 50 } }),
-        { sidebar = { width = 50, position = 'right' } }
+        config.merge({ signs = { width = 40, position = 'right' } }, { signs = { width = 50 } }),
+        { signs = { width = 50, position = 'right' } }
       )
     end,
   },
@@ -28,9 +28,9 @@ return {
   {
     name = 'merging never mutates the defaults table',
     fn = function()
-      local defaults = { systems = { 'git', 'svn' }, sidebar = { width = 40 } }
+      local defaults = { systems = { 'git', 'svn' }, signs = { width = 40 } }
       local before = vim.deepcopy(defaults)
-      config.merge(defaults, { systems = { 'svn' }, sidebar = { width = 1 } })
+      config.merge(defaults, { systems = { 'svn' }, signs = { width = 1 } })
       eq(defaults, before)
     end,
   },
@@ -46,7 +46,7 @@ return {
   {
     name = 'an empty table merges like a dictionary, it does not wipe defaults',
     fn = function()
-      eq(config.merge({ sidebar = { width = 40 } }, { sidebar = {} }), { sidebar = { width = 40 } })
+      eq(config.merge({ signs = { width = 40 } }, { signs = {} }), { signs = { width = 40 } })
     end,
   },
   {
