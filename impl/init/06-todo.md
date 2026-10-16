@@ -127,7 +127,7 @@ M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
 - [x] 顺带修掉两条独立缺陷：`f1d1735`（`fix(repo)` 根目录加非递归 watch，修 Step 2 的回归；`FILTER=repo_spec` 由 2/20 红 → 连跑两次 20/20 绿）、`e6c4f1b`（`fix(vcs)` svn 追踪判定改用 `svn info`，并更正 07 §3.1 / §5.3 的两处探针结论）
 - [x] 文档：`9b4eb90`（07 设计与探针实测）+ §6.1–§6.4 交接
 - [x] **Step 6** 自动触发与生命周期（`on_lines` 防抖 / `on_reload` / `repo:on_update` / `BufWritePost` / `FocusGained`）+ 逐缓冲开关 `:Vcssign toggle` —— `2193802`（178 → 184；`attach_spec` 14→16、`autocmds_spec` 10→12、`cli_spec` 11→13）
-- [ ] **Step 7** git 暂存态双层 sign
+- [x] **Step 7** git 暂存态双层 sign（`load_head` 读 `HEAD`、`filter_common` 拆两层、`…Staged` 用暗色） —— `4bfe0ce`（184 → 189；`attach_spec` 16→20、`signs_spec` 13→14，`attach_spec` 起需要 svn）
 - [ ] **Step 8** `nav.lua`（`]c` / `[c`）+ `keymap.lua`
 - [ ] **Step 9** hunk 级动作 + CLI
 - [ ] **Step 10** `worddiff.lua` + `preview.lua`

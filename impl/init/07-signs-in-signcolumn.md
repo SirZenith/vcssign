@@ -341,7 +341,7 @@ commit = { message_input = 'input' },
 | 4 | 适配器新接口 `show/is_tracked/blame/apply_patch/revert`；`VcsCaps` 换字段；`vcs_git_spec`/`vcs_svn_spec` 各约 10–12 | ✅ **已完成**（`7acc713`，150 用例；两处探针结论在 `e6c4f1b` 更正） |
 | 5 | `signs.lua`（双命名空间 + 放置规则 + numhl/linehl）+ `attach.lua`（守卫/基线/diff/渲染/`nvim_buf_attach`）；`attach_spec` 约 14 | ✅ **已完成**（`6eaef2b`，150 → 178 用例） |
 | 6 | 刷新触发（`on_lines` 防抖 / `on_reload` / `repo:on_update`）+ 生命周期 autocmd + 开关；`autocmds_spec` 10→12、`cli_spec` 11→13、`attach_spec` 14→16 | ✅ **已完成**（`2193802`，178 → **184** 用例，全绿） |
-| 7 | git 暂存态双层 sign（`filter_common(HEAD↔buf, unstaged)` + `signs_staged` 高亮） | ⬜ 待做（入口见 §6.2 / §6.4） |
+| 7 | git 暂存态双层 sign（`filter_common(HEAD↔buf, unstaged)` + `signs_staged` 高亮） | ✅ **已完成**（`4bfe0ce`，184 → **189** 用例，全绿） |
 | 8 | `nav.lua`（`]c`/`[c`，计数/环绕）+ `keymap.lua`；`nav_spec` 约 8 | ⬜ 待做（入口见 §6.2 / §6.4） |
 | 9 | hunk 级动作（`stage_hunk`/`unstage_hunk`/`reset_hunk`/`stage_buffer`/`reset_buffer`/`preview_hunk`）+ CLI；`actions_spec` 24→约 30 | ⬜ 待做（入口见 §6.2 / §6.4） |
 | 10 | `worddiff.lua`（成对行逐字符 diff）+ `preview.lua`（`virt_lines` 删除预览 / hunk 浮窗） | ⬜ 待做（入口见 §6.2 / §6.4） |
@@ -355,7 +355,7 @@ commit = { message_input = 'input' },
 
 ---
 
-### §6.1 已落地（截至 `2193802`）
+### §6.1 已落地（截至 `4bfe0ce`）
 
 | SHA | 提交 | 验证（`make test`） |
 |---|---|---|
@@ -369,6 +369,7 @@ commit = { message_input = 'input' },
 | `6eaef2b` | Step 5：`signs.lua` + `attach.lua` | 150 → **178** |
 | `e4142b0` | 本文档：Step 1–5 标完成 + §6.1–§6.4 交接说明（纯文档） | — |
 | `2193802` | Step 6：自动触发、生命周期与逐缓冲开关（`autocmds` / `cli` / `init` 接到 `attach`） | 178 → **184**，全绿；本步动到的三个 spec 单跑 **41/41** |
+| `4bfe0ce` | Step 7：git 暂存态双层 sign（`load_head` + `filter_common` + `…Staged` 暗色） | 184 → **189**，全绿；`attach_spec` 16、`signs_spec` 14 单跑 **34/34** |
 
 **Step 2 引入的回归（交接要点，别再踩）**：Step 2 把监听集收敛成「只监听 metadata 目录」（D38），
 而 **libuv 从不报告「被监听目录自身消失」** —— 实测：把 `.git` 改名走，挂在 `.git` 上的 handler
@@ -450,13 +451,17 @@ rename 事件（3 events）。于是工作副本被删后 `Repo` 不会自杀，
   的 python 补丁（`assert src.count(old) == 1` 守卫 + `io.open(..., encoding='utf-8', newline='')` 回写）。
   `edit` 工具对「尚无观察」的文件可能拒绝改，此时同样走 python 补丁。
 
-### §6.4 下一步（Step 6）的入口
+### §6.4 下一步（Step 8）的入口
 
-**已经就绪、可以直接消费的接口**（都在 `6eaef2b` 里冻结好了）：
+**已经就绪、可以直接消费的接口**（`6eaef2b` 冻结，`2193802` / `4bfe0ce` 补齐开关与暂存层）：
 
-- `require('vcssign.attach')`：`attach(bufnr)` / `detach(bufnr)` / `mark_dirty(bufnr)` / `refresh(bufnr, cb)` /
-  `state(bufnr)` / `hunks(bufnr)` / `root(bufnr)` / `system(bufnr)` / `capabilities(bufnr)` / `count()` / `forget_all()`。
+- `require('vcssign.attach')`：`attach(bufnr)` / `detach(bufnr)` / `toggle(bufnr)` / `mark_dirty(bufnr)` /
+  `refresh(bufnr, cb)` / `refresh_all()` / `state(bufnr)` / `hunks(bufnr)` / `buffers()` / `root(bufnr)` /
+  `system(bufnr)` / `capabilities(bufnr)` / `count()` / `forget_all()`。
   引用名是 `attach:<bufnr>`；每个缓冲区最多 attach 一次（按路径去重）。
+  状态表（`state(bufnr)`）额外有：`hunks_staged`（git 的暂存层，`rev ~= 'index'` 时为空表）、
+  `head_text` / `base_text`（两份基线，`nil` = 不知道，什么都不画）、`shown`（用户开关，Step 6）、
+  `untracked` / `tracked` / `enabled` / `attached`。
 - `require('vcssign.signs')`：`place(bufnr, hunks, opts)` / `clear(bufnr)` / `clear_ns(bufnr, staged)` /
   `sign_count(bufnr, staged)` / `namespace(staged)` / `hl_name(ty, staged, kind)` / `define_highlights()`、`M.PRIORITY`。
 - `require('vcssign.repo_manager')`：`get_by_path(path)` / `get(root)` / `all()` / `count()` / `ref_count(path)` /
@@ -464,14 +469,15 @@ rename 事件（3 events）。于是工作副本被删后 `Repo` 不会自杀，
 - `require('vcssign.repo')`：`repo:on_update(fn)` / `repo:on_error(fn)` / `repo:on_delete(fn)` /
   `repo:mark_dirty()` / `repo:refresh_now(cb)` / `repo:dispose()`。
 
-**Step 6 要做的事**：把「置脏 → 去抖 → 重算 hunk → 重画」接上 `repo:on_update`（工作树的变化由 `Repo`
-广播，缓冲区不再自己 watch 文件）；`on_reload` / `BufReadPost` 重建基线并重画；在 `vcssign` augroup 里
-挂 attach/detach（`BufReadPost` / `BufEnter` / `BufDelete` / `BufWipeout` 已有骨架）；`:Vcssign` 增加开关
-（按 §4 的配置面 —— 若新增键，记得同步 `doc/vcssign.txt` + `doc_spec.lua`）。
+**Step 8 要做的事**：新增 `lua/vcssign/nav.lua`（`M.next(bufnr, count)` / `M.prev(bufnr, count)`，有向、
+带 count、可配环绕，基于 `attach.hunks(bufnr)` 与光标行）与 `lua/vcssign/keymap.lua`（buffer-local 默认
+映射：`]c` / `[c` 加 §4 的 `<leader>h*` 表，`config.keymaps = false` 整体关掉；动作暂时只有导航能落地，
+其余动作占位到 Step 9–11）。默认键位与动作名已经在 `config.defaults.keymaps` 和 `doc/vcssign.txt` 里
+（`doc_spec` 会钉住），**本步不要再新增键**。
 
-**验收**：`attach_spec` 现有 14 例继续绿 + 新增生命周期用例（编辑后 sign 变化、`repo:on_update` 触发重画、
-关闭开关后不再放 sign、`VimLeavePre` 清干净）。新增用例沿用 `guarded(fn)` + `helpers.wait_for`，
-**不要**用固定 `vim.wait` 等结果。
+**验收**：新增 `nav_spec` 约 8 例（首个 hunk 之前 / 最后一个之后、`2]c` 计数、环绕开关、无 hunk 时不动
+光标、`]c` 与 `[c` 有向），全量用例继续绿。新增用例沿用 `guarded(fn)` + `helpers.wait_for`，**不要**用
+固定 `vim.wait` 等结果。
 
 ## §7 验收标准（用户可点）
 
