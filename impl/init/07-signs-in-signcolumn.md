@@ -343,7 +343,7 @@ commit = { message_input = 'input' },
 | 6 | 刷新触发（`on_lines` 防抖 / `on_reload` / `repo:on_update`）+ 生命周期 autocmd + 开关；`autocmds_spec` 10→12、`cli_spec` 11→13、`attach_spec` 14→16 | ✅ **已完成**（`2193802`，178 → **184** 用例，全绿） |
 | 7 | git 暂存态双层 sign（`filter_common(HEAD↔buf, unstaged)` + `signs_staged` 高亮） | ✅ **已完成**（`4bfe0ce`，184 → **189** 用例，全绿） |
 | 8 | `nav.lua`（`]c`/`[c`，计数/环绕）+ `keymap.lua`；`nav_spec` 13 | ✅ **已完成**（`f54b6af`，189 → **202** 用例，全绿） |
-| 9 | hunk 级动作（`stage_hunk`/`unstage_hunk`/`reset_hunk`/`stage_buffer`/`reset_buffer`/`preview_hunk`）+ CLI；`actions_spec` 24→约 30 | ⬜ 待做（入口见 §6.2 / §6.4） |
+| 9 | hunk 级动作（`stage_hunk`/`unstage_hunk`/`reset_hunk`/`stage_buffer`/`reset_buffer`）+ CLI；`actions_spec` 19→30 | ✅ **已完成**（`a5e544a`，202 → **213** 用例，全绿；`preview_hunk` 挪到 Step 10，见 §6.1） |
 | 10 | `worddiff.lua`（成对行逐字符 diff）+ `preview.lua`（`virt_lines` 删除预览 / hunk 浮窗） | ⬜ 待做（入口见 §6.2 / §6.4） |
 | 11 | `blame.lua`（`current_line_blame` + `blame_line` 浮窗）+ `revdiff.lua`（`diffthis [rev]`）；各约 6 | ⬜ 待做（入口见 §6.2 / §6.4） |
 | 12 | 文档与帮助回写（`00`–`06`、`doc/vcssign.txt`、`doc_spec`） | ⬜ 待做（入口见 §6.2 / §6.4） |
@@ -355,7 +355,7 @@ commit = { message_input = 'input' },
 
 ---
 
-### §6.1 已落地（截至 `4bfe0ce`）
+### §6.1 已落地（截至 `a5e544a`）
 
 | SHA | 提交 | 验证（`make test`） |
 |---|---|---|
@@ -371,6 +371,7 @@ commit = { message_input = 'input' },
 | `2193802` | Step 6：自动触发、生命周期与逐缓冲开关（`autocmds` / `cli` / `init` 接到 `attach`） | 178 → **184**，全绿；本步动到的三个 spec 单跑 **41/41** |
 | `4bfe0ce` | Step 7：git 暂存态双层 sign（`load_head` + `filter_common` + `…Staged` 暗色） | 184 → **189**，全绿；`attach_spec` 16、`signs_spec` 14 单跑 **34/34** |
 | `f54b6af` | Step 8：hunk 导航与默认键位（`nav.lua` + `keymap.lua` + `signs.sign_line`） | 189 → **202**，全绿；`nav_spec` 13/13，本步动到的五个 spec 单跑 **72/72** |
+| `a5e544a` | Step 9：hunk 级动作（`actions.lua` 的五个动作 + `attach.ready` 等待者 + CLI / keymap 接线） | 202 → **213**，全绿；`actions_spec` 19 → 30，本步动到的四个 spec 单跑 **76/76** |
 
 **Step 2 引入的回归（交接要点，别再踩）**：Step 2 把监听集收敛成「只监听 metadata 目录」（D38），
 而 **libuv 从不报告「被监听目录自身消失」** —— 实测：把 `.git` 改名走，挂在 `.git` 上的 handler
@@ -421,6 +422,27 @@ rename 事件（3 events）。于是工作副本被删后 `Repo` 不会自杀，
 所以能查到）。本步是先显式跑 `deps/stylua.exe <三个新文件>` 再 `git add`，之后 `make format-check`
 才覆盖到 38 个文件（`lint` 同样 38 个）。
 
+**工程门（`a5e544a` 实测）**：`make test` **213/213**、本步动到的四个 spec 单跑 **76/76**
+（`attach_spec` 20 + `actions_spec` 30 + `nav_spec` 13 + `cli_spec` 13）、
+`make format-check` 零输出、`make lint` → `0 warnings / 0 errors in 38 files`。
+
+**Step 9 的三个决定（都写在代码注释里，交接时别改回去）**：
+
+1. **`attach.ready(bufnr, cb)` 用等待者列表，不是轮询**：hunk 动作要求「先有基线再算 hunk」，
+   而 `:Vcssign stage_hunk` 可能是会话里敲的第一条命令，那时基线还在路上。`attach` 是幂等的，
+   `ready` 于是顺手把管线启动起来，再把 `cb` 排进 `st.waiters`；管线每个出口（无仓库 / 引用失守 /
+   路径在仓库外 / 首次渲染 / 仓库消失 / `detach` / `forget_all`）都 `settle` 一次。
+   **以后新增出口必须也 `settle`**，否则调用方会永远等下去。
+2. **动作成功后除了 `repo:refresh_now()` 还要 `attach.refresh(bufnr)`**：仓库探测是去抖的
+   （`update_debounce_ms`），而下一个 hunk 动作读的是缓冲区自己的图层。少了这一句，`hs` 紧跟
+   `hu` 会答「no change on line N」—— spec 第一次就是这么红的。断言也要等插件的图层
+   （`hunks_staged`），而不是等 `git diff --cached`：index 变了不等于图层追上了。
+3. **未跟踪文件不走补丁**：它没有 index blob，`git apply --cached` 会拒绝。`stage_hunk` 直接落
+   `M.stage`（整份文件），`reset_hunk` 回答「nothing to discard」。
+
+**`preview_hunk` 挪到了 Step 10**：它要的是渲染（浮窗），Step 9 只做「改状态」的动作；§4 的
+`hp` 键位仍然指向它，`keymap.ACTIONS` 里暂时还是占位提示。
+
 ### §6.2 怎么推进后续步骤（工作契约）
 
 1. **路标就是 §6 的表**。一步一提交，标题沿用仓库既有风格：`feat(scope): 中文摘要（M6 Step N）` /
@@ -444,8 +466,12 @@ rename 事件（3 events）。于是工作副本被删后 `Repo` 不会自杀，
 ### §6.3 已知坑与实测（别重踩）
 
 - **libuv 不报告被监听目录自身消失** → 存活探测必须挂在**父目录**上（见 §6.1）。
-- `svn patch --strip 0` **只吃裸头 / svn 风格头**；git 风格头（`--- a/x`）要 `--strip 1`，`--strip 2` 报 E195018。
-  现在 `hunk.build_patch` 只产 git 风格头，Step 9 给 svn 用时要能在两种风格间切换。
+- `svn patch` 的路径剥离（**Step 9 实测更正**）：git 风格头（`--- a/x`）配 `--strip 0` **能正常应用**
+  （打印 `U <file>`），裸头也可以；`--strip 1` 才会冲突，`--strip 2` 报 `E195018: Cannot strip 2 components`。
+  旧文写「只吃裸头」，是把一次**未提交文件**（只 `svn add` 过、BASE 里还不存在）的实验当成了头风格问题。
+  所以 `hunk.build_patch` 只产一种头就够，svn 侧不需要切换风格，`vcs/svn.lua` 的 `apply_patch` 一行没改。
+- `svn patch` **冲突时退出码仍然是 0**（stdout 打 `C <file>` + `rejected hunk`，并写 `<file>.svnpatch.rej`）：
+  必须解析 stdout 才算成功 —— `vcs/svn.lua` 的 `apply_patch` 已经这么做（`e6c4f1b` 之后），Step 9 只是验证。
 - `git show HEAD:<f>` 在 **unborn HEAD** 上报 `fatal: invalid object name 'HEAD'.`（不是空基线），只有 `:<f>` 可用。
 - `vim.text.diff({a}, {b}, { result_type = 'indices' })`：1 基 `{start_a, count_a, start_b, count_b}`，
   `count` 可为 0（纯插入/删除）；`on_hunk` 返回负数会抛 `E5113`（**不能**用它中断）。
@@ -466,12 +492,13 @@ rename 事件（3 events）。于是工作副本被删后 `Repo` 不会自杀，
   的 python 补丁（`assert src.count(old) == 1` 守卫 + `io.open(..., encoding='utf-8', newline='')` 回写）。
   `edit` 工具对「尚无观察」的文件可能拒绝改，此时同样走 python 补丁。
 
-### §6.4 下一步（Step 9）的入口
+### §6.4 下一步（Step 10）的入口
 
 **已经就绪、可以直接消费的接口**（`6eaef2b` 冻结，`2193802` / `4bfe0ce` 补齐开关与暂存层，`f54b6af` 补上导航与键位）：
 
 - `require('vcssign.attach')`：`attach(bufnr)` / `detach(bufnr)` / `toggle(bufnr)` / `mark_dirty(bufnr)` /
-  `refresh(bufnr, cb)` / `refresh_all()` / `state(bufnr)` / `hunks(bufnr)` / `buffers()` / `root(bufnr)` /
+  `refresh(bufnr, cb)` / `ready(bufnr, cb)`（等基线落地，必要时顺手启动管线；回调 `(err, st)`）/
+  `refresh_all()` / `state(bufnr)` / `hunks(bufnr)` / `buffers()` / `root(bufnr)` /
   `system(bufnr)` / `capabilities(bufnr)` / `count()` / `forget_all()`。
   引用名是 `attach:<bufnr>`；每个缓冲区最多 attach 一次（按路径去重）。
   状态表（`state(bufnr)`）额外有：`hunks_staged`（git 的暂存层，`rev ~= 'index'` 时为空表）、
@@ -490,28 +517,34 @@ rename 事件（3 events）。于是工作副本被删后 `Repo` 不会自杀，
 - `require('vcssign.repo')`：`repo:on_update(fn)` / `repo:on_error(fn)` / `repo:on_delete(fn)` /
   `repo:mark_dirty()` / `repo:refresh_now(cb)` / `repo:dispose()`。
 
-**Step 9 要做的事**：把 §4 的 hunk 级动作接到 `lua/vcssign/actions.lua`（现在只有 M5 的文件级
-`M.diff` / `M.stage` / `M.unstage` / `M.commit` / `M.refresh`），新增 `stage_hunk` / `unstage_hunk` /
-`undo_stage_hunk` / `reset_hunk` / `stage_buffer` / `reset_buffer` / `preview_hunk`：
+**Step 9 已经完成**（`a5e544a`）：`lua/vcssign/actions.lua` 现在有 `M.stage_hunk` / `M.unstage_hunk`
+（别名 `M.undo_stage_hunk`）/ `M.reset_hunk` / `M.stage_buffer` / `M.reset_buffer`，签名统一是
+`(target: string?, opts: { bufnr?: integer, lnum?: integer }?)`；它们不抛异常、也不返回值，结果经
+`log.notify` / `log.notify_error` 报出。`lua/vcssign/cli.lua` 的 `M.subcommands` 已是
+`toggle` / `refresh` / `stage_hunk` / `undo_stage_hunk` / `reset_hunk` / `stage_buffer` / `reset_buffer` /
+`diff` / `commit` / `debug`。
 
-- 补丁文本用 `hunk.build_patch(hunk, base_lines, buf_lines, rel, opts)`（`hunk.lua:237`，已经是 git 风格头
-  `diff --git a/<rel> b/<rel>` / `--- a/<rel>` / `+++ b/<rel>`）。
-- **apply 走 stdin**（`exec` 的 `ExecOpts.stdin`，Step 2 已实现）：暂存 `git apply --cached --unidiff-zero -`、
-  撤销暂存 `git apply --cached -R -`、丢弃 `git apply -R -`。补丁必须自带结尾换行（§5 实测：stdin 的字符串
-  不补尾换行；`string[]` 每个元素会补，所以**不要**用数组形式传补丁）。
-- svn 不支持 stdin（`svn patch` 没有 `-`，实测报 `invalid option: '`）：落 `vim.fn.tempname()` + `svn patch
-  --strip 0`，而且它只认裸头 / svn 风格头（git 风格头会 C 掉 hunk 却仍然退出 0）→ 要么给 `build_patch` 加
-  「头风格」开关，要么 svn 侧另拼补丁；**冲突时也退出 0**，必须解析 stdout 的 `U`/`C` 行或 `.rej` 文件才算成功。
-- 能力门先于动作：`capabilities.stage`（svn = false）、`capabilities.revert_hunk`。
-- `reset_*` 在 `vim.bo.modified` 为真时**拒绝并提示**（D45，不做内存内 patch）。
-- 每个动作结束后 `repo:refresh_now()`，让 sign 与基线立刻追上。
-- `lua/vcssign/cli.lua`：补上这些动作的子命令与补全（`M.subcommands` 现在只有
-  `toggle` / `refresh` / `diff` / `commit` / `debug`）。`doc_spec` 钉住 `cli.subcommands` 必须逐个出现在
-  `doc/vcssign.txt` 里，所以子命令与文档要同一步改。
+**Step 10 要做的事**：`worddiff.lua`（把 change hunk 里**成对**的 removed / added 行做行内 diff，落在
+`vcssign_worddiff` 命名空间；`config.word_diff` 开关 + `<leader>tw`）+ `preview.lua`（`config.deleted_preview`
+把被删行以 `virt_lines` 内联在锚行下方，落在 `vcssign_preview` 命名空间；`preview_hunk` 浮窗、`hp` 键位
+与 `:Vcssign preview_hunk` 子命令）：
 
-**Step 9 的验收**：`actions_spec` 24 → 约 30 例，每条都用 VCS 自己验证（`git diff --cached` 的文本含该 hunk；
-`reset_hunk` 后磁盘内容等于 `git show :<file>`；`stage_buffer` 后 `git status --porcelain` 为空）、
-`vim.bo.modified` 时 `reset_hunk` 拒绝、svn 侧用 `svn diff` 验证。全量用例继续绿。
+- 行内 diff 不要直接对字符调 `vim.text.diff`（正文太长会慢）：先按「词 / 空白 / 标点」切成段，对**段序列**
+  做 `diff.run`，再把改动段映射回字节区间；渲染用 `nvim_buf_set_extmark` 的 `end_col` + `hl_group`，
+  同一行可以有多个区间。
+- `virt_lines` 走 `nvim_buf_set_extmark(..., { virt_lines = { … }, virt_lines_above = false })`；被删行的文本
+  来自 `hunk.lines_of(h, base_lines, buf_lines)` 的 removed 侧。
+- 浮窗用 `nvim_open_win`（`relative = 'cursor'`，宽度取窗口的 0.8，`max_height` 也要设），可以照
+  `actions.show_diff` 的写法。
+- `preview_hunk` 只读不改：它仍然经 `hunk_ctx` 拿 hunk（于是自动获得 `attach.ready` 的等待语义），
+  但不动 index、不写磁盘。
+- `M.subcommands` 加 `preview_hunk`（`doc_spec` 钉住子命令与 doc）；`keymap.ACTIONS` 里
+  `preview_hunk` / `toggle_word_diff` 两处占位换成实现（`toggle_current_line_blame` 属 Step 11）；
+  `doc/vcssign.txt` §4 的 `word_diff` / `deleted_preview` 说明与键位括注同步。
+
+**Step 10 的验收**：`worddiff_spec` 约 8 例（成对行的行内区间；行数不等时的降级；`word_diff = false`
+时零 extmark；切换键）、预览的用例随实现补上（删除预览的 `virt_lines` 内容与锚行、`deleted_preview = false`
+时不画、浮窗的行数与内容、`hp` 与 `:Vcssign preview_hunk` 走同一条路径）。全量用例继续绿。
 
 ## §7 验收标准（用户可点）
 
