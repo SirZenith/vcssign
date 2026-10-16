@@ -276,6 +276,22 @@ function M._render(st)
   end
 end
 
+--- Define every highlight group the plugin uses.
+---
+--- Four modules own groups, so the entry point lives here rather than in
+--- `signs.lua`.  It runs on the first attach of a buffer (nothing may be drawn
+--- with an undefined group) and again on `ColorScheme`: `define_highlights`
+--- resolves the sign layer's candidate chain against the theme when it runs, so
+--- a colorscheme loaded or switched later would leave a stale choice behind.
+--- Every group is set with `default = true` and a re-run only fills groups that
+--- are still default definitions, so a user's own override wins.
+function M.define_highlights()
+  signs.define_highlights()
+  worddiff.define_highlights()
+  preview.define_highlights()
+  blame.define_highlights()
+end
+
 --- Attach `bufnr` (default: the current buffer) to the signs pipeline.
 ---
 --- Returns the state table on success, `nil` when the buffer is not eligible
@@ -351,10 +367,7 @@ function M.attach(bufnr)
   -- synchronously, and the callback below must find this state.
   M._bufs[bufnr] = st
 
-  signs.define_highlights()
-  worddiff.define_highlights()
-  preview.define_highlights()
-  blame.define_highlights()
+  M.define_highlights()
 
   local ref = 'attach:' .. bufnr
   manager.attach(ref, path, function(err, repo)

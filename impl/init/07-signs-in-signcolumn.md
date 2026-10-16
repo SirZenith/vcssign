@@ -64,7 +64,7 @@ git 与 svn 同时交付（基线 git=index、svn=BASE），能力差异用 `Vcs
 
 ---
 
-## §2 关键决策（D38–D46）
+## §2 关键决策（D38–D47）
 
 | 决策 | 内容 | 理由（为什么） |
 |---|---|---|
@@ -77,6 +77,7 @@ git 与 svn 同时交付（基线 git=index、svn=BASE），能力差异用 `Vcs
 | **D44** | 键位默认与 gitsigns 同形：`]c`/`[c`（可带计数、可环绕）+ `<leader>h{s,r,S,u,R,p,b,d,D,q,tw}`，buffer-local，`config.keymaps = false` 整体关 | 用户迁移成本低 |
 | **D45** | reset 类动作保护未保存改动：`vim.bo.modified` 为真时**拒绝并提示**（「有未保存修改，先 `:w` 或 `:e!`」），不做内存内 patch 应用 | gitsigns 用 text edit 同步改缓冲区，我们初版不做（列为 backlog）；拒绝比静默丢改动安全 |
 | **D46** | 不引入 async 框架（沿用回调链 + 错误优先 `cb(err, ...)`）、不动 D19「回调在主循环」契约、不新增依赖 | 与 M1–M5 的架构契约一致 |
+| **D47** | `signs.culhl` 用 Neovim 原生的 extmark 选项 `cursorline_hl_group`（与 gitsigns 同款），不建 `CursorMoved` 刷新链路，也不把它写进 `place` 的早退条件 | 原生机制只作用于带 `'cursorline'` 的光标行上的 sign 格，而 `signcolumn = false` 时没有 sign 文本也就没有那个格，自建刷新链只会白跑；gitsigns 的 guard 同样不含 `culhl` |
 
 ---
 
@@ -142,8 +143,10 @@ lua/vcssign/exec,log,util,debounce.lua  既有基建（exec 加 stdin）
 - `delete`（`added.count == 0`）：`removed.start > 1` → 在 `removed.start - 1` 行放 `▁`；
   `removed.start == 1` → 第 1 行放 `topdelete`（`‾`）。
 - `untracked`：文件未跟踪时整缓冲区一个 `┆`。
-- `numhl/linehl/culhl` 开关分别写 `number_hl_group`/`line_hl_group`；光标行用 `Cul` 变体在 `CursorMoved`
-  上刷（与 `current_line_blame` 共用一次 `CursorMoved` 处理）。
+- `numhl/linehl` 开关分别写 `number_hl_group`/`line_hl_group`；`culhl` 写 `cursorline_hl_group`（Neovim
+  原生 extmark 选项：只在带 `'cursorline'` 的光标行的 sign 格上生效，无需 `CursorMoved` 刷新，
+  见 D47）。
+- `culhl` 不参与 `place` 的早退判断：`signcolumn = false`（无 sign 文本）时没有 sign 格可上色。
 
 ---
 
@@ -173,7 +176,7 @@ commit = { message_input = 'input' },
 
 **高亮组**（`signs.define_highlights()`，`default = true`，允许用户主题覆盖）：
 `Vcssign{Add,Change,Delete,TopDelete,ChangeDelete,Untracked}` 及其 `…Staged`、`…Ln`、`…Nr`、`…Cul` 变体，
-默认 link 到 `DiffAdd/DiffChange/DiffDelete`（Staged 用更暗的链接，参考 gitsigns 的 `GitSignsAddStaged`）。
+默认先取主题为 git sign 准备的组（`GitGutter*` / `SignifySign*` / `Diff{Added,Removed,Modified}Gutter`，即 gitsigns 候选链去掉 `GitSigns*`），都没有才 link 到 `DiffAdd/DiffChange/DiffDelete`（Staged 用更暗的链接，参考 gitsigns 的 `GitSignsAddStaged`）。
 命名空间：`vcssign_signs`、`vcssign_signs_staged`、`vcssign_worddiff`、`vcssign_preview`、`vcssign_blame`。
 
 ---
