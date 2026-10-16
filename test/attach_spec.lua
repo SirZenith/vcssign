@@ -266,6 +266,96 @@ return {
     end),
   },
   {
+    name = 'the sign column is only written to a window that needs it',
+    fn = guarded(function()
+      -- Writing `'signcolumn'` fires `OptionSet` *even for the value the window
+      -- already has* (measured: the same value written three times fires it
+      -- three times).  Re-applying it on every `WinEnter` therefore fires other
+      -- plugins' handlers while they are in the middle of opening a window --
+      -- which is how vcssign broke `:Noice history` (07 §6.3).  Unchanged windows
+      -- are left alone now.
+      config.setup({ signcolumn = 'yes:2' })
+      local dir = helpers.git_repo('attach-signcolumn-quiet')
+      helpers.write(dir .. '/base.txt', 'base\nnew\n')
+      local bufnr = open(dir .. '/base.txt')
+
+      attach_now(bufnr)
+      local win = api.nvim_get_current_win()
+      eq(vim.wo[win].signcolumn, 'yes:2')
+
+      local fired = 0
+      local function counting()
+        return api.nvim_create_autocmd('OptionSet', {
+          pattern = 'signcolumn',
+          callback = function()
+            fired = fired + 1
+          end,
+        })
+      end
+
+      -- The re-apply is driven directly: `autocmds` is not set up in this spec,
+      -- and the `WinEnter` subscription has its own case there.  What a window
+      -- does *not* need is a write, because the write fires `OptionSet`.
+      local id = counting()
+      attach.reapply_signcolumn(bufnr)
+      api.nvim_del_autocmd(id)
+      eq(fired, 0, 'a window that already has the value is not written to')
+
+      -- A window that is missing the value still gets it, once.
+      vim.wo[win].signcolumn = 'no'
+      id = counting()
+      attach.reapply_signcolumn(bufnr)
+      api.nvim_del_autocmd(id)
+      eq(vim.wo[win].signcolumn, 'yes:2', 'the window takes the value back')
+      eq(fired, 1, 'and that write happened once')
+    end),
+  },
+  {
+    name = 'a window that is gone by the time it is written to is skipped',
+    fn = guarded(function()
+      -- `win_findbuf` can name a window that is being torn down; touching it
+      -- would raise straight into the caller.  Spying on `win_findbuf` is the
+      -- only way to hand the function a window id that never was.
+      config.setup({ signcolumn = 'yes:2' })
+      local dir = helpers.git_repo('attach-signcolumn-stale')
+      helpers.write(dir .. '/base.txt', 'base\nnew\n')
+      local bufnr = open(dir .. '/base.txt')
+      attach_now(bufnr)
+
+      local real = vim.fn.win_findbuf
+      vim.fn.win_findbuf = function()
+        return { 9999 }
+      end
+      local passed, werr = pcall(attach.reapply_signcolumn, bufnr)
+      vim.fn.win_findbuf = real
+
+      ok(passed, 'a window id that is gone does not raise: ' .. tostring(werr))
+    end),
+  },
+  {
+    name = "another plugin's failing OptionSet handler cannot break the re-apply",
+    fn = guarded(function()
+      config.setup({ signcolumn = 'yes:2' })
+      local dir = helpers.git_repo('attach-signcolumn-hostile')
+      helpers.write(dir .. '/base.txt', 'base\nnew\n')
+      local bufnr = open(dir .. '/base.txt')
+      attach_now(bufnr)
+      vim.wo[api.nvim_get_current_win()].signcolumn = 'no'
+
+      local id = api.nvim_create_autocmd('OptionSet', {
+        pattern = 'signcolumn',
+        callback = function()
+          error('boom from another plugin')
+        end,
+      })
+      local passed, werr = pcall(attach.reapply_signcolumn, bufnr)
+      api.nvim_del_autocmd(id)
+
+      ok(passed, 'the re-apply survives: ' .. tostring(werr))
+      eq(vim.wo[api.nvim_get_current_win()].signcolumn, 'yes:2', 'and the column is applied')
+    end),
+  },
+  {
     name = 'a file outside any repository attaches nothing, and says nothing',
     fn = guarded(function()
       -- Deliberately *not* `scratch_dir`: that lives inside this plugin's own

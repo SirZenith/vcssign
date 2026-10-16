@@ -524,6 +524,12 @@ window is not run twice` 只在全量里红（`repo_spec` 单跑 20/20）。原�
 5. 进 backlog 而**不改代码**的两条：`patch_of` 用的是 `st.base_text`（磁盘被别的程序改过时补丁会对不上，
    表现是 git 报 `patch does not apply` —— 安全但不友好）；11 份 spec 各自复制 `guarded`。
 
+**M6 之后的修复（用户实测）**：上面那条 3 里新增的 `WinEnter` → `reapply_signcolumn` 会在别人的
+`nvim_win_call`（noice 开 `:Noice history`）里写 `'signcolumn'`，而「写入窗口已有的值」**同样触发
+`OptionSet`**，于是 noice 视图的处理器一炸就记在 `attach.lua:302` 上。修复：先比后写（值相同就
+不写）、失效窗口跳过、写用 `pcall`；`attach_spec` 三条新用例（值未变 0 次 OptionSet、值变了正好
+1 次、失效窗口 id 不抛错）。细节见 §6.3 末条。
+
 ### §6.2 怎么推进后续步骤（工作契约）
 
 1. **路标就是 §6 的表**。一步一提交，标题沿用仓库既有风格：`feat(scope): 中文摘要（M6 Step N）` /
@@ -593,6 +599,12 @@ window is not run twice` 只在全量里红（`repo_spec` 单跑 20/20）。原�
 - 长命令会被 harness 截断（heredoc 尤甚，超过约 7KB 会被切在半句上）：长文件分块写，或改用「按行号手术」
   的 python 补丁（`assert src.count(old) == 1` 守卫 + `io.open(..., encoding='utf-8', newline='')` 回写）。
   `edit` 工具对「尚无观察」的文件可能拒绝改，此时同样走 python 补丁。
+- **在 `WinEnter` 里给窗口写 `'signcolumn'` 会踩到别的插件**（用户实测 noice：`:Noice history` 报
+  `nui/split/init.lua:170` → `attach.lua:302`（`vim.wo[win].signcolumn = sc`）`C: in function '__newindex'`）：
+  `vim.wo[win].signcolumn = <同一个值>` **也会触发 `OptionSet`**（实测：同一个值写三次 = 三次
+  `OptionSet`），而 nui 开窗是**在自己的 `nvim_win_call` 里**执行 `:vsplit` 的，那串 `OptionSet`
+  处理器一炸就沿着我们写窗口选项那一行往上冒。修法：**先读后比、值相同就不写**，写时 `pcall` 、窗口失效就跳过；
+  装饰性的窗口选项永远不许打断别人开窗（`fix(attach)`，`attach_spec` 三条用例）。
 
 ### §6.4 下一步（Step 13）的入口
 
