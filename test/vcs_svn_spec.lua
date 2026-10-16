@@ -124,7 +124,7 @@ return {
     end,
   },
   {
-    name = 'is_tracked reads the first status column',
+    name = 'is_tracked answers true for BASE files and false for unversioned ones',
     fn = function()
       local dir = repo_named('vcs-svn-tracked')
       helpers.write(dir .. '/u.txt', 'u\n')
@@ -140,6 +140,20 @@ return {
       end)
       eq(ferr, nil)
       eq(untracked, false)
+    end,
+  },
+  {
+    name = 'is_tracked reports a path that does not exist as untracked',
+    fn = function()
+      local dir = repo_named('vcs-svn-tracked')
+
+      -- A missing path produces *no* `svn status` output (exit 0), so the
+      -- decision has to come from `svn info`'s exit code.
+      local nerr, missing = helpers.wait(function(cb)
+        svn.is_tracked(dir, 'nope.txt', cb)
+      end)
+      eq(nerr, nil, 'a missing path is an answer, not an error')
+      eq(missing, false)
     end,
   },
   {

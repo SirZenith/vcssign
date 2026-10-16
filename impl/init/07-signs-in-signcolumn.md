@@ -117,10 +117,14 @@ lua/vcssign/exec,log,util,debounce.lua  既有基建（exec 加 stdin）
 ---@field commit boolean
 
 ---@field show fun(root: string, rev: string|'BASE', rel: string, cb: fun(err: string?, text: string?))
----     git: `git show <rev>:<rel>`（rev=='index' 时用 `:<rel>`）；HEAD 不存在（unborn）→ 等价于空基线
+---     git: `git show <rev>:<rel>`（rev=='index' 时用 `:<rel>`）
+---     **实测更正（原写「HEAD 不存在（unborn）→ 等价于空基线」）**：`git show HEAD:<rel>` 在
+---     unborn 仓库返回 code 128 `fatal: invalid object name 'HEAD'.`，并不等于空基线；
+---     只有 `git show :<rel>` 可用（空仓库下 code 0，直接读暂存内容）。调用方要空基线
+---     必须自己先 `is_tracked` 判定再决定，不能依赖 HEAD 回落。
 ---     svn: `svn cat -r <rev|BASE> <file>`
 ---@field is_tracked fun(root: string, rel: string, cb: fun(err: string?, tracked: boolean?))
----     git: `git ls-files --error-unmatch -- <rel>`；svn: `svn status -- <path>` 的 `?`
+---     git: `git ls-files --error-unmatch -- <rel>`；svn: `svn info -- <abs>` 的退出码（非零 ⇒ 未纳管；见 §5.3 的实测更正）
 ---@field blame fun(root: string, rel: string, opts: {from: integer, to: integer}, cb)
 ---     git: `git blame --line-porcelain -L a,b -- <rel>`；svn: `svn blame --xml`（整文件缓存）
 ---@field apply_patch fun(root: string, patch: string, opts: {cached?: boolean, reverse?: boolean}, cb)
@@ -234,13 +238,27 @@ commit = { message_input = 'input' },
 - **`svn blame`** 原始：未提交/修改行用 `-` 代替 rev 与 author（`     -          - MODIFIED-l1`），字段 `%6s` 版本 + 右对齐 author + 内容。
   `svn blame -r BASE <file>` 可用。**耗时：200 行纯文本 141.1 ms，`--xml` 43.9 ms（更快 → 建议解析 XML）**。
 - `svn status -- <file>`：已改 → `M       <abs path>`；未纳管 → `?       <abs path>`（首字符 `?`）。
+- **`svn info -- <abs>` 的退出码就是「是否纳管」**：已纳管 → code 0；未纳管或路径不存在 →
+  code 1，stderr `svn: warning: W155010: The node '<abs>' was not found.`（空行）+
+  `svn: E200009: Could not display info for all targets because some targets don't exist`；
+  工作副本之外 → `svn: E155007: '<abs>' is not a working copy`（1.14.5 实测；旧版写 `W155007`）。
+  **实测更正**：`svn status -- <不存在的路径>` 无任何输出且 exit 0，用它判 `?` 会把不存在的路径读成「已跟踪」，
+  所以 `is_tracked` 改用 `svn info`（`lua/vcssign/vcs/svn.lua`），`test/vcs_svn_spec.lua` 有对应用例。
+  另：`status` 为 `!`（已纳管但磁盘丢失）的路径 `svn info` 仍 exit 0 → 仍算已跟踪。
 - **`svn revert <file>`**：code 0，`Reverted '<path>'`，工作树回 BASE，status 变干净 → 可直接丢弃工作树改动。
 - **`svn patch`（重点，照抄）**：
   - **stdin 不可用**：`svn patch -` / `svn patch --strip 0 -` / `--strip 1 -` 全 code 1：`svn.EXE: invalid option: `。
     svn 1.14.5 CLI **不支持**从 stdin 读补丁 → 必须写临时文件。
-  - **临时文件可行**：`svn patch --strip 0 <patchfile>` → `U         f.txt`（code 0，已应用）。git-style（`--- a/`/`+++ b/`）、
-    裸 unidiff、svn-style（带/不带 `Index:`）在 **`--strip 0`** 下均可应用；`--strip 1` 反而冲突，
-    `--strip 2` 报 `svn: E195018: Cannot strip 2 components from 'f.txt'`。**照抄：`svn patch --strip 0 <tempfile>`**。
+  - **临时文件可行**：`svn patch --strip 0 <patchfile>` → `U         f.txt`（code 0，已应用）。
+    ~~git-style（`--- a/`/`+++ b/`）、裸 unidiff、svn-style（带/不带 `Index:`）在 `--strip 0` 下均可应用；`--strip 1` 反而冲突~~
+    **实测更正**：`--strip 0` 下 **git 风格头不成立**——`diff --git a/x b/x` / `--- a/x` / `+++ b/x`
+    会让 svn 保留 `a/`、`b/` 前缀去找文件，结果 stdout 打 `C         x` + `>         rejected hunk …`，
+    工作树不变（而 svn 仍 exit 0）。git 风格头只在 `--strip 1` 生效；`--strip 2` 报
+    `svn: E195018: Cannot strip 2 components from 'f.txt'`。
+    **照抄：`svn patch --strip 0 <tempfile>`，且补丁必须是裸头（`--- rel` / `+++ rel`）或 svn 风格
+    （`Index: rel` 可选）。这是调用方约束：任何走 `--strip 0` 的补丁构造都不得写 `a/`、`b/` 前缀。**
+    仓库已按此实现：`lua/vcssign/hunk.lua` 的 `build_patch` 产出裸头，`test/vcs_svn_spec.lua` 的 `BARE_PATCH`
+    与对应用例把这条件钉住了。
   - **反向**：`svn patch --reverse-diff <file>` 可用；**把 `+`/`-` 互换的 unidiff** 也可用于丢弃一个 hunk（svn-style 与 git-style+`--strip 0` 都验证成功）。
   - **冲突不报错（反直觉）**：hunk 无法应用时 `svn patch` 仍 **退出码 0**，stdout 打 `C         f.txt` + `>         rejected hunk …`，
     并写 `<file>.svnpatch.rej`，工作树保持不变。**不能用退出码判成败**，必须解析 stdout 的 `U `/`C ` 或检查 `.rej`。
@@ -395,8 +413,8 @@ commit = { message_input = 'input' },
 
 1. **`on_reload` 与 `:e!` 的差异**：仅在 Windows/nvim 0.12.4 组合实测 `:e!`→`on_detach`；不同平台/版本可能不同，
    实现里两种都兜底（`on_detach` + `BufReadPost`）。
-2. **`svn patch --strip` 语义在带/不带 `a/ b/` 前缀的补丁上表现不完全直观**（本次 `--strip 0` 通吃），
-   补丁路径前缀与 WC 相对路径的组合**未穷举**。
+2. **`svn patch --strip` 语义**：`--strip 0` 只接受裸头/svn 风格头，git 风格头必须 `--strip 1`
+   （实测更正，见 §5.3）；「补丁路径前缀 × WC 相对路径」的组合仍未穷举。
 3. **`git blame` 行号对齐在「hunk 含多行（`num_lines > 1`）」时未专门验证**，只验证了每组 1 行。
 4. **`yes:2` 下「两个 sign + 开启 number」时第二个 sign 的显示未稳定复现**（负优先级 sign 是否显示未定论）。
 5. **`svn blame` 大文件（> 1k 行）耗时未测**（本次只有 200 行数据）。
