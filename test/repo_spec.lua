@@ -347,6 +347,10 @@ return {
       eq(err, nil)
       ok(repo ~= nil, 'attach must succeed')
       ok(helpers.uv_count('fs_event') > fs_baseline, 'the watcher must hold handles')
+      -- The root has to be watched as well: a handler on the metadata
+      -- directory itself never reports that directory going away.
+      ok(repo.watch_paths[repo.metadata_path], 'the metadata directory must be watched')
+      ok(repo.watch_paths[vim.fs.normalize(dir)], 'the root must be watched for liveness')
 
       -- Renaming the metadata directory away is what a deleted worktree looks
       -- like from the outside, and it is what Windows allows while a handle is
