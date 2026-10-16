@@ -116,10 +116,12 @@ vcssign 把 Git / Subversion 仓库里的改动直接反映到窗口的 `'signco
   缓冲区行数超过它就完全不画 sign（大文件保命）。
 
 `word_diff` (false)~
-  在 hunk 内部做词级 diff，把改动标得更精确。
+  在 hunk 内部做词级 diff，把改动标得更精确（高亮组 `VcssignWordDiff`）。
+  改这个值立刻生效，`<leader>tw` 是它的开关。
 
 `deleted_preview` (false)~
-  被删除的行用虚拟行预览。
+  被删除的行用虚拟行预览（高亮组 `VcssignDeleteVirtLn`）。改这个值立刻
+  生效；它没有默认键位。
 
 `current_line_blame` (false)~
   在当前行末尾实时显示 blame。
@@ -175,6 +177,8 @@ vcssign 把 Git / Subversion 仓库里的改动直接反映到窗口的 `'signco
                         暂存整个文件（git）
     :Vcssign reset_buffer
                         丢弃整个文件的改动
+    :Vcssign preview_hunk
+                        浮动窗口预览光标所在的 hunk
     :Vcssign diff       看这个文件的 diff
     :Vcssign commit     提交（git：已暂存的；svn：工作副本里该文件）
     :Vcssign debug      打印已挂载仓库、缓存与监听状态的诊断信息
@@ -193,6 +197,9 @@ vcssign 把 Git / Subversion 仓库里的改动直接反映到窗口的 `'signco
 因此这些子命令只接已打开的文件，没打开时明确拒绝而不是猜。`stage_hunk` /
 `stage_buffer` 在没有暂存区的系统（svn）上回答「no staging area」；`reset_hunk` /
 `reset_buffer` 在缓冲区有未保存修改时拒绝（D45），因为补丁作用在文件上。
+`preview_hunk` 在光标行旁边开一个只读浮窗，用 `diff` 语法把这个 hunk 的
+`-` / `+` 行列出来（`filetype=diff`，借用配色方案的 diff 高亮）；光标一移动
+浮窗就关。
 
 ==============================================================================
 4. 行级 sign 与按键                                         *vcssign-signs*
@@ -221,11 +228,12 @@ vcssign 把 Git / Subversion 仓库里的改动直接反映到窗口的 `'signco
     <leader>tw                 toggle_word_diff           开 / 关词级 diff
     <leader>tb                 toggle_current_line_blame  开 / 关行内 blame
 
-（sign 渲染、自动挂载、`]c` / `[c` 导航和 hunk 动作都已经接上：切到一个文件
-缓冲区就会画 sign，`]c` / `[c` 在 hunk 之间跳（带计数，走到头会环绕），
-`hs` / `hu` / `hr` 作用在光标所在的那个 hunk，`hS` / `hR` 作用在整个文件。
-词级 diff、hunk 预览、blame 和 rev diff 会在随后的步骤接上，现在按下只会提示
-「尚未实现」；`:Vcssign toggle` 可以整个关掉 sign。）
+（sign 渲染、自动挂载、`]c` / `[c` 导航、hunk 动作、词级 diff 和 hunk 预览
+都已经接上：切到一个文件缓冲区就会画 sign，`]c` / `[c` 在 hunk 之间跳（带计数，
+走到头会环绕），`hs` / `hu` / `hr` 作用在光标所在的那个 hunk，`hS` / `hR`
+作用在整个文件，`hp` 弹窗看这个 hunk，`tw` 切换 hunk 内的词级高亮。blame 和
+rev diff 会在随后的步骤接上，现在按下只会提示「尚未实现」；`:Vcssign toggle`
+可以整个关掉 sign。）
 
 ==============================================================================
 5. Lua API                                                    *vcssign-api*
@@ -276,6 +284,10 @@ sign 的高亮组按 hunk 类型派生：`VcssignAdd`、`VcssignChange`、`Vcssi
 1:1 混合而来，所以比工作区那层暗一档，同一行上的两层不会看起来一样；读不到
 颜色时（例如只有 `cterm` 属性的配色方案）退回链接到对应的工作区组。
 
+词级 diff 用 `VcssignWordDiff`（链接到 `DiffText`）标出 hunk 里真正改动的
+那几段文字；被删行的虚拟预览行用 `VcssignDeleteVirtLn`（链接到 `DiffDelete`）。
+hunk 预览浮窗不另起高亮组——它直接用 `filetype=diff` 的配色。
+
 这些组都用 `default = true` 定义，配色方案或用户都能覆盖，`setup()` 不会覆盖
 已有定义。
 
@@ -290,6 +302,8 @@ sign 的高亮组按 hunk 类型派生：`VcssignAdd`、`VcssignChange`、`Vcssi
   `vcssign.repo_manager` 路径 → 仓库的查找，引用计数式挂载与卸载
   `vcssign.actions`      唯一的「意图 → VCS 命令」层（diff / 暂存 / 提交）
   `vcssign.attach`        每个缓冲区的 sign 管线：基线、去抖、开关
+  `vcssign.worddiff`      hunk 内的词级高亮（extmark，独立命名空间）
+  `vcssign.preview`       被删行的虚拟行预览与 hunk 浮窗
   `vcssign.nav`           hunk 导航：`]c` / `[c` 的落点计算
   `vcssign.keymap`        默认键位（buffer-local）与动作分派
   `vcssign.cli`          |:Vcssign| 的分派与补全

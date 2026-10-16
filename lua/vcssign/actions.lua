@@ -19,6 +19,7 @@ local diff = require('vcssign.diff')
 local hunk = require('vcssign.hunk')
 local log = require('vcssign.log')
 local manager = require('vcssign.repo_manager')
+local preview = require('vcssign.preview')
 local signs = require('vcssign.signs')
 local base = require('vcssign.vcs.base')
 
@@ -542,6 +543,54 @@ function M.reset_buffer(target, opts)
     end
     t.repo:refresh_now()
   end)
+end
+
+-- ▏ preview ──────────────────────────────────────────────────────────────────────────
+
+--- Show one hunk as a unified diff in a floating window, or close it when that
+--- hunk is already on show (`hp`, §4).
+---
+--- Read-only: no patch is built, nothing is refreshed.  The preview describes
+--- the hunk the signs already have, so it goes through `hunk_ctx` like every
+--- other hunk action (the cursor decides which hunk, and a buffer that is still
+--- loading its baseline is waited for instead of guessed at).
+---@param target string|nil
+---@param opts? { bufnr?: integer, lnum?: integer, layer?: 'worktree'|'staged' }
+function M.preview_hunk(target, opts)
+  hunk_ctx(target, opts, function(ctx, err)
+    if not ctx then
+      return fail(err)
+    end
+    local st = ctx.st
+    -- The staged layer's hunks were diffed against `HEAD`, so that is the text
+    -- to show them against; the worktree layer's against the baseline.
+    local base_text = ctx.layer == 'staged' and st.head_text or st.base_text
+    if base_text == nil then
+      return fail('%s has no baseline to preview against', ctx.t.rel_path)
+    end
+    preview.toggle_hunk(
+      ctx.bufnr,
+      ctx.hunk,
+      signs.sign_line(ctx.hunk),
+      diff.split(diff.normalize(base_text)),
+      diff.split(st.buf_text)
+    )
+  end)
+end
+
+--- Turn the inline word diff on or off, for every attached buffer (`tw`, §4).
+---
+--- The switch is one config key, not per buffer, so this re-renders all of them:
+--- the alternative would be two buffers disagreeing about the setting.
+---
+--- `config.get()` is mutated in place: `config.setup` re-merges from the
+--- defaults, so calling it here would throw away every other option the user
+--- set.
+function M.toggle_word_diff()
+  local cfg = config.get()
+  cfg.word_diff = not cfg.word_diff
+  attach.refresh_all()
+  info('word diff %s', cfg.word_diff and 'on' or 'off')
 end
 
 -- ▏ commit ───────────────────────────────────────────────────────────────────
