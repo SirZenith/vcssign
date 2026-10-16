@@ -50,6 +50,7 @@ local REQUIRES = {
   repo_spec = { 'git', 'svn' },
   hunk_spec = { 'git' },
   diff_spec = { 'git' },
+  attach_spec = { 'git' },
   autocmds_spec = { 'git' },
   actions_spec = { 'git', 'svn', 'svnadmin' },
   cli_spec = { 'git', 'svn', 'svnadmin' },
@@ -64,8 +65,10 @@ local DEFAULT_SPECS = {
   'repo_spec',
   'hunk_spec',
   'diff_spec',
+  'signs_spec',
   'doc_spec',
   'autocmds_spec',
+  'attach_spec',
   'actions_spec',
   'cli_spec',
 }
