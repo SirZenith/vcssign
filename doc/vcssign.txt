@@ -1,151 +1,277 @@
-*vcssign.txt*     Line-level VCS signs (git / svn)                     *vcssign*
+*vcssign.txt* Vcssign
 
                             VCSSIGN
 
-vcssign reflects the changes in Git / Subversion repositories straight into
-the sign column: every hunk gets a sign next to its line numbers
-(added / changed / deleted ...), and git's staged and unstaged changes are
-drawn as two separate sign layers. Several repositories in one directory
-tree (including nested ones) are supported, each resolved on its own.
-
-  Environment: developed and tested against Neovim 0.12.4, git 2.55,
-  svn 1.14.5. The newest API used is |vim.system| (since 0.10); older
-  Neovim versions are unverified.
-  The implementation plan (decisions D1-D46, milestones M0-M6) lives in the
-  repository's `impl/init/*.md`.
+Homepage: <https://github.com/SirZenith/vcssign>
 
 ==============================================================================
-Contents                                                   *vcssign-contents*
+INTRODUCTION                                                         *vcssign*
 
-  1. Installation and setup ...................... |vcssign-install|
-  2. Configuration .............................. |vcssign-config|
-  3. Commands .................................... |vcssign-commands|
-  4. Line signs and keymaps ...................... |vcssign-signs|
-  5. Lua API ..................................... |vcssign-api|
-  6. Highlight groups ............................ |vcssign-highlights|
-  7. Architecture ............................... |vcssign-arch|
+Vcssign is a plugin for Neovim that provides integration with Git and
+Subversion via a feature set which includes (but not limited to):
+  • Provides signs in the |signcolumn| to show changed/added/removed lines,
+    with git's staged and unstaged changes drawn as two separate sign layers.
+  • Mappings to operate on hunks to stage, undo or reset against the VCS
+    baseline.
+
+Vcssign is implemented entirely in Lua which is built into Neovim and
+requires no external dependencies other than the VCS binaries themselves.
+Several repositories in one directory tree (including nested ones) are
+supported, each resolved on its own.
+
+Developed and tested against Neovim 0.12.4, git 2.55 and svn 1.14.5. The
+newest API used is |vim.system| (since 0.10); older Neovim versions are
+unverified. The implementation plan (decisions D1-D46, milestones M0-M6)
+lives in the repository's `impl/init/*.md`.
 
 ==============================================================================
-1. Installation and setup                                    *vcssign-install*
+USAGE                                                          *vcssign-usage*
 
-Install with any plugin manager (lazy.nvim example): >
+No setup required. `plugin/vcssign.vim` registers |:Vcssign| and the
+functions in |vcssign-functions| work on their own.
 
-    {
-      'you/vcssign',
-      config = function()
-        require('vcssign').setup({
-          signs = { add = { text = '▎' } },
-          signcolumn = true,
-        })
-      end,
+However, automatic attaching — discovering the repository in the background
+when a file is opened, refreshing the signs as you edit — is done by the
+autocommands |vcssign.setup()| installs; without it, explicit actions such
+as `:Vcssign refresh` still work.
+
+Each |vcssign.setup()| call starts from the defaults and merges the table
+you give it (calls do not stack): a key left out of a second call falls back
+to its default.
+
+Optional configuration can be passed to the setup function. Here is an
+example with most of the default settings:
+>lua
+    require('vcssign').setup {
+      systems = { 'git', 'svn' },
+      signs = {
+        add          = { text = '▎' },
+        change       = { text = '▎' },
+        delete       = { text = '▁' },
+        topdelete    = { text = '‾' },
+        changedelete = { text = '~' },
+        untracked    = { text = '┆' },
+        numhl        = false,
+        linehl       = false,
+        culhl        = false,
+      },
+      signs_staged = {
+        add          = { text = '▎' },
+        change       = { text = '▎' },
+        delete       = { text = '▁' },
+        topdelete    = { text = '‾' },
+        changedelete = { text = '~' },
+        untracked    = { text = '┆' },
+      },
+      signcolumn = true,
+      rev = 'index',
+      attach_to_untracked = true,
+      max_file_length = 40000, -- Disable if file is longer than this (in lines)
+      word_diff = false, -- Toggle with `<leader>tw`
+      deleted_preview = false,
+      current_line_blame = false, -- Toggle with `<leader>tb`
+      current_line_blame_opts = {
+        delay = 1000,
+        virt_text = true,
+        virt_text_pos = 'eol', -- 'eol' | 'overlay' | 'right_align' | 'inline'
+        virt_text_priority = 200,
+        ignore_whitespace = false,
+        use_focus = true,
+        extra_opts = {},
+      },
+      current_line_blame_formatter = ' <author>, <author_time:%R> - <summary> ',
+      current_line_blame_formatter_nc = ' Not Committed Yet ',
+      watch = true,
+      update_debounce_ms = 200,
+      retry_delay_ms = 1000,
+      retry_max_ms = 30000,
+      exec_timeout_ms = 15000,
+      log_level = 'warn',
+      diff = {
+        mode = 'vertical',
+        use_external = false,
+        algorithm = 'myers',
+        indent_heuristic = true,
+        linematch = false,
+        ignore_cr_at_eol = true,
+      },
+      commit = {
+        message_input = 'input',
+      },
     }
-
-`setup()` is optional: every layer has defaults, `plugin/vcssign.vim`
-registers |:Vcssign|, and the `require('vcssign')` API works on its own. But
-automatic attaching (discovering the repository in the background when a
-file is opened, refreshing as you edit) is done by the autocommands `setup()`
-installs — without it, explicit actions such as `:Vcssign refresh` still
-work.
-
-Each `setup()` call starts from the defaults and merges the table you
-give it (calls do not stack): a key left out of a second call falls back to
-its default.
+<
 
 ==============================================================================
-2. Configuration                                             *vcssign-config*
+MAPPINGS                                                    *vcssign-mappings*
 
-Every key below can be passed to `require('vcssign').setup{}`. The defaults
-shown are exactly what `config.lua` ships.
+Once attached, every time editing settles for `update_debounce_ms`
+milliseconds, the buffer is diffed against the `rev` baseline (git's staging
+area / svn's BASE by default) and every hunk gets its sign. git's staged
+changes use `signs_staged` and its unstaged changes use `signs`, so both
+sides of a file's changes are visible at once.
 
-Complete defaults                                          *vcssign-defaults*
-Every option, including the nested tables (`signs_staged` carries the same
-six `text` values as `signs`; it has no `numhl` / `linehl` / `culhl` of its
-own): >
+The default mappings are buffer-local, installed when a buffer gets its
+signs and removed again on detach. They are configured with the `keymaps`
+field of the config table passed to |vcssign.setup()|. See
+|vcssign-config-keymaps|.
 
-    systems                               { 'git', 'svn' }
-    exec_timeout_ms                       15000
-    watch                                 true
-    update_debounce_ms                    200
-    retry_delay_ms                        1000
-    retry_max_ms                          30000
-    log_level                             'warn'
-    signs.add.text                        '▎'
-    signs.change.text                     '▎'
-    signs.delete.text                     '▁'
-    signs.topdelete.text                  '‾'
-    signs.changedelete.text               '~'
-    signs.untracked.text                  '┆'
-    signs.numhl                           false
-    signs.linehl                          false
-    signs.culhl                           false
-    signs_staged.add.text                 '▎'
-    signs_staged.change.text              '▎'
-    signs_staged.delete.text              '▁'
-    signs_staged.topdelete.text           '‾'
-    signs_staged.changedelete.text        '~'
-    signs_staged.untracked.text           '┆'
-    signcolumn                            true
-    rev                                   'index'
-    attach_to_untracked                   true
-    max_file_length                       40000
-    word_diff                             false
-    deleted_preview                       false
-    current_line_blame                    false
-    current_line_blame_opts.virt_text     true
-    current_line_blame_opts.virt_text_pos 'eol'
-    current_line_blame_opts.virt_text_priority 200
-    current_line_blame_opts.delay         1000
-    current_line_blame_opts.ignore_whitespace false
-    current_line_blame_opts.use_focus     true
-    current_line_blame_opts.extra_opts    {}
-    current_line_blame_formatter          ' <author>, <author_time:%R> - <summary> '
-    current_line_blame_formatter_nc       ' Not Committed Yet '
-    keymaps                               (see |vcssign-keymaps|)
-    diff.mode                             'vertical'
-    diff.use_external                     false
-    diff.algorithm                        'myers'
-    diff.indent_heuristic                 true
-    diff.linematch                        false
-    diff.ignore_cr_at_eol                 true
-    commit.message_input                  'input'
-    on_attach                             nil
-    on_detach                             nil
+    lhs        action                     meaning
+    [c          prev_hunk                  jump to previous hunk
+    ]c          next_hunk                  jump to next hunk
+    <leader>hs  stage_hunk                 stage this hunk (git)
+    <leader>hr  reset_hunk                 restore this hunk
+    <leader>hS  stage_buffer               stage whole buffer
+    <leader>hu  undo_stage_hunk            unstage this hunk
+    <leader>hR  reset_buffer               restore whole buffer
+    <leader>hp  preview_hunk               preview this hunk in a float
+    <leader>hb  blame_line                 blame this line
+    <leader>hd  diffthis                   diff against the baseline
+    <leader>hD  diffthis_rev               diff against a rev
+    <leader>hq  setqflist                  quickfix (planned)
+    <leader>hQ  setqflist_all              quickfix all (planned)
+    <leader>tw  toggle_word_diff           toggle word diff
+    <leader>tb  toggle_current_line_blame  toggle inline blame
 
-What each option means:
+`]c` / `[c` take a count and wrap around at the ends of the buffer. Only
+`hq` / `hQ` are placeholders: they answer "not implemented yet".
 
-`systems` ({ 'git', 'svn' })~
-  The VCS systems to enable, in priority order.
+==============================================================================
+FUNCTIONS                                                  *vcssign-functions*
 
-`exec_timeout_ms` (15000)~
-  Timeout for a single VCS command; a command that exceeds it is killed and
-  reported.
+setup({cfg})                                                *vcssign.setup()*
+    Configure the plugin and start the lifecycle autocommands (automatic
+    attach and refresh).
 
-`watch` (true)~
-  Discover changes through a filesystem watcher (git watches `.git`, svn
-  watches `.svn`). With it off, only explicit refreshes (`:Vcssign refresh`,
-  `:w`, `:e!`, `FocusGained`) re-read the baseline.
+    Each call starts from the defaults and merges the table given to it
+    (calls do not stack). Returns the module table.
 
-`update_debounce_ms` (200)~
-  The debounce window for buffer edits: hunks are recomputed once editing
-  has settled. 200ms is the same order as gitsigns' `update_debounce`.
+    Parameters: ~
+        {cfg} (`table?`): Configuration for vcssign.
+              See |vcssign-usage| and |vcssign-config| for more details.
 
-`retry_delay_ms` (1000) / `retry_max_ms` (30000)~
-  The first retry delay after a failed repository liveness probe and the cap
-  of the exponential backoff: while retrying, the existing repository session
-  is kept (buffers keep their current baseline), and one failure warns once.
+refresh({path})                                           *vcssign.refresh()*
+    Refresh the signs of the file at {path} and of the repository
+    containing it, now instead of after the debounce.
 
-`log_level` ('warn')~
-  Plugin log level. User-facing answers ("no repository", missing
-  capability, failed action) are not throttled by it and always show.
+    {path} can be omitted, in which case it is resolved like |:Vcssign|:
+    the current buffer's file, then the current directory. A repository
+    that is not tracked yet is mounted first, then refreshed, so this can
+    be the first mapping you press. The buffer showing the file is attached
+    (or refreshed) as well, so signs appear even without |vcssign.setup()|
+    having run. Errors are reported as notifications.
 
-`signs`~
-  The signs for unstaged changes. Six hunk keys — `signs.add`,
-  `signs.change`, `signs.delete`, `signs.topdelete`, `signs.changedelete`,
-  `signs.untracked` — each take `text` (the character drawn in the sign
-  column) plus optional `numhl` / `linehl` / `culhl` (line-number / whole-
-  line / cursor-line highlighting): >
+    Parameters: ~
+        {path} (`string?`): A file, directory or repository root path.
 
-    signs = {
+attach({bufnr})                                            *vcssign.attach()*
+    Put a buffer on the sign pipeline. Calling it twice is a no-op.
+
+    Parameters: ~
+        {bufnr} (`integer?`): Buffer number. Defaults to current buffer.
+
+    Returns: ~
+        (`table?`): The attach state table, or `nil` when the buffer has
+        no file to diff (unnamed, `nofile`, missing on disk, or longer
+        than |vcssign-config-max_file_length|).
+
+detach({bufnr})                                            *vcssign.detach()*
+    Stop drawing signs in a buffer, cancel its debounce and release this
+    buffer's repository reference.
+
+    Parameters: ~
+        {bufnr} (`integer?`): Buffer number. Defaults to current buffer.
+
+toggle({bufnr})                                            *vcssign.toggle()*
+    The implementation behind |:Vcssign toggle|: turn one buffer's signs
+    off or on. Turning them off empties the column and stops
+    refresh-on-edit, but keeps the repository reference, so turning them
+    back on redraws immediately at no extra probing cost.
+
+    Parameters: ~
+        {bufnr} (`integer?`): Buffer number. Defaults to current buffer.
+
+    Returns: ~
+        (`boolean?`): The new state, or `nil` when the buffer cannot be
+        attached.
+
+get_hunks({bufnr})                                       *vcssign.get_hunks()*
+    Get the hunk array for the specified buffer.
+
+    Parameters: ~
+        {bufnr} (`integer?`): Buffer number. Defaults to current buffer.
+
+    Returns: ~
+        (`table`): The hunks currently drawn for the buffer (an empty
+        table when there are none).
+
+cli.run({fargs})                                         *vcssign.cli.run()*
+    The implementation behind |:Vcssign|, kept reachable as
+    `require('vcssign').cli.run(fargs)` so the API and the command can
+    never drift apart.
+
+    Parameters: ~
+        {fargs} (`string[]`): The subcommand and its arguments, as
+                |<f-args>| gives them.
+
+==============================================================================
+CONFIGURATION                                                 *vcssign-config*
+
+This section describes the configuration fields which can be passed to
+|vcssign.setup()|. Tables merge key by key with the user value given higher
+precedence, so a single sub-field can be overridden without redefining the
+whole field; non-empty lists replace wholesale (`systems = { 'svn' }` really
+means "only svn"), and empty tables count as dictionaries
+(`setup({ signs = {} })` leaves the defaults alone).
+
+systems                                               *vcssign-config-systems*
+    Type: `table`, Default: `{ 'git', 'svn' }`
+
+    The VCS systems to enable, in priority order.
+
+exec_timeout_ms                               *vcssign-config-exec_timeout_ms*
+    Type: `number`, Default: `15000`
+
+    Timeout (in milliseconds) for a single VCS command; a command that
+    exceeds it is killed and reported.
+
+watch                                                   *vcssign-config-watch*
+    Type: `boolean`, Default: `true`
+
+    Discover changes through a filesystem watcher (git watches `.git`,
+    svn watches `.svn`) and use them as a trigger to refresh signs.
+
+    With `watch = false`, only explicit refreshes (`:Vcssign refresh`,
+    `:w`, `:e!`, FocusGained) re-read the baseline.
+
+update_debounce_ms                         *vcssign-config-update_debounce_ms*
+    Type: `number`, Default: `200`
+
+    Debounce time for buffer edits (in milliseconds): hunks are recomputed
+    once editing has settled.
+
+retry_delay_ms                                 *vcssign-config-retry_delay_ms*
+    Type: `number`, Default: `1000`
+
+    First retry delay after a failed repository liveness probe. While
+    retrying, the existing repository session is kept (buffers keep their
+    current baseline) and one failure warns once.
+
+retry_max_ms                                     *vcssign-config-retry_max_ms*
+    Type: `number`, Default: `30000`
+
+    Upper bound of the exponential backoff after a failed repository
+    liveness probe.
+
+log_level                                           *vcssign-config-log_level*
+    Type: `string`, Default: `'warn'`
+
+    Plugin log level. User-facing answers ("no repository", a missing
+    capability, a failed action) are not throttled by it and always show.
+
+signs                                                   *vcssign-config-signs*
+    Type: `table[extended]`
+    Default: >
+    {
       add          = { text = '▎' },
       change       = { text = '▎' },
       delete       = { text = '▁' },
@@ -156,12 +282,27 @@ What each option means:
       linehl       = false,
       culhl        = false,
     }
+<
+    Configuration for the signs of unstaged changes. The six hunk keys —
+    `signs.add`, `signs.change`, `signs.delete`, `signs.topdelete`,
+    `signs.changedelete`, `signs.untracked` — each take:
+      • `text`: the character drawn in the sign column.
+      • `numhl`, `linehl`, `culhl`: line-number / whole-line /
+        cursor-line highlighting.
 
-`signs_staged`~
-  A separate set of signs for git staged changes; the six hunk fields
-  are the same shape as `signs`: >
+    The highlights `Vcssign[kind]` are used for each kind of sign. E.g.
+    'add' signs use the highlights:
+      • `VcssignAdd`    (for the sign text)
+      • `VcssignAddNr`  (when `numhl == true`)
+      • `VcssignAddLn`  (when `linehl == true`)
+      • `VcssignAddCul` (when `culhl == true`)
 
-    signs_staged = {
+    See |vcssign-highlight-groups|.
+
+signs_staged                                     *vcssign-config-signs_staged*
+    Type: `table[extended]`
+    Default: >
+    {
       add          = { text = '▎' },
       change       = { text = '▎' },
       delete       = { text = '▁' },
@@ -169,290 +310,437 @@ What each option means:
       changedelete = { text = '~' },
       untracked    = { text = '┆' },
     }
+<
+    Configuration for the signs of git staged changes. The same six hunk
+    fields as |vcssign-config-signs|; it has no `numhl` / `linehl` /
+    `culhl` of its own (it has no such options).
 
-`signcolumn` (true)~
-  Whether the sign text is drawn at all. vcssign leaves the window's
-  'signcolumn' option alone, so set it to a value that shows the column:
-  Neovim's default 'auto' opens it as soon as there is a sign to show, while
-  'no' and 'number' hide it. With `signcolumn = false` the signs carry no
-  text, but `signs.numhl` / `signs.linehl` still get their highlights.
+    The staged highlights are the worktree groups with a `Staged` suffix.
+    See |vcssign-highlight-groups|.
 
-`rev` ('index')~
-  The baseline the buffer is compared against: 'index' (git's staging area
-  / svn's BASE), 'HEAD', or any revision name the VCS understands.
+signcolumn                                         *vcssign-config-signcolumn*
+    Type: `boolean`, Default: `true`
 
-`attach_to_untracked` (true)~
-  Attach to untracked files as well and draw their signs.
+    Enable/disable the sign text in the sign column.
 
-`max_file_length` (40000)~
-  Buffers with more lines than this get no signs at all (large-file
-  protection).
+    When disabled the signs carry no text, but `signs.numhl` /
+    `signs.linehl` still get their highlights.
 
-`word_diff` (false)~
-  Do a word-level diff inside hunks and mark the changed spans more
-  precisely (highlight group `VcssignWordDiff`). Changing the value takes
-  effect immediately; `<leader>tw` toggles it.
+    vcssign never writes the window's 'signcolumn' option, so set it
+    yourself to a value that shows the column: Neovim's default 'auto'
+    opens it as soon as there is a sign to show, while 'no' and 'number'
+    hide it.
 
-`deleted_preview` (false)~
-  Preview deleted lines as virtual lines (highlight group
-  `VcssignDeleteVirtLn`). Changing the value takes effect immediately; it
-  has no default keymap.
+rev                                                       *vcssign-config-rev*
+    Type: `string`, Default: `index`
 
-`current_line_blame` (false)~
-  Show live blame at the end of the cursor line; `<leader>tb` toggles it.
-  The annotation is also kept in `vim.b.vcssign_blame_line` (the text) and
-  `vim.b.vcssign_blame_line_dict` (the fields behind it).
+    The baseline the buffer is compared against: 'index' (git's staging
+    area, svn's BASE), or any revision the VCS understands.
+    See |vcssign-revision|.
 
-`current_line_blame_opts`~
-  Inline blame options -- the same set gitsigns has:
+attach_to_untracked                       *vcssign-config-attach_to_untracked*
+    Type: `boolean`, Default: `true`
 
-    `delay` (1000)              milliseconds the cursor has to stand still
-                                before the annotation appears
-    `virt_text` (true)          draw the annotation as virtual text; with
-                                `false` only the `vim.b` values are set
-    `virt_text_pos` ('eol')     'eol' | 'overlay' | 'right_align' | 'inline';
-                                'right_align' falls back to 'eol' on a line
-                                that leaves no room for it
-    `virt_text_priority` (200)  extmark priority of the annotation
-    `ignore_whitespace`        (false) blame with git's `-w`, so a
-                                whitespace-only change does not move the
-                                annotation (git only)
-    `use_focus` (true)          annotate only the focused window, so an
-                                unfocused split shows no stale annotation
-    `extra_opts` ({})           extra arguments for `git blame`
+    Attach to untracked files as well and draw their signs.
 
-`current_line_blame_formatter` (' <author>, <author_time:%R> - <summary> ')~
-  What the annotation says. The placeholders are gitsigns': `<author>`,
-  `<author_name>`, `<author_mail>`, `<author_time>`, `<author_tz>`,
-  `<committer>`, `<committer_mail>`, `<committer_time>`, `<committer_tz>`,
-  `<sha>`, `<abbrev_sha>`, `<summary>`, `<previous>`, `<filename>`, `<lnum>`,
-  `<orig_lnum>`, `<final_lnum>`. A specifier the VCS cannot answer is left
-  as written (svn has no `<summary>`), a value can be formatted with
-  `:<strftime>` (`<author_time:%Y-%m-%d>`), and `%R` is gitsigns' relative
-  form (`2 hours ago`, `a while ago`); a bare `<author_time>` shortens to
-  `%Y-%m-%d`. The value may also be a function
-  `fun(info) -> string | {string, hl}[]`.
+max_file_length                               *vcssign-config-max_file_length*
+    Type: `number`, Default: `40000`
 
-`current_line_blame_formatter_nc` (' Not Committed Yet ')~
-  The format used for a line nobody has committed yet (git: an all-zero
-  object id; svn: an entry with no `<commit>`).
+    Max file length (in lines) to attach to. Buffers with more lines than
+    this get no signs at all.
 
-`keymaps`~
-  The keymap table for hunk actions: `{ lhs = 'action' }`; mapping an lhs to
-  `false` means: do not bind it (left for the user; the whole table set
-  to `false` disables every default mapping). The defaults are listed in
-  |vcssign-keymaps|.
+word_diff                                           *vcssign-config-word_diff*
+    Type: `boolean`, Default: `false`
 
-`diff.mode` ('vertical')~
-  Open a vertical split ('vertical') or a horizontal one ('split') for the
-  diff view. The diff buffer is read-only and uses `filetype=diff`.
+    Highlight the intra-hunk word differences in the buffer, marking the
+    actually-changed spans more precisely.
 
-`diff.use_external` (false) / `diff.algorithm` ('myers')~
-  The diff is computed by the built-in `vim.text.diff` by default (svn has
-  no local diff backend, and one implementation keeps git and svn behaving
-  the same); `diff.algorithm` is one of 'myers' / 'minimal' / 'patience' /
-  'histogram'.
+    Uses the highlight `VcssignWordDiff`. Changing the value takes effect
+    immediately; `<leader>tw` toggles it.
 
-`diff.indent_heuristic` / `diff.linematch` / `diff.ignore_cr_at_eol`~
-  Indentation alignment heuristic, intra-hunk word-level refinement, and
-  treating a trailing CR as part of the line ending. `diff.linematch`
-  defaults to `false`: linematch is quadratic in the size of a hunk, and
-  `true` means "every hunk, however large" (measured on an all-changed
-  buffer: 500 lines 1.1s, 2000 lines 69s, 5000 lines OOM). To turn it on,
-  set a bounded integer (linematch then applies only to hunks up to
-  that many lines).
+deleted_preview                               *vcssign-config-deleted_preview*
+    Type: `boolean`, Default: `false`
 
-`commit.message_input` ('input')~
-  How the commit message is asked for: 'input' uses |vim.ui.input|'s
-  one-line prompt. 'buffer' is in the plan but not implemented yet — it
-  warns and falls back to 'input'.
+    Preview deleted lines as virtual lines below the hunk.
 
-`on_attach` / `on_detach` (nil)~
-  Functions called when a repository becomes attached / detached
-  (`fun(repo)`). Optional; looked up on every call, so a later `setup()`
-  still takes effect. Exceptions thrown inside the hooks are isolated
-  (logged, nobody else is disturbed).
+    Uses the highlight `VcssignDeleteVirtLn`. Changing the value takes
+    effect immediately; it has no default mapping.
+
+current_line_blame                         *vcssign-config-current_line_blame*
+    Type: `boolean`, Default: `false`
+
+    Adds an unobtrusive and customisable blame annotation at the end of
+    the cursor line, after `current_line_blame_opts.delay` milliseconds
+    of cursor stillness. `<leader>tb` toggles it.
+
+    The annotation is also kept in `b:vcssign_blame_line` and
+    `b:vcssign_blame_line_dict`. See |vcssign-variables|.
+
+    Uses the highlight `VcssignBlame`.
+
+current_line_blame_opts               *vcssign-config-current_line_blame_opts*
+    Type: `table[extended]`
+    Default: >
+    {
+      delay = 1000,
+      virt_text = true,
+      virt_text_pos = 'eol',
+      virt_text_priority = 200,
+      ignore_whitespace = false,
+      use_focus = true,
+      extra_opts = {},
+    }
+<
+    Options for the current line blame annotation.
+
+    Fields: ~
+      • virt_text: boolean
+        Whether to show a virtual text blame annotation. With `false`
+        only the `b:vcssign_blame_line*` variables are set.
+      • virt_text_pos: string
+        Blame annotation position. Available values:
+          `eol`         Right after eol character.
+          `overlay`     Display over the specified column, without
+                        shifting the underlying text.
+          `right_align` Display right aligned in the window (falls back
+                        to `eol` on a line that leaves no room).
+          `inline`      Display inside the line.
+      • delay: integer
+        Sets the delay (in milliseconds) before blame virtual text is
+        displayed.
+      • ignore_whitespace: boolean
+        Ignore whitespace when running blame (git only).
+      • virt_text_priority: integer
+        Priority of virtual text.
+      • use_focus: boolean
+        Enable only when the window is in focus, so an unfocused split
+        shows no stale annotation.
+      • extra_opts: string[]
+        Extra options passed to `git-blame`.
+
+current_line_blame_formatter     *vcssign-config-current_line_blame_formatter*
+    Type: `string|function`
+    Default: `' <author>, <author_time:%R> - <summary> '`
+
+    String or function used to format the virtual text of
+    |vcssign-config-current_line_blame|.
+
+    When a string, accepts the following format specifiers:
+        • `<abbrev_sha>`
+        • `<rev>`
+        • `<orig_lnum>`
+        • `<final_lnum>`
+        • `<lnum>`
+        • `<author>`
+        • `<author_name>`
+        • `<author_mail>`
+        • `<author_time>` or `<author_time:FORMAT>`
+        • `<author_tz>`
+        • `<committer>`
+        • `<committer_mail>`
+        • `<committer_time>` or `<committer_time:FORMAT>`
+        • `<committer_tz>`
+        • `<summary>`
+        • `<previous>`
+        • `<filename>`
+
+      For `<author_time:FORMAT>` and `<committer_time:FORMAT>`, `FORMAT`
+      can be any valid date format that is accepted by `os.date()` with
+      the addition of `%R` for the relative form (`2 hours ago`,
+      `a while ago`); a bare `<author_time>` shortens to `%Y-%m-%d`.
+
+      A specifier the VCS cannot answer is left as written (svn has no
+      `<summary>`); the default format collapses to
+      `' <author>, <author_time:%R> '` on svn.
+
+    When a function:
+      Parameters: ~
+        {info} Table with the blame fields behind the annotation
+               (author, author_time, abbrev_sha, summary, ...).
+
+      Return: ~
+        The result of this function is passed directly to the
+        `opts.virt_text` field of |nvim_buf_set_extmark| and thus must be
+        a list of [text, highlight] tuples.
+
+current_line_blame_formatter_nc
+                              *vcssign-config-current_line_blame_formatter_nc*
+    Type: `string|function`, Default: `' Not Committed Yet '`
+
+    String or function used to format the virtual text of
+    |vcssign-config-current_line_blame| for lines that nobody has
+    committed yet (git: an all-zero object id; svn: an entry with no
+    commit).
+
+    See |vcssign-config-current_line_blame_formatter| for more
+    information.
+
+keymaps                                               *vcssign-config-keymaps*
+    Type: `table[extended]`
+    Default: >
+    {
+      ['[c'] = 'prev_hunk',
+      [']c'] = 'next_hunk',
+      ['<leader>hs'] = 'stage_hunk',
+      ['<leader>hr'] = 'reset_hunk',
+      ['<leader>hS'] = 'stage_buffer',
+      ['<leader>hu'] = 'undo_stage_hunk',
+      ['<leader>hR'] = 'reset_buffer',
+      ['<leader>hp'] = 'preview_hunk',
+      ['<leader>hb'] = 'blame_line',
+      ['<leader>hd'] = 'diffthis',
+      ['<leader>hD'] = 'diffthis_rev',
+      ['<leader>hq'] = 'setqflist',
+      ['<leader>hQ'] = 'setqflist_all',
+      ['<leader>tw'] = 'toggle_word_diff',
+      ['<leader>tb'] = 'toggle_current_line_blame',
+    }
+<
+    The buffer-local default mappings: `{ lhs = 'action' }`, installed
+    when a buffer gets its signs and removed again on detach.
+    See |vcssign-mappings|.
+
+    Mapping an `lhs` to `false` means: do not bind it (left for the
+    user); the whole table set to `false` disables every default mapping.
+    The table merges key by key, so `keymaps = { [']c'] = false }` unmaps
+    only `]c`.
+
+diff                                                     *vcssign-config-diff*
+    Type: `table[extended]`
+    Default: >
+    {
+      mode = 'vertical',
+      use_external = false,
+      algorithm = 'myers',
+      indent_heuristic = true,
+      linematch = false,
+      ignore_cr_at_eol = true,
+    }
+<
+    How a diff is displayed (`diff.mode`) and which algorithm computes it
+    (`diff.algorithm`).
+
+    Fields: ~
+      • mode: string
+        The diff window: `'vertical'` (a vertical split) or `'split'` (a
+        horizontal one). The diff buffer is read-only and uses
+        `filetype=diff`.
+      • use_external: boolean
+        Shell out to the VCS's own diff instead of the built-in
+        `vim.text.diff`. The internal diff is the default because svn has
+        no local diff backend and one implementation keeps git and svn
+        behaving the same.
+      • algorithm: string
+        Diff algorithm to use. Values:
+          `"myers"`      the default algorithm
+          `"minimal"`    spend extra time to generate the smallest
+                         possible diff
+          `"patience"`   patience diff algorithm
+          `"histogram"`  histogram diff algorithm
+      • indent_heuristic: boolean
+        Shift a diff to line up with indentation.
+      • linematch: boolean|integer
+        Refine the intra-hunk diff. `false` by default because linematch
+        is quadratic in the size of a hunk and `true` means "every hunk,
+        however large" (measured on an all-changed buffer: 500 lines
+        1.1s, 2000 lines 69s, 5000 lines OOM). An integer applies
+        linematch only to hunks up to that many lines, which is the
+        bounded way to turn it on.
+      • ignore_cr_at_eol: boolean
+        Treat a trailing CR as part of the line ending.
+
+commit                                                 *vcssign-config-commit*
+    Type: `table[extended]`
+    Default: >
+    {
+      message_input = 'input',
+    }
+<
+    Options for |:Vcssign commit|.
+
+    Fields: ~
+      • message_input: string
+        How the commit message is asked for (`commit.message_input`):
+        `'input'` uses |vim.ui.input|'s one-line prompt. `'buffer'` is in
+        the plan but not implemented yet: it warns and falls back to
+        `'input'`.
+
+on_attach                                           *vcssign-config-on_attach*
+    Type: `function`, Default: `nil`
+
+    Function called when a repository becomes attached
+    (`fun(repo: vcssign.Repo)`).
+
+    Looked up on every call, so a later |vcssign.setup()| still takes
+    effect. Exceptions thrown inside are isolated (logged, nobody else
+    is disturbed).
+
+on_detach                                           *vcssign-config-on_detach*
+    Type: `function`, Default: `nil`
+
+    Function called when a repository becomes detached.
+
+    See |vcssign-config-on_attach|.
 
 ==============================================================================
-3. Commands                                                 *vcssign-commands*
+HIGHLIGHT GROUPS                                    *vcssign-highlight-groups*
 
-                                                        *:Vcssign*
-:Vcssign {sub} [path]   Run a subcommand. Without `[path]` it is resolved
-                        in order: the current buffer's file, then the
-                        current directory.
-
-  Subcommands (also what completion offers): >
-
-    :Vcssign toggle     turn the signs of the current buffer off / on
-                        (off = empty the column, stop refreshing)
-    :Vcssign refresh    refresh right now (skip the debounce), without
-                        waiting for the filesystem watcher
-    :Vcssign stage_hunk stage the hunk under the cursor (git)
-    :Vcssign undo_stage_hunk
-                        unstage the hunk under the cursor (git)
-    :Vcssign reset_hunk discard the hunk under the cursor
-    :Vcssign stage_buffer
-                        stage the whole file (git)
-    :Vcssign reset_buffer
-                        discard every change in the file
-    :Vcssign preview_hunk
-                        preview the hunk under the cursor in a float
-    :Vcssign diff       show this file's diff
-    :Vcssign diffthis   open a diff against the baseline; with an argument,
-                        against that rev (`:Vcssign diffthis HEAD~1`)
-    :Vcssign blame_line show the blame of the cursor line in a float
-    :Vcssign commit     commit (git: the staged changes; svn: this file in
-                        the working copy)
-    :Vcssign debug      print the mounted repositories, their references,
-                        watchers and last error
-
-`diff` checks the capability first: a system that cannot diff gets a
-one-line answer instead of a silent failure. The `path` argument can be a
-file, a directory or a repository root; a path outside every repository
-answers "no repository found" explicitly (INFO, not an error).
-
-`toggle` acts on exactly one buffer (with a `path`, on the open buffer
-showing that file): turned off, the column is empty and edits no longer
-refresh it; turned back on, it redraws immediately against the current
-baseline. The repository reference is untouched by toggling, so the switch
-costs no extra probing.
-
-`stage_hunk` / `undo_stage_hunk` / `reset_hunk` / `stage_buffer` /
-`reset_buffer` act on the hunk inside the buffer: the hunk is picked by
-the cursor line and the patch is built from the buffer text (so the buffer
-may hold unsaved changes — but the `reset` family requires a saved file).
-These subcommands therefore only accept a file that is open; a file that is
-not open is refused explicitly instead of guessed at. `stage_hunk` /
-`stage_buffer` answer "no staging area" on a system without one (svn);
-`reset_hunk` / `reset_buffer` refuse while the buffer has unsaved changes
-(D45), because the patch is applied to the file.
-
-`preview_hunk` opens a read-only float beside the cursor line listing the
-hunk's `-` / `+` lines with `diff` syntax (`filetype=diff`, borrowing the
-colorscheme's diff highlighting); the float closes as soon as the cursor
-moves. `blame_line` uses the same float for the cursor line's blame (sha /
-author / date, then the commit subject, then the source line). `diffthis`
-is the buffer form of `diff` (it acts on the current buffer and needs no
-mounted repository reference); its argument is a rev, not a path — with
-one, the buffer is compared against that rev, and if there is no difference
-against it, that is said instead of opening an empty window.
-
-==============================================================================
-4. Line signs and keymaps                                      *vcssign-signs*
-
-Once attached, every time editing settles for `update_debounce_ms`
-milliseconds, the buffer is diffed against the `rev` baseline (index /
-BASE by default) and every hunk gets its sign. git's staged
-changes use `signs_staged` and its unstaged changes use `signs`, so both
-sides of a file's changes are visible at once.
-
-Default keymaps (all buffer-local):                        *vcssign-keymaps* >
-
-    lhs                        action                     meaning
-    [c                         prev_hunk                  jump to previous hunk
-    ]c                         next_hunk                  jump to next hunk
-    <leader>hs                 stage_hunk                 stage this hunk (git)
-    <leader>hr                 reset_hunk                 restore this hunk
-    <leader>hS                 stage_buffer               stage whole buffer
-    <leader>hu                 undo_stage_hunk            unstage this hunk
-    <leader>hR                 reset_buffer               restore whole buffer
-    <leader>hp                 preview_hunk               preview this hunk
-    <leader>hb                 blame_line                 blame this line
-    <leader>hd                 diffthis                   diff against baseline
-    <leader>hD                 diffthis_rev               diff against a rev
-    <leader>hq                 setqflist                  quickfix (planned)
-    <leader>hQ                 setqflist_all              quickfix all (planned)
-    <leader>tw                 toggle_word_diff           toggle word diff
-    <leader>tb                 toggle_current_line_blame  toggle inline blame
-
-(Sign rendering, automatic attaching, `]c` / `[c` navigation, the hunk
-actions, the word diff, the hunk preview, blame and the rev diff are all
-wired up: switching to a file buffer draws its signs, `]c` / `[c` jump
-between hunks (with a count, wrapping at the ends), `hs` / `hu` / `hr` act
-on the hunk under the cursor, `hS` / `hR` on the whole file, `hp` previews
-this hunk in a float, `tw` toggles the intra-hunk word highlighting, `hb`
-shows this line's blame, `tb` keeps the inline blame on, `hd` / `hD` open
-the diff. Only the quickfix keys `hq` / `hQ` are still placeholders — they
-answer "not implemented yet"; `:Vcssign toggle` turns the whole sign layer
-off.)
-
-==============================================================================
-5. Lua API                                                     *vcssign-api*
-
-`setup({opts})` ~
-  Merge the configuration and install the lifecycle autocommands. Returns
-  `require('vcssign')`.
-
-`refresh({path})` ~
-  Refresh the repository owning `path` right now (skipping the debounce).
-  `path` can be omitted (resolved like |:Vcssign|). A repository that is
-  not tracked yet is mounted first, then refreshed, so this can be the
-  first mapping you press. The buffer showing the file is attached (or
-  refreshed) as well, so signs appear even without `setup()` having run.
-  Returns nil; errors are reported as notifications.
-
-`attach({bufnr})` ~
-  Put one buffer on the sign pipeline (`bufnr` defaults to the current
-  buffer). Returns the state table; `nil` when the buffer has no file to
-  diff (unnamed, `nofile`, missing on disk, or longer than
-  `max_file_length`). Calling it twice is a no-op.
-
-`detach({bufnr})` ~
-  Stop drawing signs, cancel the debounce and release this buffer's
-  repository reference.
-
-`toggle({bufnr})` ~
-  The implementation behind |:Vcssign toggle|; returns the new switch state
-  (`nil` = this buffer cannot be attached). Turning it off empties the
-  column and stops refresh-on-edit, but keeps the repository reference.
-
-`get_hunks({bufnr})` ~
-  The hunks currently drawn for this buffer (an empty table when there are
-  none).
-
-`require('vcssign.cli').run(fargs)` ~
-  The implementation behind |:Vcssign|; equivalent to `:Vcssign {fargs}`.
-
-The library layers (`vcssign.vcs.*` / `vcssign.repo` / `vcssign.repo_manager`
-/ `vcssign.actions`) are internal: their interfaces and callback conventions
-(errors first, `cb(err, ...)`; callbacks always back on the main loop) are
-documented in `impl/init/01-vcs-api.md` and `02-repo-runtime.md`.
-
-==============================================================================
-6. Highlight groups                                       *vcssign-highlights*
-
-The sign highlight groups are derived from the hunk type: `VcssignAdd`,
-`VcssignChange`, `VcssignDelete`, `VcssignTopDelete`,
-`VcssignChangeDelete`, `VcssignUntracked` (linked, in order, to `DiffAdd` /
-`DiffChange` / `DiffDelete` / `DiffDelete` / `VcssignChange` /
-`VcssignAdd`). The groups with an `Nr` / `Ln` / `Cul` suffix are the
-line-number / whole-line / cursor-line highlights used by `signs.numhl` /
-`signs.linehl` / `signs.culhl`; `delete` and `topdelete` have no `Ln` —
-their sign is anchored on a line that was not removed.
-
+These are the highlight groups used by vcssign. Every group is defined with
+`default = true`, so a colorscheme or the user can override them all and
+|vcssign.setup()| never overwrites an existing definition. The groups with
+an `Nr` / `Ln` / `Cul` suffix are the line-number / whole-line /
+cursor-line highlights used by `signs.numhl` / `signs.linehl` /
+`signs.culhl`; `delete` and `topdelete` have no `Ln`: their sign is anchored
+on a line that was not removed, so a whole-line highlight would be wrong.
 The staged signs use the same names with a `Staged` suffix
 (`VcssignAddStaged`, `VcssignAddStagedNr`, ...): their foreground is the
 worktree group's foreground blended 1:1 with `Normal`'s background, so the
 staged layer is a step dimmer and the two layers on one line never look
-alike; when the colors cannot be read (a `cterm`-only colorscheme, say)
+alike; when the colours cannot be read (a `cterm`-only colorscheme, say)
 they fall back to a link to the matching worktree group.
 
-The word diff marks the actually-changed spans inside a hunk with
-`VcssignWordDiff` (linked to `DiffText`); the virtual preview lines of
-deleted lines use `VcssignDeleteVirtLn` (linked to `DiffDelete`). The hunk
-preview float defines no group of its own — it just uses `filetype=diff`'s
-colors.
+                                                         *hl-VcssignAdd*
+VcssignAdd
+    Used for the text of 'add' signs.
 
-The inline blame uses `VcssignBlame` (linked to `Comment`; drawn only after
-`current_line_blame_opts.delay` milliseconds of cursor stillness); the
-blame float uses `filetype=git`'s colors.
+    Links to: `DiffAdd`
+                                                      *hl-VcssignChange*
+VcssignChange
+    Used for the text of 'change' signs.
 
-Every group is defined with `default = true`, so a colorscheme or the user
-can override them all, and `setup()` never overwrites an existing
-definition.
+    Links to: `DiffChange`
+                                                      *hl-VcssignDelete*
+VcssignDelete
+    Used for the text of 'delete' signs.
+
+    Links to: `DiffDelete`
+                                                   *hl-VcssignTopdelete*
+VcssignTopdelete
+    Used for the text of 'topdelete' signs.
+
+    Links to: `DiffDelete`
+                                                *hl-VcssignChangedelete*
+VcssignChangedelete
+    Used for the text of 'changedelete' signs.
+
+    Links to: `VcssignChange`
+                                                   *hl-VcssignUntracked*
+VcssignUntracked
+    Used for the text of 'untracked' signs.
+
+    Links to: `VcssignAdd`
+                                                    *hl-VcssignWordDiff*
+VcssignWordDiff
+    Used for the actually-changed spans inside a hunk when
+    |vcssign-config-word_diff| is enabled.
+
+    Links to: `DiffText`
+                                                *hl-VcssignDeleteVirtLn*
+VcssignDeleteVirtLn
+    Used for the virtual preview lines of deleted lines shown by
+    |vcssign-config-deleted_preview|.
+
+    Links to: `DiffDelete`
+                                                       *hl-VcssignBlame*
+VcssignBlame
+    Used for the current line blame annotation.
+
+    Links to: `Comment`
+
+The hunk preview float defines no group of its own: it uses
+`filetype=diff`'s colours, and the blame float uses `filetype=git`'s.
 
 ==============================================================================
-7. Architecture                                              *vcssign-arch*
+COMMAND                                                      *vcssign-command*
+
+                                                                    *:Vcssign*
+:Vcssign {subcmd} [path]   Run a vcssign subcommand. {subcmd} can be any of
+                           the subcommands below (also what completion
+                           offers). Without `[path]` it is resolved in
+                           order: the current buffer's file, then the
+                           current directory. The `path` argument can be a
+                           file, a directory or a repository root; a path
+                           outside every repository answers "no repository
+                           found" explicitly (an answer, not an error).
+
+                           Examples: >vim
+                             :Vcssign toggle
+                             :Vcssign refresh
+                             :Vcssign stage_hunk
+                             :Vcssign diffthis HEAD~1
+                             :Vcssign commit
+                             :Vcssign debug
+<
+
+    toggle              Turn the signs of the current buffer off / on.
+                        Off = empty the column and stop refreshing; the
+                        repository reference is untouched, so switching
+                        back on costs no extra probing. With a `path`, act
+                        on the open buffer showing that file.
+
+    refresh             Refresh right now (skip the debounce), without
+                        waiting for the filesystem watcher.
+
+    stage_hunk          Stage the hunk under the cursor (git).
+    undo_stage_hunk     Unstage the hunk under the cursor (git).
+    reset_hunk          Discard the hunk under the cursor.
+    stage_buffer        Stage the whole file (git).
+    reset_buffer        Discard every change in the file.
+
+    preview_hunk       Preview the hunk under the cursor in a float.
+    diff                Show this file's diff.
+    diffthis           Open a diff against the baseline; with an argument,
+                        against that rev (`:Vcssign diffthis HEAD~1`).
+    blame_line          Show the blame of the cursor line in a float.
+    commit              Commit (git: the staged changes; svn: this file in
+                        the working copy).
+    debug               Print the mounted repositories, their references,
+                        watchers and last error.
+
+The hunk subcommands act on the hunk inside the buffer: the hunk is picked
+by the cursor line and the patch is built from the buffer text, so the
+buffer may hold unsaved changes — but the `reset` family requires a saved
+file. These subcommands therefore only accept a file that is open; a file
+that is not open is refused explicitly instead of guessed at. `stage_hunk` /
+`stage_buffer` answer "no staging area" on a system without one (svn);
+`reset_hunk` / `reset_buffer` refuse while the buffer has unsaved changes,
+because the patch is applied to the file.
+
+`diff` checks the capability first: a system that cannot diff gets a
+one-line answer instead of a silent failure. `diffthis` is the buffer form
+of `diff` (it acts on the current buffer and needs no mounted repository
+reference); its argument is a rev, not a path — with one, the buffer is
+compared against that rev, and if there is no difference against it, that
+is said instead of opening an empty window. `preview_hunk` opens a
+read-only float beside the cursor line listing the hunk's `-` / `+` lines
+with `filetype=diff`; the float closes as soon as the cursor moves.
+`blame_line` uses the same float for the cursor line's blame (sha / author
+/ date, then the commit subject, then the source line).
+
+==============================================================================
+SPECIFYING REVISIONS                                        *vcssign-revision*
+
+The `rev` option and `:Vcssign diffthis` accept any revision name the
+underlying VCS understands. The default, `'index'`, means the VCS's local
+baseline: git's staging area, svn's BASE.
+
+Revision    Meaning ~
+index       The local baseline (git: the staging area, svn: BASE)
+HEAD        The last commit (git only)
+HEAD~1      The parent of the last commit (git only)
+<any rev>   Anything the underlying VCS understands
+
+==============================================================================
+BUFFER VARIABLES                                           *vcssign-variables*
+
+                        *b:vcssign_blame_line* *b:vcssign_blame_line_dict*
+Provided if |vcssign-config-current_line_blame| is enabled.
+`b:vcssign_blame_line` is the annotation text; `b:vcssign_blame_line_dict`
+is the dictionary with the fields behind it (see the {info} argument from
+|vcssign-config-current_line_blame_formatter|).
+
+==============================================================================
+ARCHITECTURE                                            *vcssign-architecture*
 
 Bottom up; every layer only knows the one below it:
 
@@ -468,8 +756,8 @@ Bottom up; every layer only knows the one below it:
                           the on/off switch
   `vcssign.worddiff`      intra-hunk word highlighting (extmarks, own
                           namespace)
-  `vcssign.preview`       virtual-line preview of deleted lines and the
-                          hunk float
+  `vcssign.preview`       virtual-line preview of deleted lines and the hunk
+                          float
   `vcssign.nav`           hunk navigation: where `]c` / `[c` land
   `vcssign.blame`         inline blame: decoration, caching and the float
                           text
@@ -481,16 +769,20 @@ Bottom up; every layer only knows the one below it:
   `vcssign.autocmds`      the autocommand trigger layer (attach / refresh /
                           cleanup on exit)
 
-Design notes: every external command's callback is cut back to the main loop
-(vim API is never touched from a libuv fast-event context); callbacks are
-error-first everywhere; subscribers and hooks are isolated with `pcall`, so
-one bad hook cannot take the refresh down with it.
+Design notes: every external command's callback is cut back to the main
+loop (the vim API is never touched from a libuv fast-event context);
+callbacks are error-first everywhere (`cb(err, ...)`); subscribers and
+hooks are isolated with `pcall`, so one bad hook cannot take the refresh
+down with it. The library layers (`vcssign.vcs.*` / `vcssign.repo` /
+`vcssign.repo_manager` / `vcssign.actions`) are internal; their interfaces
+are documented in `impl/init/01-vcs-api.md` and `02-repo-runtime.md`.
 
 Test scaffolding: `scripts/make_test_repos.sh` builds the fixtures,
 `scripts/run_tests.sh` runs the TAP suite in a headless nvim
 (`test/run.lua` + `test/*_spec.lua`); see the repository's `Makefile` for
-`make test` / `make lint` / `make format`. The detailed measurement logs and
-the reasoning behind each decision are in `impl/init/00-overview.md` ...
-`07-signs-in-signcolumn.md`.
+`make test` / `make lint` / `make format`. The detailed measurement logs
+and the reasoning behind each decision (D1-D46, milestones M0-M6) are in
+`impl/init/00-overview.md` ... `07-signs-in-signcolumn.md`.
 
- vim:tw=78:ts=8:noet:ft=help:norl:
+------------------------------------------------------------------------------
+vim:tw=78:ts=8:ft=help:norl:
