@@ -91,8 +91,15 @@ own): >
     word_diff                             false
     deleted_preview                       false
     current_line_blame                    false
-    current_line_blame_opts.delay         500
+    current_line_blame_opts.virt_text     true
     current_line_blame_opts.virt_text_pos 'eol'
+    current_line_blame_opts.virt_text_priority 200
+    current_line_blame_opts.delay         1000
+    current_line_blame_opts.ignore_whitespace false
+    current_line_blame_opts.use_focus     true
+    current_line_blame_opts.extra_opts    {}
+    current_line_blame_formatter          ' <author>, <author_time:%R> - <summary> '
+    current_line_blame_formatter_nc       ' Not Committed Yet '
     keymaps                               (see |vcssign-keymaps|)
     diff.mode                             'vertical'
     diff.use_external                     false
@@ -192,11 +199,43 @@ What each option means:
   has no default keymap.
 
 `current_line_blame` (false)~
-  Show live blame at the end of the cursor line.
+  Show live blame at the end of the cursor line; `<leader>tb` toggles it.
+  The annotation is also kept in `vim.b.vcssign_blame_line` (the text) and
+  `vim.b.vcssign_blame_line_dict` (the fields behind it).
 
 `current_line_blame_opts`~
-  Inline blame options: `current_line_blame_opts.delay` (milliseconds,
-  default 500) and `virt_text_pos` (default 'eol').
+  Inline blame options -- the same set gitsigns has:
+
+    `delay` (1000)              milliseconds the cursor has to stand still
+                                before the annotation appears
+    `virt_text` (true)          draw the annotation as virtual text; with
+                                `false` only the `vim.b` values are set
+    `virt_text_pos` ('eol')     'eol' | 'overlay' | 'right_align' | 'inline';
+                                'right_align' falls back to 'eol' on a line
+                                that leaves no room for it
+    `virt_text_priority` (200)  extmark priority of the annotation
+    `ignore_whitespace`        (false) blame with git's `-w`, so a
+                                whitespace-only change does not move the
+                                annotation (git only)
+    `use_focus` (true)          annotate only the focused window, so an
+                                unfocused split shows no stale annotation
+    `extra_opts` ({})           extra arguments for `git blame`
+
+`current_line_blame_formatter` (' <author>, <author_time:%R> - <summary> ')~
+  What the annotation says. The placeholders are gitsigns': `<author>`,
+  `<author_name>`, `<author_mail>`, `<author_time>`, `<author_tz>`,
+  `<committer>`, `<committer_mail>`, `<committer_time>`, `<committer_tz>`,
+  `<sha>`, `<abbrev_sha>`, `<summary>`, `<previous>`, `<filename>`, `<lnum>`,
+  `<orig_lnum>`, `<final_lnum>`. A specifier the VCS cannot answer is left
+  as written (svn has no `<summary>`), a value can be formatted with
+  `:<strftime>` (`<author_time:%Y-%m-%d>`), and `%R` is gitsigns' relative
+  form (`2 hours ago`, `a while ago`); a bare `<author_time>` shortens to
+  `%Y-%m-%d`. The value may also be a function
+  `fun(info) -> string | {string, hl}[]`.
+
+`current_line_blame_formatter_nc` (' Not Committed Yet ')~
+  The format used for a line nobody has committed yet (git: an all-zero
+  object id; svn: an entry with no `<commit>`).
 
 `keymaps`~
   The keymap table for hunk actions: `{ lhs = 'action' }`; mapping an lhs to

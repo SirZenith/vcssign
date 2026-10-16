@@ -201,25 +201,48 @@ end
 --- The header is `<40hex sha> <orig_lineno> <final> <num_lines>`, where the
 --- **third** field is the final line number and the fourth is only present on
 --- the *first* line of a group (git omits it once it has announced the group
---- size).  Metadata lines (`author`, `author-time`, `summary`, ...) are repeated
---- for every line, and the source text follows on a line starting with a TAB.
---- We keep only the attribution, so the TAB line just terminates the record.
+--- size).  Metadata lines (`author`, `author-mail`, `author-time`, `author-tz`,
+--- `committer*`, `summary`, `filename`, `previous`) are repeated for every line,
+--- and the source text follows on a line starting with a TAB, which terminates
+--- the record.  Every metadata key is kept under its porcelain name (dashes and
+--- all) -- those names are what `vcssign.blame_formatter` reads.
 ---@param stdout string
 ---@return vcssign.BlameResult
 function M.parse_blame(stdout)
   local lines = {}
   local max_lineno = 0
-  local pending ---@type { sha: string, final: integer }?
+  local pending ---@type { sha: string, orig: integer, final: integer }?
   local meta = {}
+  --- `author-mail` arrives as `<ada@example.com>`; the formatter wants the bare
+  --- address.
+  local function mail(value)
+    if not value then
+      return nil
+    end
+    return value:match('<(.*)>') or value
+  end
   for _, line in ipairs(exec.split_lines(stdout)) do
     if line:sub(1, 1) == '\t' then
       if pending then
         local n = pending.final
         lines[n] = {
           rev = pending.sha,
+          orig_lnum = pending.orig,
+          final_lnum = n,
           author = meta.author or '',
-          time = meta.time,
+          author_name = meta.author,
+          author_mail = mail(meta['author-mail']),
+          author_time = tonumber(meta['author-time']),
+          author_tz = meta['author-tz'],
+          committer = meta.committer,
+          committer_mail = mail(meta['committer-mail']),
+          committer_time = tonumber(meta['committer-time']),
+          committer_tz = meta['committer-tz'],
           summary = meta.summary,
+          filename = meta.filename,
+          previous = meta.previous,
+          -- kept for the float and for callers that only want the date
+          time = tonumber(meta['author-time']),
         }
         if n > max_lineno then
           max_lineno = n
@@ -228,22 +251,19 @@ function M.parse_blame(stdout)
       pending, meta = nil, {}
     else
       -- The first line of a group carries a 4th field (the group size); the rest
-      -- of the group carries only three.  Both forms put the FINAL line number
-      -- in the 3rd field.
-      local sha, final = line:match('^(%x+) %d+ (%d+)$')
+      -- of the group carries only three.  Both put the FINAL line number in the
+      -- 3rd field and the original one in the 2nd.
+      local sha, orig, final = line:match('^(%x+) (%d+) (%d+)$')
       if not sha then
-        sha, final = line:match('^(%x+) %d+ (%d+) %d+$')
+        sha, orig, final = line:match('^(%x+) (%d+) (%d+) %d+$')
       end
       if sha and #sha == 40 then
-        pending, meta = { sha = sha, final = tonumber(final) }, {}
+        pending = { sha = sha, orig = tonumber(orig), final = tonumber(final) }
+        meta = {}
       elseif pending then
         local key, value = line:match('^(%S+) (.*)$')
-        if key == 'author' then
-          meta.author = value
-        elseif key == 'author-time' then
-          meta.time = tonumber(value)
-        elseif key == 'summary' then
-          meta.summary = value
+        if key then
+          meta[key] = value
         end
       end
     end
@@ -262,10 +282,18 @@ end
 ---@param cb fun(err: string?, result: vcssign.BlameResult?)
 function M.blame(root, rel, opts, cb)
   local sub = { 'blame', '--line-porcelain' }
+  if opts and opts.ignore_whitespace then
+    sub[#sub + 1] = '-w'
+  end
   if opts and (opts.from or opts.to) then
     local from = opts.from or 1
     sub[#sub + 1] = '-L'
     sub[#sub + 1] = string.format('%d,%d', from, opts.to or from)
+  end
+  if opts and opts.extra_opts then
+    for _, arg in ipairs(opts.extra_opts) do
+      sub[#sub + 1] = arg
+    end
   end
   exec.run(build(sub, { '--', rel }), { cwd = root }, function(err, res)
     if err then

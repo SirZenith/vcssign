@@ -3,6 +3,8 @@
 --- Defaults for the VCS layer, the line signs and the default keymaps; later
 --- milestones extend `M.defaults` with the hunk actions themselves.
 --- See impl/init/00-overview.md §3 and impl/init/01-vcs-adapter.md §6.
+local formatter = require('vcssign.blame_formatter')
+
 local M = {}
 
 ---@class vcssign.Config
@@ -60,8 +62,13 @@ local M = {}
 
 --- Inline blame rendering (06-signs-in-signcolumn.md).
 ---@class vcssign.BlameConfig
----@field delay integer        milliseconds before the blame appears
----@field virt_text_pos string where the virtual text goes
+---@field delay integer        milliseconds the cursor has to stand still before the blame appears
+---@field virt_text boolean    draw the annotation as virtual text (off: only `vim.b.vcssign_blame_line`)
+---@field virt_text_pos string 'eol' | 'overlay' | 'right_align' | 'inline' (gitsigns' values)
+---@field virt_text_priority integer  extmark priority of the annotation
+---@field ignore_whitespace boolean  blame with git's `-w`: whitespace-only changes are ignored
+---@field use_focus boolean    annotate the focused window only (gitsigns' behaviour)
+---@field extra_opts string[]  extra arguments for `git blame`
 
 --- Committing (impl/init/04-commands-actions.md §2.2).
 ---@class vcssign.CommitConfig
@@ -114,10 +121,20 @@ M.defaults = {
   word_diff = false,
   deleted_preview = false,
   current_line_blame = false,
+  -- The inline blame (gitsigns' `current_line_blame_opts`).
   current_line_blame_opts = {
-    delay = 500,
+    virt_text = true,
     virt_text_pos = 'eol',
+    virt_text_priority = 200,
+    delay = 1000,
+    ignore_whitespace = false,
+    use_focus = true,
+    extra_opts = {},
   },
+  -- What the annotation says.  `vcssign.blame_formatter` expands the same
+  -- placeholders as gitsigns; `_nc` is used for a line nobody has committed yet.
+  current_line_blame_formatter = formatter.DEFAULT,
+  current_line_blame_formatter_nc = ' Not Committed Yet ',
   -- lhs -> action name; `false` disables every default mapping.
   keymaps = {
     ['[c'] = 'prev_hunk',

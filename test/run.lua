@@ -78,6 +78,7 @@ local DEFAULT_SPECS = {
   'worddiff_spec',
   'preview_spec',
   'blame_spec',
+  'blame_formatter_spec',
   'revdiff_spec',
   'actions_spec',
   'cli_spec',
