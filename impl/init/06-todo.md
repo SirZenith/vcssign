@@ -113,7 +113,7 @@ M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
       键位动作 / API / `:helptags` tag 唯一）（05 §5）
 - [ ] CI（backlog，**未做**）：ubuntu+windows matrix——本机无 GitHub 远端，写了也无法验证；接入步骤见 05 §4
 
-## M6 · 行级 sign（07，P0 转向）—— 🚧 进行中（Step 1–6/14 完成，184/184）
+## M6 · 行级 sign（07，P0 转向）—— 🚧 进行中（Step 1–8/14 完成，202/202）
 
 > 用户要求把「文件状态侧边栏」换成 gitsigns 式的**行级 sign**（状态直接进 `'signcolumn'`）。
 > 设计、探针实测与分步计划见 `07-signs-in-signcolumn.md`；**交接说明见该文 §6.1–§6.4**
@@ -128,7 +128,7 @@ M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
 - [x] 文档：`9b4eb90`（07 设计与探针实测）+ §6.1–§6.4 交接
 - [x] **Step 6** 自动触发与生命周期（`on_lines` 防抖 / `on_reload` / `repo:on_update` / `BufWritePost` / `FocusGained`）+ 逐缓冲开关 `:Vcssign toggle` —— `2193802`（178 → 184；`attach_spec` 14→16、`autocmds_spec` 10→12、`cli_spec` 11→13）
 - [x] **Step 7** git 暂存态双层 sign（`load_head` 读 `HEAD`、`filter_common` 拆两层、`…Staged` 用暗色） —— `4bfe0ce`（184 → 189；`attach_spec` 16→20、`signs_spec` 13→14，`attach_spec` 起需要 svn）
-- [ ] **Step 8** `nav.lua`（`]c` / `[c`）+ `keymap.lua`
+- [x] **Step 8** hunk 导航与默认键位（`nav.lua` 的 `]c`/`[c`；`keymap.lua` 的 buffer-local 默认映射，未落地动作先提示） —— `f54b6af`（189 → 202；`nav_spec` 13 例）
 - [ ] **Step 9** hunk 级动作 + CLI
 - [ ] **Step 10** `worddiff.lua` + `preview.lua`
 - [ ] **Step 11** `blame.lua` + `revdiff.lua`

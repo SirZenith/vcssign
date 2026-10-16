@@ -342,7 +342,7 @@ commit = { message_input = 'input' },
 | 5 | `signs.lua`（双命名空间 + 放置规则 + numhl/linehl）+ `attach.lua`（守卫/基线/diff/渲染/`nvim_buf_attach`）；`attach_spec` 约 14 | ✅ **已完成**（`6eaef2b`，150 → 178 用例） |
 | 6 | 刷新触发（`on_lines` 防抖 / `on_reload` / `repo:on_update`）+ 生命周期 autocmd + 开关；`autocmds_spec` 10→12、`cli_spec` 11→13、`attach_spec` 14→16 | ✅ **已完成**（`2193802`，178 → **184** 用例，全绿） |
 | 7 | git 暂存态双层 sign（`filter_common(HEAD↔buf, unstaged)` + `signs_staged` 高亮） | ✅ **已完成**（`4bfe0ce`，184 → **189** 用例，全绿） |
-| 8 | `nav.lua`（`]c`/`[c`，计数/环绕）+ `keymap.lua`；`nav_spec` 约 8 | ⬜ 待做（入口见 §6.2 / §6.4） |
+| 8 | `nav.lua`（`]c`/`[c`，计数/环绕）+ `keymap.lua`；`nav_spec` 13 | ✅ **已完成**（`f54b6af`，189 → **202** 用例，全绿） |
 | 9 | hunk 级动作（`stage_hunk`/`unstage_hunk`/`reset_hunk`/`stage_buffer`/`reset_buffer`/`preview_hunk`）+ CLI；`actions_spec` 24→约 30 | ⬜ 待做（入口见 §6.2 / §6.4） |
 | 10 | `worddiff.lua`（成对行逐字符 diff）+ `preview.lua`（`virt_lines` 删除预览 / hunk 浮窗） | ⬜ 待做（入口见 §6.2 / §6.4） |
 | 11 | `blame.lua`（`current_line_blame` + `blame_line` 浮窗）+ `revdiff.lua`（`diffthis [rev]`）；各约 6 | ⬜ 待做（入口见 §6.2 / §6.4） |
@@ -370,6 +370,7 @@ commit = { message_input = 'input' },
 | `e4142b0` | 本文档：Step 1–5 标完成 + §6.1–§6.4 交接说明（纯文档） | — |
 | `2193802` | Step 6：自动触发、生命周期与逐缓冲开关（`autocmds` / `cli` / `init` 接到 `attach`） | 178 → **184**，全绿；本步动到的三个 spec 单跑 **41/41** |
 | `4bfe0ce` | Step 7：git 暂存态双层 sign（`load_head` + `filter_common` + `…Staged` 暗色） | 184 → **189**，全绿；`attach_spec` 16、`signs_spec` 14 单跑 **34/34** |
+| `f54b6af` | Step 8：hunk 导航与默认键位（`nav.lua` + `keymap.lua` + `signs.sign_line`） | 189 → **202**，全绿；`nav_spec` 13/13，本步动到的五个 spec 单跑 **72/72** |
 
 **Step 2 引入的回归（交接要点，别再踩）**：Step 2 把监听集收敛成「只监听 metadata 目录」（D38），
 而 **libuv 从不报告「被监听目录自身消失」** —— 实测：把 `.git` 改名走，挂在 `.git` 上的 handler
@@ -405,6 +406,20 @@ rename 事件（3 events）。于是工作副本被删后 `Repo` 不会自杀，
 **stderr 合同要留意**：进程 stderr 的行数会在 **0/1 之间浮动**。那一行来自 `repo_spec` 的 retry 用例
 （`with_config({ exec_timeout_ms = 1 })`）里 `log.warn` 打出的超时告警，是否出现取决于命令有没有在
 1ms 内跑完；用例本身不断言它。Step 14 要么把断言写成「0 或 1 行」，要么把该用例的 `vim.notify` 捕获掉。
+
+**Step 8 的两个坑（都不是实现错，是写法错）**：
+
+1. **Lua 的 `and/or` 空值穿透**：`forward and index_after(...) or index_before(...)` 在 `index_after`
+   返回 `nil` 时会**静默走 `index_before` 分支** —— 探针里 `]c` 从最后一个 hunk 之后回绕应落到第 1 个
+   hunk，实际跳到了最后一个。同一写法在 `window_for` 里也有：`bufwinid() == -1 and nil or win` 会返回
+   `-1`（`-1` 是 truthy，`nvim_win_*` 收到会是错的窗口）。两处都改成显式 `if`。
+2. **循环 require**：`attach` →（本步新增）`keymap` → `nav` → `attach`。keymap 里改成惰性 require
+   （在函数内 `require('vcssign.nav')`）即可，不要在模块顶部形成环。
+
+**新文件不在 `make format-check` 的清单里**：`Makefile` 的 `LUA_FILES` 是 `git ls-files` 的输出，
+未 `git add` 的新文件既不被 `make format` 格式化、也不被 `make format-check` 检查（`make lint` 查目录，
+所以能查到）。本步是先显式跑 `deps/stylua.exe <三个新文件>` 再 `git add`，之后 `make format-check`
+才覆盖到 38 个文件（`lint` 同样 38 个）。
 
 ### §6.2 怎么推进后续步骤（工作契约）
 
@@ -451,9 +466,9 @@ rename 事件（3 events）。于是工作副本被删后 `Repo` 不会自杀，
   的 python 补丁（`assert src.count(old) == 1` 守卫 + `io.open(..., encoding='utf-8', newline='')` 回写）。
   `edit` 工具对「尚无观察」的文件可能拒绝改，此时同样走 python 补丁。
 
-### §6.4 下一步（Step 8）的入口
+### §6.4 下一步（Step 9）的入口
 
-**已经就绪、可以直接消费的接口**（`6eaef2b` 冻结，`2193802` / `4bfe0ce` 补齐开关与暂存层）：
+**已经就绪、可以直接消费的接口**（`6eaef2b` 冻结，`2193802` / `4bfe0ce` 补齐开关与暂存层，`f54b6af` 补上导航与键位）：
 
 - `require('vcssign.attach')`：`attach(bufnr)` / `detach(bufnr)` / `toggle(bufnr)` / `mark_dirty(bufnr)` /
   `refresh(bufnr, cb)` / `refresh_all()` / `state(bufnr)` / `hunks(bufnr)` / `buffers()` / `root(bufnr)` /
@@ -463,21 +478,40 @@ rename 事件（3 events）。于是工作副本被删后 `Repo` 不会自杀，
   `head_text` / `base_text`（两份基线，`nil` = 不知道，什么都不画）、`shown`（用户开关，Step 6）、
   `untracked` / `tracked` / `enabled` / `attached`。
 - `require('vcssign.signs')`：`place(bufnr, hunks, opts)` / `clear(bufnr)` / `clear_ns(bufnr, staged)` /
-  `sign_count(bufnr, staged)` / `namespace(staged)` / `hl_name(ty, staged, kind)` / `define_highlights()`、`M.PRIORITY`。
+  `sign_count(bufnr, staged)` / `namespace(staged)` / `hl_name(ty, staged, kind)` / `define_highlights()` /
+  `sign_line(h)`（hunk 的 sign 行号，`nil` = 这一 hunk 没有 sign 行，`nav` 与 `place` 共用这一份规则）、`M.PRIORITY`。
+- `require('vcssign.nav')`：`M.next(bufnr, count, opts)` / `M.prev(bufnr, count, opts)`（有向、带 count、
+  `opts.wrap` 默认 true，**没有**键位配置项）/ `M.lines(bufnr)`（两层 sign 行号去重、排序、切到缓冲区范围内）。
+- `require('vcssign.keymap')`：`M.attach(bufnr)` / `M.detach(bufnr)` / `M.dispatch(action, ctx)` / `M.ACTIONS`。
+  未落地的动作走 `vim.notify_once(… is not implemented yet, WARN)`：Step 9–11 只要往 `M.ACTIONS` 里补一个
+  实现（或让 `M.dispatch` 转发到 `actions`），对应键位就亮了，不用碰 `config.defaults.keymaps`。
 - `require('vcssign.repo_manager')`：`get_by_path(path)` / `get(root)` / `all()` / `count()` / `ref_count(path)` /
   `on_repo_attached(fn)` / `on_repo_detached(fn)`。
 - `require('vcssign.repo')`：`repo:on_update(fn)` / `repo:on_error(fn)` / `repo:on_delete(fn)` /
   `repo:mark_dirty()` / `repo:refresh_now(cb)` / `repo:dispose()`。
 
-**Step 8 要做的事**：新增 `lua/vcssign/nav.lua`（`M.next(bufnr, count)` / `M.prev(bufnr, count)`，有向、
-带 count、可配环绕，基于 `attach.hunks(bufnr)` 与光标行）与 `lua/vcssign/keymap.lua`（buffer-local 默认
-映射：`]c` / `[c` 加 §4 的 `<leader>h*` 表，`config.keymaps = false` 整体关掉；动作暂时只有导航能落地，
-其余动作占位到 Step 9–11）。默认键位与动作名已经在 `config.defaults.keymaps` 和 `doc/vcssign.txt` 里
-（`doc_spec` 会钉住），**本步不要再新增键**。
+**Step 9 要做的事**：把 §4 的 hunk 级动作接到 `lua/vcssign/actions.lua`（现在只有 M5 的文件级
+`M.diff` / `M.stage` / `M.unstage` / `M.commit` / `M.refresh`），新增 `stage_hunk` / `unstage_hunk` /
+`undo_stage_hunk` / `reset_hunk` / `stage_buffer` / `reset_buffer` / `preview_hunk`：
 
-**验收**：新增 `nav_spec` 约 8 例（首个 hunk 之前 / 最后一个之后、`2]c` 计数、环绕开关、无 hunk 时不动
-光标、`]c` 与 `[c` 有向），全量用例继续绿。新增用例沿用 `guarded(fn)` + `helpers.wait_for`，**不要**用
-固定 `vim.wait` 等结果。
+- 补丁文本用 `hunk.build_patch(hunk, base_lines, buf_lines, rel, opts)`（`hunk.lua:237`，已经是 git 风格头
+  `diff --git a/<rel> b/<rel>` / `--- a/<rel>` / `+++ b/<rel>`）。
+- **apply 走 stdin**（`exec` 的 `ExecOpts.stdin`，Step 2 已实现）：暂存 `git apply --cached --unidiff-zero -`、
+  撤销暂存 `git apply --cached -R -`、丢弃 `git apply -R -`。补丁必须自带结尾换行（§5 实测：stdin 的字符串
+  不补尾换行；`string[]` 每个元素会补，所以**不要**用数组形式传补丁）。
+- svn 不支持 stdin（`svn patch` 没有 `-`，实测报 `invalid option: '`）：落 `vim.fn.tempname()` + `svn patch
+  --strip 0`，而且它只认裸头 / svn 风格头（git 风格头会 C 掉 hunk 却仍然退出 0）→ 要么给 `build_patch` 加
+  「头风格」开关，要么 svn 侧另拼补丁；**冲突时也退出 0**，必须解析 stdout 的 `U`/`C` 行或 `.rej` 文件才算成功。
+- 能力门先于动作：`capabilities.stage`（svn = false）、`capabilities.revert_hunk`。
+- `reset_*` 在 `vim.bo.modified` 为真时**拒绝并提示**（D45，不做内存内 patch）。
+- 每个动作结束后 `repo:refresh_now()`，让 sign 与基线立刻追上。
+- `lua/vcssign/cli.lua`：补上这些动作的子命令与补全（`M.subcommands` 现在只有
+  `toggle` / `refresh` / `diff` / `commit` / `debug`）。`doc_spec` 钉住 `cli.subcommands` 必须逐个出现在
+  `doc/vcssign.txt` 里，所以子命令与文档要同一步改。
+
+**Step 9 的验收**：`actions_spec` 24 → 约 30 例，每条都用 VCS 自己验证（`git diff --cached` 的文本含该 hunk；
+`reset_hunk` 后磁盘内容等于 `git show :<file>`；`stage_buffer` 后 `git status --porcelain` 为空）、
+`vim.bo.modified` 时 `reset_hunk` 拒绝、svn 侧用 `svn diff` 验证。全量用例继续绿。
 
 ## §7 验收标准（用户可点）
 
