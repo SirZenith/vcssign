@@ -54,6 +54,8 @@ local REQUIRES = {
   nav_spec = { 'git' },
   worddiff_spec = { 'git' },
   preview_spec = { 'git' },
+  blame_spec = { 'git', 'svn' },
+  revdiff_spec = { 'git', 'svn' },
   autocmds_spec = { 'git' },
   actions_spec = { 'git', 'svn', 'svnadmin' },
   cli_spec = { 'git', 'svn', 'svnadmin' },
@@ -75,6 +77,8 @@ local DEFAULT_SPECS = {
   'nav_spec',
   'worddiff_spec',
   'preview_spec',
+  'blame_spec',
+  'revdiff_spec',
   'actions_spec',
   'cli_spec',
 }

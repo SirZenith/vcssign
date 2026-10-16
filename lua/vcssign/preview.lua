@@ -3,7 +3,10 @@
 ---
 --- Both are read-only views.  Neither touches the buffer, the index or the
 --- worktree, and `attach` clears both whenever it re-renders, so a preview can
---- never outlive the hunk it was made from.
+--- never outlive the hunk it was made from.  The window half (`M.open` /
+--- `M.close` / `M.is_open`) is the one-place float helper: Step 11's
+--- `blame.lua` shows its single-line blame through it, so at most one of these
+--- transient views is ever on screen.
 local api = vim.api
 local config = require('vcssign.config')
 local hunk = require('vcssign.hunk')
@@ -181,6 +184,49 @@ function M.is_open(bufnr, lnum)
     and api.nvim_win_is_valid(float.win)
 end
 
+--- Open `text` in a floating window, replacing whatever float is already open.
+---
+--- The window is a glance, not something to manage: it closes as soon as the
+--- cursor leaves the line it describes, or the buffer loses the focus.  It is
+--- deliberately not focusable (`enter = false`), so the cursor stays in the
+--- file being read.
+---@param bufnr integer  the buffer the float describes
+---@param lnum integer   the line it describes, for `is_open` and the title
+---@param text string[]
+---@param opts? { filetype?: string, title?: string }
+---@return integer win
+function M.open(bufnr, lnum, text, opts)
+  opts = opts or {}
+  M.close()
+  local buf = api.nvim_create_buf(false, true)
+  api.nvim_buf_set_lines(buf, 0, -1, false, text)
+  if opts.filetype then
+    api.nvim_set_option_value('filetype', opts.filetype, { buf = buf })
+  end
+  api.nvim_set_option_value('bufhidden', 'wipe', { buf = buf })
+  api.nvim_set_option_value('modifiable', false, { buf = buf })
+  local width, height = float_size(text)
+  local win = api.nvim_open_win(buf, false, {
+    relative = 'cursor',
+    row = 1,
+    col = 0,
+    width = width,
+    height = height,
+    style = 'minimal',
+    border = 'single',
+    title = opts.title or '',
+  })
+  float = { win = win, src = bufnr, lnum = lnum }
+  api.nvim_create_autocmd({ 'CursorMoved', 'BufLeave' }, {
+    buffer = bufnr,
+    once = true,
+    callback = function()
+      M.close()
+    end,
+  })
+  return win
+end
+
 --- Show one hunk in a floating window, or close it when that hunk is already
 --- the one on show (the `preview_hunk` action is a toggle).
 ---@param bufnr integer  the buffer the hunk belongs to
@@ -194,33 +240,9 @@ function M.toggle_hunk(bufnr, h, lnum, base_lines, buf_lines)
     M.close()
     return false
   end
-  M.close()
-  local text = M.hunk_text(h, base_lines, buf_lines)
-  local buf = api.nvim_create_buf(false, true)
-  api.nvim_buf_set_lines(buf, 0, -1, false, text)
-  api.nvim_set_option_value('filetype', 'diff', { buf = buf })
-  api.nvim_set_option_value('bufhidden', 'wipe', { buf = buf })
-  api.nvim_set_option_value('modifiable', false, { buf = buf })
-  local width, height = float_size(text)
-  local win = api.nvim_open_win(buf, false, {
-    relative = 'cursor',
-    row = 1,
-    col = 0,
-    width = width,
-    height = height,
-    style = 'minimal',
-    border = 'single',
+  M.open(bufnr, lnum, M.hunk_text(h, base_lines, buf_lines), {
+    filetype = 'diff',
     title = string.format(' %s:%d ', vim.fn.fnamemodify(api.nvim_buf_get_name(bufnr), ':t'), lnum),
-  })
-  float = { win = win, src = bufnr, lnum = lnum }
-  -- The preview is a glance, not a window to manage: it goes away as soon as
-  -- the cursor leaves the line it describes (or the buffer).
-  api.nvim_create_autocmd({ 'CursorMoved', 'BufLeave' }, {
-    buffer = bufnr,
-    once = true,
-    callback = function()
-      M.close()
-    end,
   })
   return true
 end

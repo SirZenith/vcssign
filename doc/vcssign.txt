@@ -180,6 +180,8 @@ vcssign 把 Git / Subversion 仓库里的改动直接反映到窗口的 `'signco
     :Vcssign preview_hunk
                         浮动窗口预览光标所在的 hunk
     :Vcssign diff       看这个文件的 diff
+    :Vcssign diffthis   和基线打开 diff；带参数时和那个 rev 比（`:Vcssign diffthis HEAD~1`）
+    :Vcssign blame_line 浮动窗口显示光标那一行的 blame
     :Vcssign commit     提交（git：已暂存的；svn：工作副本里该文件）
     :Vcssign debug      打印已挂载仓库、缓存与监听状态的诊断信息
 
@@ -199,7 +201,11 @@ vcssign 把 Git / Subversion 仓库里的改动直接反映到窗口的 `'signco
 `reset_buffer` 在缓冲区有未保存修改时拒绝（D45），因为补丁作用在文件上。
 `preview_hunk` 在光标行旁边开一个只读浮窗，用 `diff` 语法把这个 hunk 的
 `-` / `+` 行列出来（`filetype=diff`，借用配色方案的 diff 高亮）；光标一移动
-浮窗就关。
+浮窗就关。`blame_line` 用同一扇浮窗显示光标行的 blame（sha / 作者 / 日期，
+下一行是提交标题，再下一行是源码行）。`diffthis` 是 `diff` 的缓冲区形式
+（作用于当前缓冲区，不需要已挂载的仓库引用）；它的参数是 **rev 而不是路径**
+——给了参数就是和那个 rev 比，和当前内容没有差异时明确说一句而不是开一个
+空窗口。
 
 ==============================================================================
 4. 行级 sign 与按键                                         *vcssign-signs*
@@ -228,12 +234,13 @@ vcssign 把 Git / Subversion 仓库里的改动直接反映到窗口的 `'signco
     <leader>tw                 toggle_word_diff           开 / 关词级 diff
     <leader>tb                 toggle_current_line_blame  开 / 关行内 blame
 
-（sign 渲染、自动挂载、`]c` / `[c` 导航、hunk 动作、词级 diff 和 hunk 预览
-都已经接上：切到一个文件缓冲区就会画 sign，`]c` / `[c` 在 hunk 之间跳（带计数，
-走到头会环绕），`hs` / `hu` / `hr` 作用在光标所在的那个 hunk，`hS` / `hR`
-作用在整个文件，`hp` 弹窗看这个 hunk，`tw` 切换 hunk 内的词级高亮。blame 和
-rev diff 会在随后的步骤接上，现在按下只会提示「尚未实现」；`:Vcssign toggle`
-可以整个关掉 sign。）
+（sign 渲染、自动挂载、`]c` / `[c` 导航、hunk 动作、词级 diff、hunk 预览、
+blame 和 rev diff 都已经接上：切到一个文件缓冲区就会画 sign，`]c` / `[c` 在
+hunk 之间跳（带计数，走到头会环绕），`hs` / `hu` / `hr` 作用在光标所在的那个
+hunk，`hS` / `hR` 作用在整个文件，`hp` 弹窗看这个 hunk，`tw` 切换 hunk 内的
+词级高亮，`hb` 看这一行的 blame，`tb` 常驻行内 blame，`hd` / `hD` 打开 diff。
+只剩 `hq` / `hQ` 的 quickfix 键还是占位，按下只会提示「尚未实现」；
+`:Vcssign toggle` 可以整个关掉 sign。）
 
 ==============================================================================
 5. Lua API                                                    *vcssign-api*
@@ -288,6 +295,9 @@ sign 的高亮组按 hunk 类型派生：`VcssignAdd`、`VcssignChange`、`Vcssi
 那几段文字；被删行的虚拟预览行用 `VcssignDeleteVirtLn`（链接到 `DiffDelete`）。
 hunk 预览浮窗不另起高亮组——它直接用 `filetype=diff` 的配色。
 
+行内 blame 用 `VcssignBlame`（链接到 `Comment`，`current_line_blame_opts.delay`
+毫秒没动光标才画），blame 浮窗用 `filetype=git` 的配色。
+
 这些组都用 `default = true` 定义，配色方案或用户都能覆盖，`setup()` 不会覆盖
 已有定义。
 
@@ -305,6 +315,8 @@ hunk 预览浮窗不另起高亮组——它直接用 `filetype=diff` 的配色�
   `vcssign.worddiff`      hunk 内的词级高亮（extmark，独立命名空间）
   `vcssign.preview`       被删行的虚拟行预览与 hunk 浮窗
   `vcssign.nav`           hunk 导航：`]c` / `[c` 的落点计算
+  `vcssign.blame`         行内 blame：装饰、缓存与浮窗文本
+  `vcssign.revdiff`       diff 视图：`diffthis` 的窗口与和任意 rev 比对的文本
   `vcssign.keymap`        默认键位（buffer-local）与动作分派
   `vcssign.cli`          |:Vcssign| 的分派与补全
   `vcssign.autocmds`     自动命令触发层（挂载 / 刷新 / 退出清理）

@@ -8,8 +8,8 @@
 --- not need to know which module implements an action, and an action that does
 --- not exist yet answers the person who pressed the key instead of failing
 --- silently.  Step 8 landed navigation, Step 9 the hunk actions, Step 10 the
---- hunk preview and the word-diff switch; blame, the rev diff and the quickfix
---- lists are Step 11 and the backlog, and stay absent from `ACTIONS` until then.
+--- hunk preview and the word-diff switch, Step 11 blame and the rev diff; the
+--- quickfix lists of the backlog are the only keys still absent from `ACTIONS`.
 local api = vim.api
 local config = require('vcssign.config')
 
@@ -77,6 +77,21 @@ local ACTIONS = {
   end,
   toggle_word_diff = function()
     return acts().toggle_word_diff()
+  end,
+  -- Blame and the rev diff (§4): `hb` blames a line, `hd`/`hD` compare the file
+  -- with the configured revision or with one the user types, and `tb` is the
+  -- session-wide current-line-blame switch.
+  blame_line = function(ctx)
+    return acts().blame_line(nil, ctx)
+  end,
+  diffthis = function(ctx)
+    return acts().diffthis(nil, ctx)
+  end,
+  diffthis_rev = function(ctx)
+    return acts().diffthis_rev(nil, ctx)
+  end,
+  toggle_current_line_blame = function()
+    return acts().toggle_current_line_blame()
   end,
 }
 
