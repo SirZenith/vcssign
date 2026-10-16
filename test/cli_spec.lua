@@ -344,7 +344,12 @@ return {
     fn = guarded(function()
       reset()
       eq(cli.complete('', 'Vcssign '), cli.subcommands)
-      eq(cli.complete('r', 'Vcssign r'), { 'refresh' })
+      eq(cli.complete('t', 'Vcssign t'), { 'toggle' }, 'a unique prefix resolves to one name')
+      eq(
+        cli.complete('r', 'Vcssign r'),
+        { 'refresh', 'reset_hunk', 'reset_buffer' },
+        'every name the prefix could mean, in the order they are listed'
+      )
       eq(cli.complete('x', 'Vcssign x'), {})
       -- Arguments are paths; a `customlist` cannot complete those.
       eq(cli.complete('', 'Vcssign refresh '), {})

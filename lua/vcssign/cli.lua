@@ -18,6 +18,11 @@ local M = {}
 M.subcommands = {
   'toggle',
   'refresh',
+  'stage_hunk',
+  'undo_stage_hunk',
+  'reset_hunk',
+  'stage_buffer',
+  'reset_buffer',
   'diff',
   'commit',
   'debug',
@@ -144,6 +149,27 @@ for _, name in ipairs({ 'diff', 'commit' }) do
     with_repo(path or current_path(), function()
       actions[name](target)
     end)
+  end
+end
+
+-- The hunk commands act on a *buffer*: the hunk is picked with the cursor and
+-- the patch is built from the buffer's text, which may hold changes the file on
+-- disk does not have.  So their argument is a file that has to be open, and one
+-- that is not open is refused rather than guessed at.
+for _, name in ipairs({
+  'stage_hunk',
+  'undo_stage_hunk',
+  'reset_hunk',
+  'stage_buffer',
+  'reset_buffer',
+}) do
+  commands[name] = function(path)
+    local target = path or current_path()
+    local bufnr = buffer_for(target)
+    if bufnr == nil then
+      return log.notify_error(string.format('%s is not open in a buffer', target))
+    end
+    actions[name](target, { bufnr = bufnr })
   end
 end
 

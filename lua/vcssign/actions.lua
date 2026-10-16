@@ -1,8 +1,8 @@
 --- The action layer: the only place that turns user intent into VCS commands.
 ---
---- Everything above it (the `:Vcssign` commands, the hunk keymaps to come)
---- asks for a *file* and an *intent*; everything below it (the adapters) runs
---- one command.  So this file is where the interesting policy lives: which file
+--- Everything above it (the `:Vcssign` commands, the buffer-local default
+--- keymaps in `vcssign.keymap`) asks for a *file* and an *intent*; everything
+--- below it (the adapters) runs one command.  So this file is where the interesting policy lives: which file
 --- an action applies to, which capability it needs, which command variant the
 --- configured baseline implies (`rev == 'index'` means the staging baseline),
 --- whether a commit has anything staged to record, and what the user is told
@@ -13,9 +13,13 @@
 --- and the repository no longer caches a file list (D38), so a target is always
 --- resolved from the path itself.
 --- See impl/init/04-commands-actions.md §2.
+local attach = require('vcssign.attach')
 local config = require('vcssign.config')
+local diff = require('vcssign.diff')
+local hunk = require('vcssign.hunk')
 local log = require('vcssign.log')
 local manager = require('vcssign.repo_manager')
+local signs = require('vcssign.signs')
 local base = require('vcssign.vcs.base')
 
 local uv = vim.uv
@@ -241,6 +245,303 @@ end
 ---@param target string|nil
 function M.unstage(target)
   stage_like(target, 'unstage')
+end
+
+-- ▏ hunk actions ─────────────────────────────────────────────────────────────
+--
+-- Everything here is "one hunk of the open file": the hunk comes from the
+-- buffer's cursor, the text from the buffer, and the command from the adapter.
+-- The patch is built by `vcssign.hunk.build_patch` (zero context, the shape
+-- `git apply --unidiff-zero -` wants, D41), and what differs between staging,
+-- unstaging and discarding is exactly *which baseline* it is built against.
+
+---@class vcssign.HunkCtx
+---@field t vcssign.Target
+---@field bufnr integer
+---@field st vcssign.AttachState
+---@field hunk vcssign.Hunk
+---@field layer "worktree"|"staged"
+
+--- The loaded buffer showing `path`, when there is one.
+---@param path string
+---@return integer?
+local function buffer_showing(path)
+  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_loaded(bufnr) then
+      local name = vim.api.nvim_buf_get_name(bufnr)
+      if name ~= '' and base.normalize(name) == path then
+        return bufnr
+      end
+    end
+  end
+end
+
+--- The line a hunk action applies to: the cursor of the window showing the
+--- buffer.  A file that is not on screen has no cursor, and the command line is
+--- read by scripts, so line 1 is the answer there.
+---@param bufnr integer
+---@return integer
+local function cursor_line(bufnr)
+  local win = vim.fn.bufwinid(bufnr)
+  if win == -1 then
+    return 1
+  end
+  return vim.api.nvim_win_get_cursor(win)[1]
+end
+
+--- The hunk a line belongs to.
+---
+--- A line is inside a hunk when it is one of its *added* lines; a hunk that only
+--- removes lines has none, so it is hit on exactly the line its sign hangs on
+--- (`vcssign.signs.sign_line`) — the line `]c` jumps to.
+---@param hunks vcssign.Hunk[]
+---@param lnum integer 1-based
+---@return vcssign.Hunk?
+local function hunk_at(hunks, lnum)
+  for _, h in ipairs(hunks) do
+    if h.added.count > 0 then
+      if lnum >= h.added.start and lnum <= h.added.start + h.added.count - 1 then
+        return h
+      end
+    elseif signs.sign_line(h) == lnum then
+      return h
+    end
+  end
+end
+
+--- The patch that turns `base_text` into `buf_text` for one hunk.
+---
+--- The hunk model carries no "this side does not end in a newline", so it is
+--- reconstructed here — and only for a hunk that actually reaches the end of
+--- the side it describes, which is the shape git's parser expects.
+---@param h vcssign.Hunk
+---@param base_text string
+---@param buf_text string
+---@param rel string
+---@param bufnr integer
+---@return string
+local function patch_of(h, base_text, buf_text, rel, bufnr)
+  local base_lines, buf_lines = diff.split(base_text), diff.split(buf_text)
+  local base_eof = h.removed.count > 0 and h.removed.start + h.removed.count - 1 == #base_lines
+  local buf_eof = h.added.count > 0 and h.added.start + h.added.count - 1 == #buf_lines
+  return hunk.build_patch(h, base_lines, buf_lines, rel, {
+    base_no_nl_at_eof = base_eof and base_text ~= '' and base_text:sub(-1) ~= '\n',
+    buf_no_nl_at_eof = buf_eof and vim.bo[bufnr].endofline == false,
+  })
+end
+
+--- Resolve the buffer, the repository and the hunk a hunk action works on.
+---
+--- Asynchronous in exactly one direction: a buffer whose first baseline is still
+--- in flight waits through `attach.ready`.  A cursor that is not on a hunk is an
+--- answer ("nothing to do"), not a failure.
+---@param target string|nil
+---@param opts? { bufnr?: integer, lnum?: integer, layer?: "worktree"|"staged" }
+---@param cb fun(ctx: vcssign.HunkCtx?, err: string?)
+local function hunk_ctx(target, opts, cb)
+  opts = opts or {}
+  local path = base.normalize(target or default_target())
+  local bufnr
+  if opts.bufnr and vim.api.nvim_buf_is_valid(opts.bufnr) then
+    bufnr = opts.bufnr
+  else
+    bufnr = buffer_showing(path)
+  end
+  -- Hunk actions need the *buffer*: the hunk is picked with the cursor and the
+  -- text comes from the buffer, which may hold changes the file on disk does
+  -- not have.  Using whatever buffer happens to be current instead would be a
+  -- way to patch a file the user did not point at.
+  if not bufnr then
+    return cb(nil, string.format('%s is not open in a buffer', path))
+  end
+  attach.ready(bufnr, function(rerr, st)
+    if not st then
+      return cb(nil, rerr)
+    end
+    local t, terr = resolve(vim.api.nvim_buf_get_name(bufnr))
+    if not t then
+      return cb(nil, terr)
+    end
+    if st.base_text == nil then
+      return cb(nil, string.format('%s has no baseline to differ from', t.rel_path))
+    end
+    local layer = opts.layer or 'worktree'
+    local hunks = layer == 'staged' and st.hunks_staged or st.hunks
+    local lnum = opts.lnum or cursor_line(bufnr)
+    local h = hunk_at(hunks, lnum)
+    if not h then
+      return cb(nil, string.format('no change on line %d of %s', lnum, t.rel_path))
+    end
+    cb({ t = t, bufnr = bufnr, st = st, hunk = h, layer = layer })
+  end)
+end
+
+--- Put a buffer back in sync with the file a patch just rewrote.
+---
+--- `:edit!` is the honest way: the caller refused to act on a modified buffer,
+--- so the file is the source of truth, and re-reading it also re-runs the attach
+--- pipeline (`on_detach`, then `BufReadPost`).  `nvim_buf_call` makes the
+--- commands apply to a buffer that is not on screen, too.
+---@param bufnr integer
+---@param cb fun()
+local function reload(bufnr, cb)
+  if vim.api.nvim_buf_is_valid(bufnr) and vim.api.nvim_buf_is_loaded(bufnr) then
+    local ok = pcall(vim.api.nvim_buf_call, bufnr, function()
+      vim.cmd('silent! edit!')
+    end)
+    if not ok then
+      return cb()
+    end
+  end
+  -- `:edit!` detaches and `BufReadPost` attaches again; waiting for the new
+  -- baseline also covers a session without the autocmds, because `attach.ready`
+  -- attaches on demand.
+  attach.ready(bufnr, function()
+    cb()
+  end)
+end
+
+--- Stage one hunk (git): put just this region's change into the index.
+---
+--- The patch is `index` -> buffer (the worktree layer's baseline) applied to the
+--- index.  An untracked file has no index blob to patch against, so its single
+--- "hunk" (the whole file, §3.2) stages as a whole.
+---@param target string|nil
+---@param opts? { bufnr?: integer, lnum?: integer }
+function M.stage_hunk(target, opts)
+  hunk_ctx(target, opts, function(ctx, err)
+    if not ctx then
+      return fail(err)
+    end
+    local t, st = ctx.t, ctx.st
+    if not t.repo.system.capabilities.stage then
+      return refuse('%s: no staging area', t.repo.system.name)
+    end
+    if st.untracked then
+      return M.stage(t.path)
+    end
+    local patch = patch_of(ctx.hunk, st.base_text, st.buf_text, t.rel_path, ctx.bufnr)
+    t.repo.system.apply_patch(t.repo.root, patch, { cached = true }, function(aerr)
+      if aerr then
+        return fail(aerr)
+      end
+      info('staged %s (line %d)', t.rel_path, signs.sign_line(ctx.hunk))
+      -- The repository probe behind `refresh_now` is debounced, and the *next*
+      -- hunk action reads this buffer's layers: refresh them now, not 200ms
+      -- from now, so `hs` followed by `hu` acts on what is on screen.
+      attach.refresh(ctx.bufnr)
+      t.repo:refresh_now()
+    end)
+  end)
+end
+
+--- Take one hunk back out of the index (git).
+---
+--- The patch is `HEAD` -> buffer for the *staged* hunk, applied reversed to the
+--- index: the index returns to what `HEAD` holds there and the buffer keeps the
+--- change as an unstaged one.  (gitsigns' `undo_stage_hunk` replays a stack of
+--- the patches staged earlier in the session instead; ours acts on the hunk the
+--- signs describe — 07 §9.)
+---@param target string|nil
+---@param opts? { bufnr?: integer, lnum?: integer }
+function M.unstage_hunk(target, opts)
+  hunk_ctx(target, vim.tbl_extend('force', opts or {}, { layer = 'staged' }), function(ctx, err)
+    if not ctx then
+      return fail(err)
+    end
+    local t, st = ctx.t, ctx.st
+    if not t.repo.system.capabilities.stage then
+      return refuse('%s: no staging area', t.repo.system.name)
+    end
+    if st.head_text == nil then
+      return refuse('%s: there is no staged layer to take a hunk from', t.rel_path)
+    end
+    local patch = patch_of(ctx.hunk, st.head_text, st.buf_text, t.rel_path, ctx.bufnr)
+    t.repo.system.apply_patch(t.repo.root, patch, { cached = true, reverse = true }, function(aerr)
+      if aerr then
+        return fail(aerr)
+      end
+      info('unstaged %s (line %d)', t.rel_path, signs.sign_line(ctx.hunk))
+      attach.refresh(ctx.bufnr)
+      t.repo:refresh_now()
+    end)
+  end)
+end
+
+--- The keymap's spelling (`hu`, §4).
+M.undo_stage_hunk = M.unstage_hunk
+
+--- Throw one hunk away: the file goes back to whatever the baseline holds
+--- there.
+---
+--- This is the only action that rewrites the *file*, so a modified buffer is
+--- refused (D45): the patch is built from the buffer's text but applied to the
+--- file, and the two have to describe the same bytes.
+---@param target string|nil
+---@param opts? { bufnr?: integer, lnum?: integer }
+function M.reset_hunk(target, opts)
+  hunk_ctx(target, opts, function(ctx, err)
+    if not ctx then
+      return fail(err)
+    end
+    local t, st = ctx.t, ctx.st
+    if not t.repo.system.capabilities.revert_hunk then
+      return refuse('%s: discarding hunks is not supported', t.repo.system.name)
+    end
+    if st.untracked then
+      return info('%s is not tracked yet: nothing to discard', t.rel_path)
+    end
+    if vim.bo[ctx.bufnr].modified then
+      return refuse('%s has unsaved changes: save or undo them first', t.rel_path)
+    end
+    local patch = patch_of(ctx.hunk, st.base_text, st.buf_text, t.rel_path, ctx.bufnr)
+    t.repo.system.apply_patch(t.repo.root, patch, { reverse = true }, function(aerr)
+      if aerr then
+        return fail(aerr)
+      end
+      info('discarded %s (line %d)', t.rel_path, signs.sign_line(ctx.hunk))
+      reload(ctx.bufnr, function()
+        t.repo:refresh_now()
+      end)
+    end)
+  end)
+end
+
+--- Stage a whole file (git).  The keymap vocabulary's name for `M.stage` (`hs`
+--- stages one hunk, `hS` the file, §4).
+---@param target string|nil
+function M.stage_buffer(target)
+  return M.stage(target)
+end
+
+--- Throw away every change in one file.
+---@param target string|nil
+---@param opts? { bufnr?: integer }
+function M.reset_buffer(target, opts)
+  opts = opts or {}
+  local t, err = resolve(target)
+  if not t then
+    return fail(err)
+  end
+  if not t.repo.system.capabilities.revert_hunk then
+    return refuse('%s: discarding changes is not supported', t.repo.system.name)
+  end
+  local bufnr = opts.bufnr or buffer_showing(t.path)
+  if bufnr and vim.bo[bufnr].modified then
+    return refuse('%s has unsaved changes: save or undo them first', t.rel_path)
+  end
+  t.repo.system.revert(t.repo.root, t.rel_path, function(rerr)
+    if rerr then
+      return fail(rerr)
+    end
+    info('discarded changes in %s', t.rel_path)
+    if bufnr then
+      return reload(bufnr, function()
+        t.repo:refresh_now()
+      end)
+    end
+    t.repo:refresh_now()
+  end)
 end
 
 -- ▏ commit ───────────────────────────────────────────────────────────────────

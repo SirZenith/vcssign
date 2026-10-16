@@ -1,4 +1,5 @@
---- Action specs: stage / unstage / commit / diff / refresh.
+--- Action specs: stage / unstage / commit / diff / refresh, plus the hunk-level
+--- actions (stage / unstage / discard one hunk at the cursor).
 ---
 --- These are the cases where the plugin does something *irreversible* to a
 --- repository, so every claim is checked against the VCS itself (`git diff
@@ -11,14 +12,17 @@
 --- mechanism (`helpers.count_refreshes`), never through a status list.
 --- See impl/init/04-commands-actions.md §2, §6.
 local actions = require('vcssign.actions')
+local attach = require('vcssign.attach')
 local autocmds = require('vcssign.autocmds')
 local config = require('vcssign.config')
 local helpers = require('helpers')
+local keymap = require('vcssign.keymap')
 local manager = require('vcssign.repo_manager')
 
 --- Back to a clean editor between cases.
 local function reset()
   manager.dispose_all()
+  attach.forget_all()
   autocmds.disable()
   vim.cmd('silent! tabonly')
   if #vim.api.nvim_tabpage_list_wins(0) > 1 then
@@ -196,7 +200,285 @@ local function head(repo)
   return helpers.sh({ 'git', '-C', repo.root, 'rev-parse', 'HEAD' }):gsub('%s+$', '')
 end
 
+-- ▏ the hunk fixtures ────────────────────────────────────────────────────────
+
+--- Put the cursor on `lnum` in the window showing `bufnr`.
+---
+--- The hunk actions pick their hunk with the cursor, so this is how a case
+--- says *which* hunk it means.
+---@param bufnr integer
+---@param lnum integer
+local function put_cursor(bufnr, lnum)
+  local win = vim.fn.bufwinid(bufnr)
+  ok(win ~= -1, 'the buffer is on screen')
+  vim.api.nvim_win_set_cursor(win, { lnum, 0 })
+end
+
+--- Open `path` in a buffer and wait until the pipeline has rendered it.
+---
+--- Every hunk action works on a buffer (the patch is built from the buffer's
+--- text), so every case needs one — and needs its hunks to be known before the
+--- action runs.
+---@param path string
+---@return integer bufnr
+local function open_attached(path)
+  vim.cmd('edit ' .. vim.fn.fnameescape(path))
+  local bufnr = vim.api.nvim_get_current_buf()
+  attach.attach(bufnr)
+  helpers.wait_for(function()
+    local st = attach.state(bufnr)
+    return st ~= nil and st.attached and st.buf_text ~= nil
+  end, 'the signs of ' .. path)
+  return bufnr
+end
+
+--- A git repo whose file has nine committed lines and then two edits, on lines
+--- 2 and 8 — two hunks, far enough apart to stay separate.
+---
+--- The edits are *on disk*, so the buffer is unmodified: that is what
+--- `reset_hunk` requires (D45) and what makes a patch built from the buffer
+--- apply to the file it came from.
+---@param name string
+---@return string dir
+---@return integer bufnr
+local function two_hunk_repo(name)
+  local dir = helpers.git_repo(name)
+  local function body(second, eighth)
+    local lines = {}
+    for i = 1, 9 do
+      lines[i] = 'line ' .. i
+    end
+    lines[2], lines[8] = second, eighth
+    return table.concat(lines, '\n') .. '\n'
+  end
+  helpers.write(dir .. '/base.txt', body('line 2', 'line 8'))
+  helpers.sh({ 'git', '-C', dir, 'add', 'base.txt' })
+  helpers.sh({ 'git', '-C', dir, 'commit', '-qm', 'nine lines' })
+  helpers.write(dir .. '/base.txt', body('LINE TWO', 'LINE EIGHT'))
+
+  local bufnr = open_attached(dir .. '/base.txt')
+  eq(#attach.hunks(bufnr), 2, 'the fixture has two hunks')
+  return dir, bufnr
+end
+
+--- Wait for the plugin to answer at all, then hand the notifications back.
+---@param fn function
+---@return vcssign.CapturedNotify[]
+local function collect_until_answered(fn)
+  return collect(fn, function(s)
+    return #s > 0
+  end)
+end
+
 return {
+  -- ▏ the hunk actions ──────────────────────────────────────────────────────
+  {
+    name = 'stage_hunk stages the hunk under the cursor and leaves the other one alone',
+    fn = guarded(function()
+      reset()
+      local dir, bufnr = two_hunk_repo('actions-stage-hunk')
+      put_cursor(bufnr, 2)
+
+      local seen = collect_until_answered(function()
+        actions.stage_hunk(nil, { bufnr = bufnr })
+      end)
+      eq(seen[1].message, 'vcssign: staged base.txt (line 2)')
+      eq(seen[1].level, vim.log.levels.INFO)
+      -- The index holds the first edit and only the first ...
+      local staged = helpers.sh({ 'git', '-C', dir, 'show', ':base.txt' })
+      ok(staged:find('LINE TWO', 1, true) ~= nil, 'the staged hunk is in the index')
+      ok(staged:find('LINE EIGHT', 1, true) == nil, 'the other hunk is not')
+      eq(git_diff(dir, { '--cached' }), 'base.txt')
+      eq(git_diff(dir), 'base.txt', 'the worktree still differs too')
+      -- ... and the two sign layers follow the index.
+      helpers.wait_for(function()
+        local st = attach.state(bufnr)
+        return st ~= nil and #st.hunks == 1 and #st.hunks_staged == 1
+      end, 'the sign layers to split')
+    end),
+  },
+  {
+    name = 'undo_stage_hunk takes that hunk back out of the index',
+    fn = guarded(function()
+      reset()
+      local dir, bufnr = two_hunk_repo('actions-undo-stage-hunk')
+      put_cursor(bufnr, 2)
+      local staged = collect_until_answered(function()
+        actions.stage_hunk(nil, { bufnr = bufnr })
+      end)
+      eq(staged[1].message, 'vcssign: staged base.txt (line 2)')
+      -- The layer the action reads is the *plugin's* staged layer, not git's:
+      -- the index changing is not the same thing as the signs having caught up.
+      helpers.wait_for(function()
+        local st = attach.state(bufnr)
+        return st ~= nil and #st.hunks_staged == 1
+      end, 'the staged layer to appear')
+
+      local undone = collect_until_answered(function()
+        actions.undo_stage_hunk(nil, { bufnr = bufnr })
+      end)
+      eq(undone[1].message, 'vcssign: unstaged base.txt (line 2)')
+      -- The index is bit-for-bit what HEAD holds again, and both edits are back
+      -- among the worktree's own changes.
+      eq(git_diff(dir, { '--cached' }), '', 'the index matches HEAD again')
+      eq(git_diff(dir), 'base.txt')
+    end),
+  },
+  {
+    name = 'reset_hunk discards one hunk in the file and reloads the buffer',
+    fn = guarded(function()
+      reset()
+      local dir, bufnr = two_hunk_repo('actions-reset-hunk')
+      put_cursor(bufnr, 2)
+
+      local seen = collect_until_answered(function()
+        actions.reset_hunk(nil, { bufnr = bufnr })
+      end)
+      eq(seen[1].message, 'vcssign: discarded base.txt (line 2)')
+
+      local text = table.concat(vim.fn.readfile(dir .. '/base.txt'), '\n')
+      ok(text:find('line 2', 1, true) ~= nil, 'the discarded hunk is back to its baseline')
+      ok(text:find('LINE TWO', 1, true) == nil, 'the discard reached the file')
+      ok(text:find('LINE EIGHT', 1, true) ~= nil, 'the other hunk is untouched')
+      helpers.wait_for(function()
+        return vim.api.nvim_buf_get_lines(bufnr, 1, 2, false)[1] == 'line 2'
+      end, 'the buffer to reload from the file')
+      eq(git_diff(dir, { '--cached' }), '')
+      eq(git_diff(dir), 'base.txt', 'only the second hunk is left in the worktree')
+    end),
+  },
+  {
+    name = 'reset_hunk refuses a file whose buffer has unsaved changes',
+    fn = guarded(function()
+      reset()
+      local dir, bufnr = two_hunk_repo('actions-reset-modified')
+      -- Saved-versus-buffer drift is exactly what D45 refuses: the patch is
+      -- applied to the *file*, so the two have to describe the same bytes.
+      vim.api.nvim_buf_set_lines(bufnr, 1, 2, false, { 'line 2 (edited)' })
+      eq(vim.bo[bufnr].modified, true, 'the buffer is modified')
+
+      local seen = collect_until_answered(function()
+        actions.reset_hunk(nil, { bufnr = bufnr, lnum = 2 })
+      end)
+      eq(seen[1].message, 'base.txt has unsaved changes: save or undo them first')
+      eq(vim.fn.readfile(dir .. '/base.txt')[2], 'LINE TWO', 'the file is untouched')
+    end),
+  },
+  {
+    name = 'a hunk action answers when the cursor is not on a hunk',
+    fn = guarded(function()
+      reset()
+      local dir, bufnr = two_hunk_repo('actions-off-hunk')
+      put_cursor(bufnr, 5)
+
+      local seen = collect_until_answered(function()
+        actions.stage_hunk(nil, { bufnr = bufnr })
+      end)
+      eq(seen[1].level, vim.log.levels.ERROR)
+      eq(seen[1].message, 'vcssign: no change on line 5 of base.txt')
+      eq(git_diff(dir, { '--cached' }), '', 'nothing was staged')
+    end),
+  },
+  {
+    name = 'a hunk action refuses a file that is not open in a buffer',
+    fn = guarded(function()
+      reset()
+      local _, dir = modified_repo('actions-not-open')
+
+      local seen = collect_until_answered(function()
+        actions.stage_hunk(dir .. '/base.txt')
+      end)
+      eq(seen[1].level, vim.log.levels.ERROR)
+      ok(
+        seen[1].message:find('is not open in a buffer', 1, true) ~= nil,
+        'it says the buffer is missing: ' .. seen[1].message
+      )
+      eq(git_diff(dir, { '--cached' }), '', 'nothing was staged')
+    end),
+  },
+  {
+    name = 'the hs mapping stages the hunk under the cursor',
+    fn = guarded(function()
+      reset()
+      local dir, bufnr = two_hunk_repo('actions-keymap-hs')
+      put_cursor(bufnr, 2)
+      keymap.dispatch('stage_hunk', { bufnr = bufnr })
+      helpers.wait_for(function()
+        return git_diff(dir, { '--cached' }) ~= ''
+      end, 'the index to change')
+      local staged = helpers.sh({ 'git', '-C', dir, 'show', ':base.txt' })
+      ok(staged:find('LINE TWO', 1, true) ~= nil, 'the mapped key staged the hunk')
+      ok(staged:find('LINE EIGHT', 1, true) == nil, 'and nothing else')
+    end),
+  },
+  {
+    name = 'stage_buffer stages every hunk in the file',
+    fn = guarded(function()
+      reset()
+      local dir, bufnr = two_hunk_repo('actions-stage-buffer')
+
+      local seen = collect_until_answered(function()
+        actions.stage_buffer(nil, { bufnr = bufnr })
+      end)
+      eq(seen[1].message, 'vcssign: staged base.txt')
+      eq(git_diff(dir, { '--cached' }), 'base.txt')
+      eq(git_diff(dir), '', 'the worktree matches the index again')
+    end),
+  },
+  {
+    name = 'reset_buffer throws the whole file back to the index',
+    fn = guarded(function()
+      reset()
+      local dir, bufnr = two_hunk_repo('actions-reset-buffer')
+
+      local seen = collect_until_answered(function()
+        actions.reset_buffer(nil, { bufnr = bufnr })
+      end)
+      eq(seen[1].message, 'vcssign: discarded changes in base.txt')
+      eq(git_diff(dir), '', 'no worktree change is left')
+      eq(vim.fn.readfile(dir .. '/base.txt')[2], 'line 2')
+      helpers.wait_for(function()
+        return vim.api.nvim_buf_get_lines(bufnr, 1, 2, false)[1] == 'line 2'
+      end, 'the buffer to reload from the file')
+    end),
+  },
+  {
+    name = 'stage_hunk answers "no staging area" on svn',
+    fn = guarded(function()
+      reset()
+      local dir = helpers.svn_checkout('actions-stage-hunk-svn')
+      local path = dir .. '/base.txt'
+      helpers.write(path, 'changed\n')
+      local bufnr = open_attached(path)
+      put_cursor(bufnr, 1)
+
+      local seen = collect_until_answered(function()
+        actions.stage_hunk(nil, { bufnr = bufnr })
+      end)
+      eq(seen[1].message, 'svn: no staging area')
+      eq(seen[1].level, vim.log.levels.INFO, 'a missing capability is not an error')
+      eq(svn_status(path):sub(1, 1), 'M', 'svn still reports a local modification')
+    end),
+  },
+  {
+    name = 'reset_hunk discards one hunk through svn patch --reverse-diff',
+    fn = guarded(function()
+      reset()
+      local dir = helpers.svn_checkout('actions-reset-hunk-svn')
+      local path = dir .. '/base.txt'
+      helpers.write(path, 'changed\nsecond\n')
+      local bufnr = open_attached(path)
+      eq(#attach.hunks(bufnr), 1, 'one hunk, replacing line 1 with two lines')
+      put_cursor(bufnr, 1)
+
+      local seen = collect_until_answered(function()
+        actions.reset_hunk(nil, { bufnr = bufnr })
+      end)
+      eq(seen[1].message, 'vcssign: discarded base.txt (line 1)')
+      eq(table.concat(vim.fn.readfile(path), '\n'), 'base', 'the file is back at BASE')
+      eq(svn_status(path), '', 'and svn calls it clean')
+    end),
+  },
   {
     name = 'stage moves a change into the index, and says so',
     fn = guarded(function()

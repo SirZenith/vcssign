@@ -167,6 +167,14 @@ vcssign 把 Git / Subversion 仓库里的改动直接反映到窗口的 `'signco
 
     :Vcssign toggle     开 / 关当前缓冲区的 sign（关 = 清空那一列，停止刷新）
     :Vcssign refresh    立刻刷新（跳过去抖），不等 fs 监听
+    :Vcssign stage_hunk 暂存光标所在的 hunk（git）
+    :Vcssign undo_stage_hunk
+                        取消暂存光标所在的 hunk（git）
+    :Vcssign reset_hunk 丢弃光标所在的 hunk
+    :Vcssign stage_buffer
+                        暂存整个文件（git）
+    :Vcssign reset_buffer
+                        丢弃整个文件的改动
     :Vcssign diff       看这个文件的 diff
     :Vcssign commit     提交（git：已暂存的；svn：工作副本里该文件）
     :Vcssign debug      打印已挂载仓库、缓存与监听状态的诊断信息
@@ -178,6 +186,13 @@ vcssign 把 Git / Subversion 仓库里的改动直接反映到窗口的 `'signco
 `toggle` 只作用于一个缓冲区（带 `path` 时作用于显示该文件的已打开缓冲区）：
 关掉后那一列为空，也不再随编辑刷新；重新打开时按当前基线立刻重画。仓库
 引用在开关前后都不变，所以开关不产生任何额外的探测成本。
+
+`stage_hunk` / `undo_stage_hunk` / `reset_hunk` / `stage_buffer` / `reset_buffer`
+作用于**缓冲区里的那个 hunk**：hunk 由光标所在行选出，补丁由缓冲区文本
+生成（所以缓冲区可以有不落盘的修改，但 `reset` 类动作要求文件已保存）。
+因此这些子命令只接已打开的文件，没打开时明确拒绝而不是猜。`stage_hunk` /
+`stage_buffer` 在没有暂存区的系统（svn）上回答「no staging area」；`reset_hunk` /
+`reset_buffer` 在缓冲区有未保存修改时拒绝（D45），因为补丁作用在文件上。
 
 ==============================================================================
 4. 行级 sign 与按键                                         *vcssign-signs*
@@ -206,10 +221,11 @@ vcssign 把 Git / Subversion 仓库里的改动直接反映到窗口的 `'signco
     <leader>tw                 toggle_word_diff           开 / 关词级 diff
     <leader>tb                 toggle_current_line_blame  开 / 关行内 blame
 
-（sign 渲染、自动挂载与 `]c` / `[c` 导航已经接上：切到一个文件缓冲区就会画 sign，
-`]c` / `[c` 在 hunk 之间跳（带计数，走到头会环绕）。其余的 `<leader>h*` 动作会在
-随后的步骤接上，现在按下只会提示「尚未实现」；`:Vcssign toggle` 可以整个关掉
-sign。）
+（sign 渲染、自动挂载、`]c` / `[c` 导航和 hunk 动作都已经接上：切到一个文件
+缓冲区就会画 sign，`]c` / `[c` 在 hunk 之间跳（带计数，走到头会环绕），
+`hs` / `hu` / `hr` 作用在光标所在的那个 hunk，`hS` / `hR` 作用在整个文件。
+词级 diff、hunk 预览、blame 和 rev diff 会在随后的步骤接上，现在按下只会提示
+「尚未实现」；`:Vcssign toggle` 可以整个关掉 sign。）
 
 ==============================================================================
 5. Lua API                                                    *vcssign-api*
