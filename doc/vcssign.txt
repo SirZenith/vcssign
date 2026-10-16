@@ -56,16 +56,16 @@ vcssign 把 Git / Subversion 仓库里的改动直接反映到窗口的 `'signco
   单条 VCS 命令的超时；超时会被杀死并报告。
 
 `watch` (true)~
-  用文件系统监听发现变化。关掉之后只有显式刷新（`:Vcssign refresh`、
-  `FocusGained`）会更新状态。
+  用文件系统监听发现变化（git 监听 `.git`，svn 监听 `.svn`）。关掉之后
+  只有显式刷新（`:Vcssign refresh`、`:w`、`:e!`、`FocusGained`）会重读基线。
 
 `update_debounce_ms` (200)~
   缓冲区编辑的防抖窗口：编辑停下来之后才重算 hunk。200ms 与 gitsigns 的
   `update_debounce` 同阶。
 
 `retry_delay_ms` (1000) / `retry_max_ms` (30000)~
-  一次 `status` 失败后的首次重试延迟与指数退避上限；期间继续用上一次的
-  缓存，只警告一次。
+  一次仓库存活探测失败后的首次重试延迟与指数退避上限：期间沿用已有的仓库
+  会话（缓冲区继续用当前基线），同一次失败只警告一次。
 
 `log_level` ('warn')~
   插件日志级别。面向用户的**回答**（「没有仓库」、能力不足、动作失败）
@@ -183,7 +183,7 @@ vcssign 把 Git / Subversion 仓库里的改动直接反映到窗口的 `'signco
     :Vcssign diffthis   和基线打开 diff；带参数时和那个 rev 比（`:Vcssign diffthis HEAD~1`）
     :Vcssign blame_line 浮动窗口显示光标那一行的 blame
     :Vcssign commit     提交（git：已暂存的；svn：工作副本里该文件）
-    :Vcssign debug      打印已挂载仓库、缓存与监听状态的诊断信息
+    :Vcssign debug      打印已挂载仓库、引用、监听句柄与最后一条错误
 
 `diff` 会**先查能力**：不支持 diff 的系统会得到一句说明而不是静默失败。
 `path` 参数可以是文件、目录或仓库根；不在任何仓库里时明确回答「没有仓库」

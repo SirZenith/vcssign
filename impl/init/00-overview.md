@@ -76,6 +76,10 @@
 
 ## 3. 总体架构
 
+> **⚠ 下面是 M5 完成时的样子**（历史）：M6 起 `sidebar/` 与 `status_type.lua` 已删，`status` 解析链
+> 换成 `show` / `is_tracked` / `blame` / `apply_patch` / `revert` 五个交互原语，并新增 `hunk` / `diff` /
+> `signs` / `attach` / `nav` / `keymap` / `worddiff` / `preview` / `blame` / `revdiff`。当前分层见 `07-signs-in-signcolumn.md` §3。
+
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │                         plugin/vcssign.vim                    │

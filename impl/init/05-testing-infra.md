@@ -398,6 +398,35 @@ Summary of conflicts:
 - 高亮断言后要复原（先 `highlight clear <组>` 再 `define_highlights()`），
   `renderer_spec` 与 `signs_spec` 同法。
 
+### M6 Step 6–11 之后的实况（244 用例）
+
+| spec | 用例数 | 需要的外部命令 |
+|------|--------|----------------|
+| config / doc | 7 + 6 | 无 |
+| exec / repo | 13 + 20 | git / git + svn |
+| vcs_git / vcs_svn / vcs_registry | 14 + 13 + 8 | git / svn / 两者 |
+| hunk / diff | 20 + 10 | git |
+| signs / attach | 14 + 20 | git / git（attach 另有 svn 用例） |
+| nav / worddiff / preview | 13 + 9 + 7 | git（`nav_spec` 只喂手工 hunk 表） |
+| blame / revdiff | 8 + 7 | git + svn |
+| autocmds / actions / cli | 12 + 30 + 13 | git（actions / cli 还要 svn + svnadmin） |
+
+- 工程门（`22ad24a`）：`make test` = **`244 tests, 0 failed`**；`make format-check` 零输出；
+  `make lint` = `Total: 0 warnings / 0 errors in 46 files`。
+- **子集单跑**：`sh scripts/run_tests.sh <spec…>`；`Makefile` 的 `FILTER` 只是把它透传过去
+  （`FILTER=nav_spec make test` = 13/13，实测有效）。**「全量绿」与「本步动到的 spec 单跑绿」是两条
+  独立判据** —— 跨 spec 的顺序依赖是已知的 flake 源（上一条用例的在制品异步命令会落进下一条的
+  观察窗口）。
+- **两个要会解读的现象**：① `repo_spec` 对负载敏感 —— 侧边同时跑 `svnadmin` / `svn patch` 这类重命令时，
+  `a metadata change is announced exactly once` 会等不到 fs 事件而红（空闲连跑 3 次 20/20 绿）；
+  ② `log.warn` 直接写 stderr，会**插进 TAP 行中间**（实测丢了第 62、209 行，但 `244` 的计数对得上）
+  —— 看结果用 `grep "not ok"`，别按行号定位。
+- 每个用例都包 `guarded(fn)`：失败也清 `touched` 缓冲区 / `attach.forget_all()` / `manager.dispose_all()` /
+  `config.setup({})`，否则下一条用例会继承上一条的去抖定时器。
+- 新 spec 的分工：`nav_spec` / `worddiff_spec` / `preview_spec` / `blame_spec` 的纯函数部分不碰仓库；
+  `attach_spec` / `actions_spec` / `revdiff_spec` / `repo_spec` 用真仓库，`blame_spec` / `actions_spec`
+  还有 svn 用例（`helpers.svn_checkout` 共享 `temp/svn-server`）。
+
 ## 7. M5 实测与踩坑
 
 - stylua 100 列 vs 120 列：100 列重排 18 文件 383 行，120 列 10 文件 156 行；两者都过 `--check`，选 100 只为与 gitsigns 一致。

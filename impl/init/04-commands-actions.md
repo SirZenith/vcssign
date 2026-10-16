@@ -1,5 +1,11 @@
 # 04 · 用户命令、动作、autocmd 生命周期（P3）
 
+> **⚠ M6 起交付物表与子命令集已变**：侧边栏退役后 `:Vcssign` 只剩 13 个子命令（`toggle` /
+> `refresh` / `stage_hunk` / `undo_stage_hunk` / `reset_hunk` / `stage_buffer` / `reset_buffer` /
+> `preview_hunk` / `diff` / `diffthis` / `blame_line` / `commit` / `debug`），autocmd 从「按仓库挂载」改成
+> 「按缓冲区 attach」，动作层的落点也从「状态行」变成「缓冲区里的 hunk」。`open` / `close` / `get_status` /
+> `get_entries` 与 §2 的键位表是 M4 的记录；当前实现与验收见 `07-signs-in-signcolumn.md`。
+
 > UI 就绪后的最后一层能力：把 01–03 的模块串成「一键可用」的入口
 > （`:Vcssign` 命令族、自动 attach、动作分发）。
 
@@ -105,6 +111,10 @@ diff 灌进一个 nofile 缓冲区、`filetype=diff` 交给内置语法上色：
 | `OptionSet signcolumn`（可选） | 不处理（窗口内强制 `signcolumn=yes:2`，见 03 §2） |
 
 `setup()` 时创建 group；`config.on_attach` / `on_detach` 回调钩子（gitsigns config 同款命名），给用户集成点。
+
+> **⚠ M6 Step 6（`2193802`）**：`autocmds._attached` 已经删掉 —— 「只 attach 一次」现在由
+> `attach.lua` 按路径去重（同一个文件的第二次 `attach(bufnr)` 直接返回既有状态、不跑探测），
+> 所以 `BufEnter` 可以无脑重复调用。下面这段是 M4 的记录。
 
 去抖：**改用「每个缓冲区只 attach 一次」的记忆表**（`autocmds._attached[bufnr] = path`），不再在
 `repo_manager` 内部套 `debounce_trailing(100ms)`（偏差见 §7.1）：风暴的本质是同一个缓冲区被反复进入，而
