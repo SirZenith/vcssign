@@ -258,6 +258,7 @@ M.on_repo_attached(fn) / M.on_repo_detached(fn)
 全量（M2 收尾时）：**81 用例，0 失败**（`status_type` 4 + `config` 7 + `exec` 7 + `vcs_git` 16 +
 `vcs_svn` 18 + `vcs_registry` 8 + `repo` 21；repo 的最后 3 例是第二轮回归用例）。
 M3 之后全量为 **114**（+ `renderer` 15 + `sidebar` 18，见 03 §6/§7）；M4 之后 **167**（+ `actions` 24 + `cli` 17 + `autocmds` 10 + `exec` 2，见 04 §6）。
+M5 之后 **174**（+ `doc` 7，见 05 §6）——`make test` 与 `scripts/run_tests.sh` 等价。
 
 M4 在 `repo_manager` 侧新增了两个入口：
 

@@ -31,7 +31,9 @@
 | `test/actions_spec.lua` | 04 的动作 spec（真实仓库 + VCS 自身核对 + 桩 `vim.ui.input`） | ✅（24 用例全绿） |
 | `test/cli_spec.lua` | 04 的 `:Vcssign` spec（命令分派/补全/目标解析/公共 API/`plugin/` 薄壳） | ✅（17 用例全绿） |
 | `test/autocmds_spec.lua` | 04 的生命周期 spec（attach/detach/清理/钩子隔离） | ✅（10 用例全绿） |
-| `stylua.toml` / `.luacheckrc` / `Makefile` | 工程工具链（gitsigns 同款） | ⬜ M5 剩余 |
+| `scripts/tools.sh` | 钉版本把 stylua / luacheck 下到 `deps/`（幂等） | ✅（stylua 2.3.1 / luacheck 1.2.0） |
+| `stylua.toml` / `.luacheckrc` / `Makefile` | 工程工具链（gitsigns 同款） | ✅（05 §4，实测 `make 4.4.1`） |
+| `doc/vcssign.txt` + `test/doc_spec.lua` | 手写帮助文件 + 「文档与代码不许漂移」的断言 | ✅（7 用例，无外部二进制） |
 
 ## 2. temp/ 测试仓库（scripts/make_test_repos.sh）
 
@@ -222,18 +224,39 @@ Summary of conflicts:
 
 ## 4. lint / format / CI
 
-- `stylua.toml`：gitsigns 同款（2 空格、单引号、100 列——与 gitsigns `.stylua.toml` 一致，本仓风格统一用它）。
-- `.luacheckrc`：globals = `vim`，`impl/` 排除。
-- `Makefile`（bash 可用环境；Windows 下用 `scripts/*.sh` 直接跑，git-bash 就绪）：
-  - `make test [FILTER=pattern]` → `scripts/run_tests.sh`
-  - `make format` / `format-check` → stylua
-  - `make lint` → luacheck
-- CI（`.github/workflows/ci.yml`，backlog 可后置）：ubuntu + windows matrix 跑 `make format-check` + `run_tests.sh`；svn fixture 在 CI 装 `subversion` 包；Linux 的 fs_event 非递归限制不影响（监听 root + `.git/.svn` 顶层在 Linux 可用）。
+- `stylua.toml`：gitsigns 同款（2 空格缩进、单引号、100 列、行尾保留）。实测本仓代码在 100 列下重排 18 个文件 383 行，
+  120 列是 10 个文件 156 行——两者都过 `--check`，选 100 是为了与 gitsigns 一致。
+- `.luacheckrc`：`std = 'lua51'`、`globals = { 'vim' }`，spec 里用到的 `ok` / `eq` / `check` 前置成只读全局，
+  `deps/`、`temp/`、`impl/` 排除（`max_line_length = 120`：给 stylua 的 100 列留出字符串与长调用链的余量）。
+- `scripts/tools.sh`：把工具**钉版本**下到 `deps/`（gitignored）——stylua `v2.3.1`（windows-x86_64 / macos-aarch64 /
+  macos-x86_64 / linux-x86_64 四个 zip asset）、luacheck `v1.2.0`（只有 Windows 有预编译 exe；其它平台走
+  `luarocks install luacheck`，脚本把 PATH 上的它 symlink 进 `deps/`）。已存在就跳过，所以可以挂在每个 make 目标上。
+- `Makefile`（44 行；实测 `GNU Make 4.4.1`。Windows 的 git-bash 通常没有 make，`scripts/*.sh` 才是真正的入口）：
+  - 默认目标 `help`，另加 `tools` / `fixtures` / `test [FILTER=]` / `format` / `format-check` / `lint`。
+  - 依赖只负责「把前置件凑齐」：`test: fixtures tools`、`format*: tools`、`lint: tools`；每个目标仍是一行脚本调用。
+  - 文件集来自 `git ls-files 'lua/**/*.lua' 'test/*.lua' 'scripts/*.lua'`（D36）：新加的文件只要 `git add` 过就不会漏检，
+    `impl/`、fixture、`deps/` 不在其中。
+  - 平台后缀：`EXE := $(if $(filter Windows_NT,$(OS)),.exe,)`，于是 `deps/stylua$(EXE)` 在两边都对。
+- `scripts/*.sh` 在索引里置了可执行位（`git update-index --chmod=+x`；本机 `core.filemode=false`，只能这样改），
+  POSIX 克隆后可直接 `./scripts/run_tests.sh`；文档与 CI 仍写 `sh scripts/...`。
+- CI（`.github/workflows/ci.yml`）：**仍未做**（backlog 不变）——本机没有 GitHub 远端，写了也无法验证。
+  接入时的步骤：ubuntu（`apt install subversion` + `luarocks install luacheck`）与 windows 两个 job，
+  跑 `make format-check` / `make lint` / `sh scripts/run_tests.sh`；svn 不可用时 `test/run.lua` 打印 SKIP 并继续。
 
 ## 5. 文档
 
-- `doc/vcssign.txt`：初版手写（安装、配置表、命令表、状态符号表、架构一节引用 00–04 计划）。
-- 后期：`scripts/gen_help.lua` 从 `config.lua` 的 schema 表生成配置段（gitsigns `make doc` 模式，backlog）。
+- `doc/vcssign.txt`（手写初版，254 行，8 节）：安装与设置 / 配置（含全部默认值） / `:Vcssign` 命令表 /
+  侧边栏与按键 / 状态与符号（13 种状态 + 严重度顺序） / Lua API / 高亮组（18 组） / 架构（层图 + 测试脚手架）。
+  - tag：`*vcssign.txt*`、`*vcssign-contents*` … `*vcssign-arch*`、`*:Vcssign*`；末行 `ft=help` modeline；全文件 LF。
+  - `doc/tags` **不入库**（`.gitignore`，D37），由 `:helptags` 或插件管理器生成。
+- `test/doc_spec.lua`（7 用例，无外部二进制）：手写文档与代码之间的每一处链接都有断言，不靠纪律防漂移——
+  - 文件形状：首行 file tag、末行 modeline、无 CR；
+  - tag 唯一且都能被 `:helptags` 索引（在 `temp/_spec/` 的副本上跑，不留生成物）；
+  - `config.defaults` 的每个顶层键，加上 `sidebar.position` / `sidebar.width` / `sidebar.group_by` /
+    `sidebar.keymaps` / `diff.mode` / `commit.message_input`，以及取值 `left` / `right` / `float` / `vertical` / `input`；
+  - `cli.subcommands` 的每个子命令、默认键位的每个动作名、`status_type.default_symbol` /
+    `default_sign_hl_group` / `renderer.highlights` 的每个组、公共 API 的每个函数名、`vcssign://` 缓冲名方案。
+- 后期（未做）：`scripts/gen_help.lua` 从 `config.lua` 的 schema 生成配置段（gitsigns `make doc` 模式）。
 
 ## 6. 验收标准
 
@@ -262,3 +285,32 @@ Summary of conflicts:
   `exec.run` 返回前就跑，`exec_spec` 用它钉住「定时器先建后 spawn」这条不变量——旧实现下这个用例会红）。
 - 通知类断言统一用 `helpers.capture_notify(fn, is_done?)`：不给谓词时只排空 50ms（同步回答够用），
   给谓词时等到达（VCS 命令的回答都是异步的）。三份 spec 早先各抄了一份，M4 审查后收敛到 helpers。
+
+### M5 之后的实况（174 用例）
+
+| spec | 用例数 | 需要的外部命令 |
+|------|--------|----------------|
+| status_type / config / renderer / **doc** | 4 + 7 + 15 + **7** | 无 |
+| exec / repo | 9 + 21 | git（svn 部分用 svn） |
+| vcs_git / vcs_svn / vcs_registry | 16 + 18 + 8 | git / svn / 两者 |
+| sidebar | 18 | git, svn |
+| actions / cli | 24 + 17 | git, svn, svnadmin |
+| autocmds | 10 | git |
+
+- 工程门（全部实测）：`make format-check` 零输出（34 个文件）；`make lint` = `Total: 0 warnings / 0 errors in 34 files`；
+  `make test` = `174 tests, 0 failed`，两遍结果一致，**stderr 仍只有 1 行**预期重试告警。
+- 工具版本：stylua 2.3.1、luacheck 1.2.0（PUC-Rio Lua 5.4 / LuaFileSystem 1.8.0）。
+- 本机原先没有 `make`，用 `scoop install make` 装了 4.4.1 才验证到 Makefile 真能跑（属环境准备，不进仓库）。
+- `make test` 与 `sh scripts/run_tests.sh` 是同一件事：前者多跑 `fixtures`（幂等）与 `tools`（幂等）。
+
+## 7. M5 实测与踩坑
+
+- stylua 100 列 vs 120 列：100 列重排 18 文件 383 行，120 列 10 文件 156 行；两者都过 `--check`，选 100 只为与 gitsigns 一致。
+- luacheck 真找出的问题（都不是风格问题，全是「改了不报错但没用」或遮蔽）：
+  `test/sidebar_spec.lua` 一个未使用的 `win`、`test/cli_spec.lua` 一个未使用的局部函数、
+  `test/autocmds_spec.lua` 里遮蔽外层 `elsewhere` 的局部、`lua/vcssign/actions.lua` 里遮蔽 `err` 的变量。
+  修法都是删除或改名，不改行为——修完全量 174/174 仍绿。
+- `max_line_length` 用 120 而不是 100：字符串与长调用链本来就常越过 100 列，硬卡只会逼出无意义的换行。
+- headless 的 `:helptags` 会真的写 `tags` 文件：`doc_spec` 把它写到 `temp/_spec/` 的副本上（仓库里同时 `.gitignore` 了 `doc/tags`）。
+- 手写长文件在本机工具链下会被截断（一次 heredoc 超过约 7KB 时）：`doc/vcssign.txt` 实际踩到过（在 245 行处断句），
+  最后是「先写、再按行号补齐」落地的；写文档时按小节分开写更稳。
