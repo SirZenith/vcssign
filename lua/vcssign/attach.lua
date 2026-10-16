@@ -276,6 +276,28 @@ function M._render(st)
   end
 end
 
+--- Set `'signcolumn'` on one window; answer whether the window is fine now.
+---
+--- Two guards, both from a real crash (07 §6.3): the window may be gone by the
+--- time its id is written to, and *writing the value it already holds still fires
+--- `OptionSet`* — which lands in whatever another plugin is doing at that moment
+--- (noice opens its windows from inside `nvim_win_call`).  So the current value is
+--- compared first, and a window that will not take the write is dropped instead of
+--- raising into the `WinEnter` chain of whoever is opening a window.
+---@param win integer
+---@param sc string
+---@return boolean
+local function apply_signcolumn(win, sc)
+  if not api.nvim_win_is_valid(win) then
+    return false
+  end
+  local ok, current = pcall(api.nvim_get_option_value, 'signcolumn', { win = win })
+  if ok and current == sc then
+    return true
+  end
+  return (pcall(api.nvim_set_option_value, 'signcolumn', sc, { win = win }))
+end
+
 --- Apply `config.signcolumn` to every window showing `bufnr`.
 ---
 --- `'signcolumn'` is a *window* option: `vim.wo[bufnr]` would not take effect,
@@ -289,7 +311,14 @@ local function set_signcolumn(bufnr)
   local sc = config.get().signcolumn
   local windows = vim.fn.win_findbuf(bufnr)
   if sc == false then
-    local current = #windows > 0 and vim.wo[windows[1]].signcolumn or vim.o.signcolumn
+    local current = vim.o.signcolumn
+    local win = windows[1]
+    if win and api.nvim_win_is_valid(win) then
+      local ok, value = pcall(api.nvim_get_option_value, 'signcolumn', { win = win })
+      if ok and value then
+        current = value
+      end
+    end
     if current == 'no' or current == 'number' then
       vim.notify_once(
         'vcssign: `signcolumn` is ' .. current .. ', so no signs will show',
@@ -299,7 +328,9 @@ local function set_signcolumn(bufnr)
     return
   end
   for _, win in ipairs(windows) do
-    vim.wo[win].signcolumn = sc
+    if not apply_signcolumn(win, sc) then
+      log.debug('window %d: will not take signcolumn=%s', win, tostring(sc))
+    end
   end
 end
 
