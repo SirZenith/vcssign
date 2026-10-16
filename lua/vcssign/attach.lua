@@ -5,7 +5,9 @@
 --- `BufEnter` attach a buffer, `BufWritePost` and `FocusGained` refresh it,
 --- `BufDelete` / `BufWipeout` and `nvim_buf_attach`'s own `on_detach` detach
 --- it, `VimLeavePre` forgets everything.  It also adds the per-buffer on/off
---- switch (`M.toggle`, `:Vcssign toggle`).  Step 7 adds the second layer: for
+--- switch (`M.toggle`, `:Vcssign toggle`) and, in Step 8, the buffer-local
+--- default keymaps (`vcssign.keymap`, §4) — installed once the buffer has a
+--- repository, removed on detach.  Step 7 adds the second layer: for
 --- git the staged changes (`HEAD`..*index*) are rendered into
 --- `vcssign_signs_staged` from a second baseline, filtered so no line is
 --- painted twice (D40).  What this module owns is the per-buffer invariant set:
@@ -23,6 +25,7 @@ local base = require('vcssign.vcs.base')
 local debounce = require('vcssign.debounce')
 local diff = require('vcssign.diff')
 local hunk = require('vcssign.hunk')
+local keymap = require('vcssign.keymap')
 local log = require('vcssign.log')
 local manager = require('vcssign.repo_manager')
 local signs = require('vcssign.signs')
@@ -325,6 +328,10 @@ function M.attach(bufnr)
       return
     end
     st.attached = true
+    -- Keys first, so `]c` works the moment the buffer has a repository even if
+    -- the baseline is still in flight; navigation asks for the hunks when it
+    -- runs, not when the mapping is installed.
+    keymap.attach(bufnr)
     st.unsubscribe = {
       repo:on_update(function()
         M.mark_dirty(bufnr)
@@ -432,6 +439,7 @@ function M.detach(bufnr)
   signs.clear(bufnr)
   st.refresh_cancel()
   unobserve(st)
+  keymap.detach(bufnr)
   M._bufs[bufnr] = nil
   manager.detach('attach:' .. bufnr)
 end
