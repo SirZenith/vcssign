@@ -1,9 +1,10 @@
---- M6 Step 5: the per-buffer attach pipeline, end to end on real repositories.
+--- M6 Step 5–6: the per-buffer attach pipeline, end to end on real repositories.
 ---
 --- `signs_spec` pins the placement rules with no repository; this spec pins the
 --- pipeline around them: detection through `repo_manager`, the baseline shown
 --- from the index, the debounced re-render, the guards (too long / unnamed /
---- gone from disk) and the release of the repository reference on detach.
+--- gone from disk), the per-buffer on/off switch (Step 6) and the release of the
+--- repository reference on detach.
 local api = vim.api
 
 local attach = require('vcssign.attach')
@@ -326,6 +327,53 @@ return {
       eq(attach.system(bufnr).name, 'git')
       eq(attach.capabilities(bufnr).staged_signs, true)
       eq(attach.count(), 1)
+      eq(attach.buffers(), { bufnr }, 'the FocusGained sweep sees this buffer')
+    end),
+  },
+  {
+    name = 'toggle takes the signs off and brings them back, staying attached',
+    fn = guarded(function()
+      local dir = helpers.git_repo('attach-toggle')
+      helpers.write(dir .. '/base.txt', 'base\nnew\n')
+      local bufnr = open(dir .. '/base.txt')
+
+      attach_now(bufnr)
+      ok(signs.sign_count(bufnr) > 0, 'signs start out drawn')
+
+      eq(attach.toggle(bufnr), false, 'the switch now reads off')
+      eq(signs.sign_count(bufnr), 0, 'the column is empty')
+      eq(signs.sign_count(bufnr, true), 0)
+      -- The switch is not a detach: the pipeline (and with it the repository
+      -- reference) survives it, so turning it back on costs no detection.
+      eq(attach.count(), 1)
+      eq(attach.state(bufnr).attached, true)
+      eq(manager.count(), 1)
+      ok(#attach.hunks(bufnr) > 0, 'the accessors stay truthful while off')
+
+      -- An edit while off must not schedule any work: `mark_dirty` returns
+      -- before the debounce, so the hunks stay exactly as they were (the added
+      -- count would be 2 if they had been recomputed).
+      api.nvim_buf_set_lines(bufnr, 0, -1, false, { 'base', 'new', 'extra' })
+      vim.wait(300, function()
+        return false
+      end)
+      eq(attach.hunks(bufnr)[1].added.count, 1, 'the stale hunk was not recomputed')
+      eq(signs.sign_count(bufnr), 0)
+
+      eq(attach.toggle(bufnr), true)
+      helpers.wait_for(function()
+        return signs.sign_count(bufnr) > 0
+      end, 'the signs to come back')
+      eq(attach.hunks(bufnr)[1].added.count, 2, 'and they come from a fresh baseline')
+    end),
+  },
+  {
+    name = 'toggle answers nil for a buffer with no file to diff',
+    fn = guarded(function()
+      local bufnr = api.nvim_create_buf(true, false)
+      eq(attach.toggle(bufnr), nil)
+      eq(attach.state(bufnr), nil)
+      api.nvim_buf_delete(bufnr, { force = true })
     end),
   },
 }

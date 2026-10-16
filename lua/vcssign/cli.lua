@@ -6,6 +6,7 @@
 --- `repo_manager.ensure()`.
 --- See impl/init/04-commands-actions.md §3.
 local actions = require('vcssign.actions')
+local attach = require('vcssign.attach')
 local log = require('vcssign.log')
 local manager = require('vcssign.repo_manager')
 local registry = require('vcssign.vcs')
@@ -15,6 +16,7 @@ local M = {}
 --- Subcommands, in the order `:Vcssign` lists and completes them.
 ---@type string[]
 M.subcommands = {
+  'toggle',
   'refresh',
   'diff',
   'commit',
@@ -75,11 +77,61 @@ end
 ---@type table<string, fun(path: string): nil>
 local commands = {}
 
+--- The loaded buffer showing `path`, when there is one.
+---@param path string
+---@return integer?
+local function buffer_for(path)
+  local bufnr = vim.fn.bufnr(path)
+  if bufnr == -1 or not vim.api.nvim_buf_is_loaded(bufnr) then
+    return nil
+  end
+  return bufnr
+end
+
+--- Attach and re-render the buffer showing `path`, when there is one.
+---
+--- `:Vcssign refresh` is how a file gets its signs when `setup()` — and with
+--- it the autocmds — has not run, so the buffer is attached here rather than
+--- only refreshed.
+---@param path string
+local function refresh_buffer(path)
+  local bufnr = buffer_for(path)
+  if not bufnr then
+    return
+  end
+  local st = attach.state(bufnr)
+  if st and st.attached then
+    attach.refresh(bufnr)
+  else
+    attach.attach(bufnr)
+  end
+end
+
 ---@param path string
 commands.refresh = function(path)
-  with_repo(path or current_path(), function(repo)
+  local target = path or current_path()
+  refresh_buffer(target)
+  with_repo(target, function(repo)
     repo:refresh_now()
   end)
+end
+
+--- Turn the signs of one buffer on or off.
+---
+--- `path` is optional: with it, the buffer showing that file; without it, the
+--- current buffer.
+---@param path string
+commands.toggle = function(path)
+  local bufnr = path and buffer_for(path) or vim.api.nvim_get_current_buf()
+  if not bufnr then
+    return log.notify_error(string.format('%s is not open in a buffer', path))
+  end
+  if attach.toggle(bufnr) == nil then
+    local name = vim.api.nvim_buf_get_name(bufnr)
+    log.notify_error(
+      string.format('cannot toggle signs for %s', name ~= '' and name or 'this buffer')
+    )
+  end
 end
 
 -- The file-level commands attach first (so they work before any buffer did)
@@ -103,6 +155,7 @@ local function debug_report()
   end)
   local lines = {
     string.format('%d repositories', #repos),
+    string.format('%d buffers with signs', attach.count()),
   }
   for _, repo in ipairs(repos) do
     local flags = {}

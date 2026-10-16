@@ -158,6 +158,10 @@ M[#M + 1] = {
     all_documented({
       'setup',
       'refresh',
+      'attach',
+      'detach',
+      'toggle',
+      'get_hunks',
     }, 'API function')
   end,
 }

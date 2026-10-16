@@ -4,12 +4,15 @@
 --- answered, so the cases below are mostly about *targeting*: the current
 --- buffer's file, the path argument, and what the user is told when none of
 --- them apply.
---- See impl/init/04-commands-actions.md §3, §6.
+--- See impl/init/04-commands-actions.md §3, §6 and
+--- impl/init/07-signs-in-signcolumn.md §6.
+local attach = require('vcssign.attach')
 local autocmds = require('vcssign.autocmds')
 local cli = require('vcssign.cli')
 local config = require('vcssign.config')
 local helpers = require('helpers')
 local manager = require('vcssign.repo_manager')
+local signs = require('vcssign.signs')
 
 --- The configuration as it was when this file started: one case calls
 --- `setup()`, and every later case would otherwise run with its options.
@@ -18,6 +21,7 @@ local DEFAULTS = vim.deepcopy(config.get())
 --- Back to a clean editor between cases.  `cd` matters: several cases move the
 --- cwd on purpose, and relative paths mean different things afterwards.
 local function reset()
+  attach.forget_all()
   manager.dispose_all()
   autocmds.disable()
   vim.cmd('silent! tabonly')
@@ -78,15 +82,23 @@ return {
         return manager.count() == 1
       end, 'the repository to attach')
       ok(manager.get_by_path(dir .. '/base.txt') ~= nil, 'the repository is tracked now')
+      -- Two asynchronous chains are running: the repository's detection (which
+      -- the wait above settles) and the buffer's own attach, which binds the
+      -- buffer's reference when *its* detection answers.
+      local bufnr = vim.fn.bufnr(dir .. '/base.txt')
+      helpers.wait_for(function()
+        local st = attach.state(bufnr)
+        return st ~= nil and st.attached
+      end, 'the buffer to attach')
 
       -- No argument at all means the current buffer's file (04 §3).
       cli.run({})
       -- D29: the command pins *the repository* for the session — one reference
       -- per repository, no matter how many commands (or how many files) name it.
-      -- The command reference is the only holder here: the buffer only attaches
-      -- through the autocmds, which are off in specs.
+      -- Two holders here: the buffer (`refresh` attaches it whether or not the
+      -- autocmds are on) and the command reference D29 adds.
       local held = manager.ref_count(dir)
-      eq(held, 1, 'the command holds it')
+      eq(held, 2, 'the buffer and the command hold it')
       cli.run({ 'refresh', dir .. '/base.txt' })
       -- `debug` answers with a report; the point here is only that running
       -- another command does not add a reference (its message is swallowed so
@@ -254,6 +266,59 @@ return {
       ok(seen[1].message:find('no repository found', 1, true), seen[1].message)
       ok(seen[1].message:find(elsewhere, 1, true), seen[1].message)
       vim.fn.delete(elsewhere, 'rf')
+    end),
+  },
+  {
+    name = 'toggle turns the signs of one buffer off and on',
+    fn = guarded(function()
+      reset()
+      local dir = repo_dir('cli-toggle')
+      edit_file(dir)
+      local bufnr = vim.fn.bufnr(dir .. '/base.txt')
+      cli.run({ 'refresh' })
+      helpers.wait_for(function()
+        local st = attach.state(bufnr)
+        return st ~= nil and st.attached and st.buf_text ~= nil
+      end, 'the buffer to be attached')
+      local repo = manager.get_by_path(dir)
+      local refs = manager.ref_count(repo.root)
+      ok(signs.sign_count(bufnr) > 0, 'signs are up to start with')
+
+      local seen = collect(function()
+        cli.run({ 'toggle' })
+      end)
+      eq(#seen, 0, 'toggling off is not an error')
+      eq(attach.state(bufnr).shown, false)
+      eq(signs.sign_count(bufnr), 0, 'and the signs are gone')
+
+      -- Off is a state, not a teardown: the reference and the detection cache
+      -- stay, so switching back on redraws instead of re-probing the VCS.
+      eq(manager.ref_count(repo.root), refs, 'the reference is untouched')
+
+      collect(function()
+        cli.run({ 'toggle' })
+      end)
+      -- Back on, the baseline is re-read (`mark_dirty` returned early while the
+      -- switch was off), so the signs arrive with that answer.
+      helpers.wait_for(function()
+        local st = attach.state(bufnr)
+        return st ~= nil and st.shown == true and signs.sign_count(bufnr) > 0
+      end, 'the signs to come back')
+      eq(attach.state(bufnr).shown, true)
+      ok(signs.sign_count(bufnr) > 0, 'and the signs come back')
+    end),
+  },
+  {
+    name = 'toggle says so when the buffer has no signs to switch',
+    fn = guarded(function()
+      reset()
+      -- Unnamed buffer, nothing to attach to.
+      vim.cmd('enew')
+      local seen = collect(function()
+        cli.run({ 'toggle' })
+      end)
+      eq(seen[1].level, vim.log.levels.ERROR, seen[1].message)
+      ok(seen[1].message:find('cannot toggle signs', 1, true), seen[1].message)
     end),
   },
   {

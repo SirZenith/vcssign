@@ -1,11 +1,12 @@
 --- The per-buffer attach pipeline: read the baseline, diff it against the
 --- buffer and draw the signs, then keep the picture fresh as the file changes.
 ---
---- Step 5 wires the pipeline but does **not** subscribe to any autocmd yet:
---- `init.lua` / `autocmds.lua` / `plugin/vcssign.vim` are untouched, so the
---- automatic triggers (`BufReadPost` on mount, `TextChanged`/`InsertLeave`
---- beyond `on_lines`, `ColorScheme`) arrive in Step 6.  What is frozen here is
---- the interface those steps will consume and the per-buffer invariants:
+--- Step 6 wires the automatic triggers in `autocmds.lua`: `BufReadPost` /
+--- `BufEnter` attach a buffer, `BufWritePost` and `FocusGained` refresh it,
+--- `BufDelete` / `BufWipeout` and `nvim_buf_attach`'s own `on_detach` detach
+--- it, `VimLeavePre` forgets everything.  It also adds the per-buffer on/off
+--- switch (`M.toggle`, `:Vcssign toggle`).  What this module owns is the
+--- per-buffer invariant set:
 ---
 ---   * one attach per buffer, idempotent, keyed by the buffer's path;
 ---   * every VCS command is spawned through the repository manager and its
@@ -42,7 +43,8 @@ local M = {}
 ---@field tracked boolean?
 ---@field untracked boolean
 ---@field attached boolean
----@field enabled boolean
+---@field enabled boolean       false = the pipeline found nothing to diff against
+---@field shown boolean         the user's sign switch (`M.toggle`)
 ---@field unsubscribe fun()[]
 ---@field refresh fun()          debounced
 ---@field refresh_cancel fun()
@@ -145,7 +147,13 @@ function M._render(st)
     -- `diff.run` reads its defaults from `config.diff`; no opts needed here.
     st.hunks = diff.run(diff.normalize(st.base_text), st.buf_text)
   end
-  signs.place(st.bufnr, st.hunks)
+  if st.shown then
+    signs.place(st.bufnr, st.hunks)
+  else
+    -- The switch is off: keep `st.hunks` (the accessors must stay truthful)
+    -- but leave the column empty.
+    signs.clear(st.bufnr)
+  end
 end
 
 --- Apply `config.signcolumn` to every window showing `bufnr`.
@@ -212,6 +220,7 @@ function M.attach(bufnr)
     untracked = false,
     attached = false,
     enabled = true,
+    shown = true,
     unsubscribe = {},
   }
   -- The debounced refresh.  `debounce_trailing` dispatches through
@@ -297,10 +306,38 @@ end
 ---@param bufnr integer
 function M.mark_dirty(bufnr)
   local st = M._bufs[bufnr]
-  if not st or not st.enabled or not st.attached then
+  if not st or not st.enabled or not st.attached or not st.shown then
     return
   end
   st.refresh()
+end
+
+--- Turn this buffer's signs on or off (what `:Vcssign toggle` does).
+---
+--- Off clears the column and stops the refresh work; on re-renders from a
+--- freshly read baseline.  The pipeline stays attached either way, so the
+--- switch costs nothing but a redraw and the repository reference survives it.
+---@param bufnr? integer
+---@return boolean? shown  the new state, nil when the buffer cannot be attached
+function M.toggle(bufnr)
+  bufnr = bufnr or api.nvim_get_current_buf()
+  local st = M._bufs[bufnr] or M.attach(bufnr)
+  if not st then
+    return nil
+  end
+  st.shown = not st.shown
+  if st.shown then
+    -- Re-read the baseline: edits made while the switch was off returned early
+    -- from `mark_dirty`, so `st.hunks` may be stale.
+    if st.attached then
+      M.refresh(bufnr)
+    else
+      M._render(st)
+    end
+  else
+    signs.clear(bufnr)
+  end
+  return st.shown
 end
 
 --- Re-read the baseline, re-diff and re-draw, right now.
@@ -375,6 +412,28 @@ end
 function M.capabilities(bufnr)
   local st = M._bufs[bufnr]
   return st and st.system and st.system.capabilities or nil
+end
+
+--- Every attached buffer, in buffer-number order (the `FocusGained` sweep).
+---@return integer[]
+function M.buffers()
+  local out = {}
+  for bufnr, st in pairs(M._bufs) do
+    if st.attached then
+      out[#out + 1] = bufnr
+    end
+  end
+  table.sort(out)
+  return out
+end
+
+--- Re-read every attached buffer's baseline.  This is the `FocusGained`
+--- fallback: the index may have moved while another program held the focus and
+--- Windows fs events are not guaranteed to arrive.
+function M.refresh_all()
+  for _, bufnr in ipairs(M.buffers()) do
+    M.refresh(bufnr)
+  end
 end
 
 ---@return integer  how many buffers are attached

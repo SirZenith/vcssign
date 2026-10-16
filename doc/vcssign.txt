@@ -165,6 +165,7 @@ vcssign 把 Git / Subversion 仓库里的改动直接反映到窗口的 `'signco
 
   子命令（也会被补全）： >
 
+    :Vcssign toggle     开 / 关当前缓冲区的 sign（关 = 清空那一列，停止刷新）
     :Vcssign refresh    立刻刷新（跳过去抖），不等 fs 监听
     :Vcssign diff       看这个文件的 diff
     :Vcssign commit     提交（git：已暂存的；svn：工作副本里该文件）
@@ -173,6 +174,10 @@ vcssign 把 Git / Subversion 仓库里的改动直接反映到窗口的 `'signco
 `diff` 会**先查能力**：不支持 diff 的系统会得到一句说明而不是静默失败。
 `path` 参数可以是文件、目录或仓库根；不在任何仓库里时明确回答「没有仓库」
 （INFO，不是错误）。
+
+`toggle` 只作用于一个缓冲区（带 `path` 时作用于显示该文件的已打开缓冲区）：
+关掉后那一列为空，也不再随编辑刷新；重新打开时按当前基线立刻重画。仓库
+引用在开关前后都不变，所以开关不产生任何额外的探测成本。
 
 ==============================================================================
 4. 行级 sign 与按键                                         *vcssign-signs*
@@ -201,7 +206,8 @@ vcssign 把 Git / Subversion 仓库里的改动直接反映到窗口的 `'signco
     <leader>tw                 toggle_word_diff           开 / 关词级 diff
     <leader>tb                 toggle_current_line_blame  开 / 关行内 blame
 
-（这一里程碑先把侧边栏退掉，sign 渲染与这些动作由随后的步骤接上。）
+（sign 渲染与自动挂载已经接上：切到一个文件缓冲区就会画 sign，`:Vcssign toggle`
+可以整个关掉；上面这些按键中，导航与 hunk 动作会在随后的步骤接上。）
 
 ==============================================================================
 5. Lua API                                                    *vcssign-api*
@@ -212,7 +218,23 @@ vcssign 把 Git / Subversion 仓库里的改动直接反映到窗口的 `'signco
 `refresh({path})` ~
   立刻刷新 `path` 所属仓库（跳过去抖）。`path` 可省（同 |:Vcssign| 的解析
   规则）。仓库还没被跟踪时会**先挂载再执行**，所以它可以是你按下的第一个
-  映射。返回 nil；错误以通知形式给出。
+  映射。同时也会接上（或刷新）显示该文件的缓冲区，因此不开 `setup()` 也能
+  用一条命令看到 sign。返回 nil；错误以通知形式给出。
+
+`attach({bufnr})` ~
+  把一个缓冲区接上 sign 管线（省略 `bufnr` 则指当前缓冲区）。返回状态表；
+  缓冲区没有可 diff 的文件（未命名、`nofile`、磁盘上不存在、行数超过
+  `max_file_length`）时返回 `nil`。重复调用是空操作。
+
+`detach({bufnr})` ~
+  停止画 sign、取消去抖并释放该缓冲区的仓库引用。
+
+`toggle({bufnr})` ~
+  |:Vcssign toggle| 的实现，返回开关的新状态（`nil` = 这个缓冲区接不上）。
+  关闭时清空那一列并停止随编辑刷新，但不释放仓库引用。
+
+`get_hunks({bufnr})` ~
+  该缓冲区当前画出来的 hunk 列表（没有则空表）。
 
 `require('vcssign.cli').run(fargs)` ~
   |:Vcssign| 的实现，等价于 `:Vcssign {fargs}`。
@@ -238,8 +260,9 @@ sign 的高亮组由 `signs` 里每个 hunk 的名字派生（`VcssignSignAdd` �
                          失败退避重试
   `vcssign.repo_manager` 路径 → 仓库的查找，引用计数式挂载与卸载
   `vcssign.actions`      唯一的「意图 → VCS 命令」层（diff / 暂存 / 提交）
+  `vcssign.attach`        每个缓冲区的 sign 管线：基线、去抖、开关
   `vcssign.cli`          |:Vcssign| 的分派与补全
-  `vcssign.autocmds`     attach / detach / 外部变更 / 退出清理
+  `vcssign.autocmds`     自动命令触发层（挂载 / 刷新 / 退出清理）
 
 设计要点：所有外部命令的回调都被切回主循环（绝不从 libuv 的 fast-event 里
 碰 vim API）；回调一律错误优先；订阅者与钩子经 `pcall` 隔离，一个坏钩子不会
@@ -248,6 +271,6 @@ sign 的高亮组由 `signs` 里每个 hunk 的名字派生（`VcssignSignAdd` �
 测试脚手架：`scripts/make_test_repos.sh` 建 fixture，`scripts/run_tests.sh` 在
 headless nvim 里跑 TAP（`test/run.lua` + `test/*_spec.lua`）；`make test` /
 `make lint` / `make format` 见仓库的 `Makefile`。详细的实测记录与决策理由在
-`impl/init/00-overview.md` … `06-todo.md`。
+`impl/init/00-overview.md` … `07-signs-in-signcolumn.md`。
 
  vim:tw=78:ts=8:noet:ft=help:norl:
