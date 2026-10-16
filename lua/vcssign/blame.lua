@@ -1,11 +1,20 @@
---- Current-line blame: the `current_line_blame` decoration and the
---- `blame_line` float of impl/init/07-signs-in-signcolumn.md §4 / §6 (Step 11).
+--- Current-line blame: the `current_line_blame` decoration and the `blame_line`
+--- float of impl/init/07-signs-in-signcolumn.md §4 / §6 (Step 11).
+---
+--- The decoration follows gitsigns: `current_line_blame_opts` decides where the
+--- text goes (`virt_text`, `virt_text_pos`, `virt_text_priority`), how long the
+--- cursor has to stand still (`delay`), whether the annotation belongs to the
+--- focused window only (`use_focus`) and what it says (`current_line_blame_formatter`,
+--- `_nc`, expanded by `vcssign.blame_formatter` -- the same placeholders gitsigns
+--- documents).  The events are module-level (gitsigns' `setup()` shape) and the
+--- per-window question (`is that window focused?`) is answered on every render,
+--- so a cursor move in one window does not disturb another.
 ---
 --- Blame is a whole-file question whose answer is reused while the buffer's text
 --- does not change: every line of the file gets one attribution, and moving the
 --- cursor must not cost a process.  The cache is therefore keyed by the
---- buffer's `changedtick`, and svn -- which cannot blame a line range (§6.3) --
---- is served by exactly the same cache.
+--- buffer's `changedtick` (plus the options that shape the answer), and svn --
+--- which cannot blame a line range (§6.3) -- is served by exactly the same cache.
 ---
 --- Neither the decoration nor the float is worth blocking on: both render from
 --- whatever the cache holds and quietly do nothing when there is no answer, so a
@@ -13,6 +22,7 @@
 local api = vim.api
 local config = require('vcssign.config')
 local debounce = require('vcssign.debounce')
+local formatter = require('vcssign.blame_formatter')
 
 local M = {}
 
@@ -21,6 +31,10 @@ local NS = 'vcssign_blame'
 --- The group of the inline text: a commit's line of blame is commentary, so it
 --- borrows `Comment` (that is what gitsigns' `GitSignsCurrentLineBlame` is).
 local GROUP = 'VcssignBlame'
+
+--- One decoration per buffer, so a render replaces the previous one instead of
+--- stacking (gitsigns does the same with `id = 1`).
+local MARK_ID = 1
 
 function M.define_highlights()
   api.nvim_set_hl(0, GROUP, { link = 'Comment', default = true })
@@ -46,15 +60,23 @@ end
 ---@class vcssign.blame.State
 ---@field call fun()      the debounced render
 ---@field cancel fun()    drop a render that has not fired yet
----@field ids integer[]   the autocmds to delete on detach
 
 --- The watched buffers.
 ---@type table<integer, vcssign.blame.State>
 M._bufs = {}
 
---- The last successful blame of a buffer, valid while `changedtick` matches.
----@type table<integer, { tick: integer, result: vcssign.BlameResult }>
+--- The last successful blame of a buffer, valid while the cache key matches.
+---@class vcssign.blame.Entry
+---@field key string
+---@field result vcssign.BlameResult
+---@field has_summary boolean  whether any line carries a commit subject
+
+---@type table<integer, vcssign.blame.Entry>
 M._cache = {}
+
+---@type integer?
+M._group = nil
+local group_key = nil
 
 --- The revision as it is worth showing: git's forty hex digits are noise, a
 --- plain number (svn) is already short.
@@ -92,33 +114,72 @@ function M.commit_text(bl)
   return table.concat(parts, ' ')
 end
 
---- The inline decoration of a line: the commit, plus the subject when the
---- adapter knows one (git does, svn has no `summary`).
+--- The format string for one line: the `_nc` variant for a line nobody has
+--- committed yet, and -- for the default format only -- a variant without the
+--- subject when the adapter has none (svn does not report `summary`).
 ---@param bl vcssign.BlameLine
+---@param has_summary boolean
 ---@return string
-function M.line_text(bl)
-  local text = M.commit_text(bl)
-  if not uncommitted(bl) and bl.summary and bl.summary ~= '' then
-    text = text .. ' ' .. bl.summary
+local function format_of(bl, has_summary)
+  local cfg = config.get()
+  if uncommitted(bl) then
+    return cfg.current_line_blame_formatter_nc
   end
+  local fmt = cfg.current_line_blame_formatter
+  if fmt == formatter.DEFAULT and not has_summary then
+    return formatter.DEFAULT_NO_SUMMARY
+  end
+  return fmt
+end
+
+--- The inline annotation of one line, as the configuration formats it.
+---@param bl vcssign.BlameLine
+---@param opts? { has_summary?: boolean }  false: the adapter has no subject
+---@return string
+function M.line_text(bl, opts)
+  local has_summary = opts == nil or opts.has_summary ~= false
+  local text = formatter.format(format_of(bl, has_summary), formatter.info(bl))
   return text
 end
 
---- The blame of a buffer, from the cache when its text has not changed.
+--- Whether any line of `result` carries a commit subject.
+---@param result vcssign.BlameResult
+---@return boolean
+local function has_summary(result)
+  for _, bl in pairs(result.lines or {}) do
+    if bl.summary and bl.summary ~= '' then
+      return true
+    end
+  end
+  return false
+end
+
+--- The options that shape a blame answer.  They are part of the cache key: the
+--- same file blamed with and without `-w` is two different answers.
+---@param opts vcssign.BlameOpts
+---@return string
+local function options_key(opts)
+  local extra = opts.extra_opts and table.concat(opts.extra_opts, ' ') or ''
+  return string.format('%s:%s:%s', tostring(opts.ignore_whitespace), extra, tostring(opts.from))
+end
+
+--- The blame of a buffer, from the cache when neither its text nor the options
+--- have changed.
 ---
---- `cb` gets an error when the buffer cannot be blamed at all (no repository,
---- or no `blame` capability); the adapter's own error passes through.  A failed
+--- `cb` gets an error when the buffer cannot be blamed at all (no repository, or
+--- no `blame` capability); the adapter's own error passes through.  A failed
 --- fetch is not cached, so the next cursor move retries it.
 ---@param bufnr integer
----@param cb fun(err: string?, result: vcssign.BlameResult?, st: vcssign.AttachState?)
+---@param cb fun(err: string?, entry: vcssign.blame.Entry?, st: vcssign.AttachState?)
 local function blame_for(bufnr, cb)
   if not api.nvim_buf_is_valid(bufnr) or not api.nvim_buf_is_loaded(bufnr) then
     return cb(string.format('buffer %d is not loaded', bufnr))
   end
-  local tick = vim.b[bufnr].changedtick
+  local opts = config.get().current_line_blame_opts
+  local key = string.format('%d:%s', vim.b[bufnr].changedtick, options_key(opts))
   local cached = M._cache[bufnr]
-  if cached and cached.tick == tick then
-    return cb(nil, cached.result)
+  if cached and cached.key == key then
+    return cb(nil, cached)
   end
   attached().ready(bufnr, function(err, st)
     if not st then
@@ -127,66 +188,188 @@ local function blame_for(bufnr, cb)
     if not st.system.capabilities.blame then
       return cb(string.format('%s: blame is not supported', st.system.name))
     end
-    st.system.blame(st.root, st.rel, {}, function(berr, result)
+    st.system.blame(st.root, st.rel, opts, function(berr, result)
       if berr then
         return cb(berr)
       end
-      M._cache[bufnr] = { tick = tick, result = result }
-      cb(nil, result, st)
+      local entry = { key = key, result = result, has_summary = has_summary(result) }
+      M._cache[bufnr] = entry
+      cb(nil, entry, st)
     end)
   end)
 end
 
---- The line the cursor is on, or nil when no window shows the buffer.
+--- The window showing `bufnr`, or nil when none does.
 ---@param bufnr integer
 ---@return integer?
-local function cursor_line(bufnr)
+local function window_for(bufnr)
   local win = vim.fn.bufwinid(bufnr)
   if win == -1 then
     return nil
   end
-  return api.nvim_win_get_cursor(win)[1]
+  return win
+end
+
+--- Whether `win` is the focused window.
+---
+--- This is gitsigns' check, and it is deliberately about the *current* window:
+--- `use_focus` means "only the window the user is in", so a split showing the
+--- same buffer (or a float) is not annotated.  Switching away clears the
+--- annotation through `BufLeave`, which is in the reset events.
+---@param win integer
+---@return boolean
+local function focused(win)
+  return api.nvim_get_current_win() == win
+end
+
+--- Whether the annotation may be drawn right now.
+---
+--- The fetch can take as long as a process does, so everything that made the
+--- annotation wanted is asked twice: once before asking the VCS and once when
+--- the answer arrives.  (A fetch that started while the user was in the buffer
+--- must not draw into a window the user has since left.)
+---@param bufnr integer
+---@param win integer
+---@param lnum integer
+---@return boolean
+local function still_wanted(bufnr, win, lnum)
+  if not config.get().current_line_blame then
+    return false
+  end
+  if api.nvim_get_mode().mode:sub(1, 1) == 'i' then
+    return false
+  end
+  if window_for(bufnr) ~= win or api.nvim_win_get_cursor(win)[1] ~= lnum then
+    return false
+  end
+  local opts = config.get().current_line_blame_opts
+  if opts.use_focus and not focused(win) then
+    return false
+  end
+  return not api.nvim_win_call(win, function()
+    return vim.fn.foldclosed(lnum) ~= -1
+  end)
 end
 
 --- Draw the inline blame of the buffer's current line (`current_line_blame`).
 ---
 --- Only that one line is decorated, and the mark is anchored to it: it travels
---- with the text and every re-render clears the previous one.
+--- with the text and every render replaces the previous one (same extmark id).
 ---@param bufnr integer
 function M.render(bufnr)
-  M.clear(bufnr)
-  if not config.get().current_line_blame then
+  local win = window_for(bufnr)
+  if not win then
     return
   end
-  local lnum = cursor_line(bufnr)
-  if not lnum then
+  local lnum = api.nvim_win_get_cursor(win)[1]
+  if not still_wanted(bufnr, win, lnum) then
     return
   end
-  blame_for(bufnr, function(err, result)
+  blame_for(bufnr, function(err, entry)
     -- Blame is a decoration: a buffer that cannot be blamed (or that the
-    -- cursor has already left) is not worth a message.
-    if err or not result or not config.get().current_line_blame then
+    -- cursor, the switch or the focus has left) is not worth a message.
+    if err or not entry or not still_wanted(bufnr, win, lnum) then
       return
     end
-    local at = cursor_line(bufnr)
-    local bl = result.lines[lnum]
-    if not bl or at ~= lnum then
+    local opts = config.get().current_line_blame_opts
+    local bl = entry.result.lines[lnum]
+    if not bl then
       return
+    end
+    local info = formatter.info(bl)
+    local text, chunks = formatter.format(format_of(bl, entry.has_summary), info)
+    vim.b[bufnr].vcssign_blame_line = text
+    vim.b[bufnr].vcssign_blame_line_dict = info
+    if not opts.virt_text then
+      return
+    end
+    local pos = opts.virt_text_pos
+    if pos == 'right_align' then
+      local win_width = api.nvim_win_get_width(win)
+      local textoff = vim.fn.getwininfo(win)[1].textoff
+      local line = api.nvim_buf_get_lines(bufnr, lnum - 1, lnum, false)[1] or ''
+      local used = textoff + vim.fn.strdisplaywidth(line) + vim.fn.strdisplaywidth(text)
+      if used + 1 > win_width then
+        pos = 'eol'
+      end
     end
     api.nvim_buf_set_extmark(bufnr, M.namespace(), lnum - 1, 0, {
-      virt_text = { { ' ' .. M.line_text(bl) .. ' ', GROUP } },
-      virt_text_pos = config.get().current_line_blame_opts.virt_text_pos,
-      priority = vim.hl.priorities.user,
+      id = MARK_ID,
+      virt_text = chunks or { { text, GROUP } },
+      virt_text_pos = pos,
+      priority = opts.virt_text_priority,
+      hl_mode = 'combine',
     })
   end)
 end
 
---- Clear the inline blame of one buffer.
+--- Clear the inline blame of one buffer (the mark and the `vim.b` record).
 ---@param bufnr integer
 function M.clear(bufnr)
-  if api.nvim_buf_is_valid(bufnr) then
-    api.nvim_buf_clear_namespace(bufnr, M.namespace(), 0, -1)
+  if not api.nvim_buf_is_valid(bufnr) then
+    return
   end
+  api.nvim_buf_clear_namespace(bufnr, M.namespace(), 0, -1)
+  vim.b[bufnr].vcssign_blame_line = nil
+  vim.b[bufnr].vcssign_blame_line_dict = nil
+end
+
+--- The module-level events, in gitsigns' shape (`setup()`): a cursor that moves
+--- re-renders after `delay`, insert mode and leaving the buffer drop the
+--- annotation at once, and a focus change matters only with `use_focus`.
+local function configure()
+  local opts = config.get().current_line_blame_opts
+  local key =
+    string.format('%s:%s', tostring(opts.use_focus), tostring(config.get().current_line_blame))
+  if M._group and group_key == key then
+    return
+  end
+  if M._group then
+    pcall(api.nvim_del_augroup_by_id, M._group)
+  end
+  group_key = key
+  M._group = api.nvim_create_augroup('vcssign_blame', { clear = true })
+  local update = { 'CursorMoved', 'CursorMovedI', 'BufEnter', 'WinResized' }
+  local reset = { 'InsertEnter', 'BufLeave' }
+  if opts.use_focus then
+    update[#update + 1] = 'FocusGained'
+    reset[#reset + 1] = 'FocusLost'
+  end
+  api.nvim_create_autocmd(update, {
+    group = M._group,
+    callback = function(args)
+      local state = M._bufs[args.buf]
+      if not state then
+        return
+      end
+      M.clear(args.buf)
+      if config.get().current_line_blame then
+        state.call()
+      end
+    end,
+  })
+  api.nvim_create_autocmd(reset, {
+    group = M._group,
+    callback = function(args)
+      M.clear(args.buf)
+    end,
+  })
+  -- `fileformat` / `bomb` / `eol` decide what the file's lines are; a change
+  -- there invalidates the annotation (gitsigns' `on_lines`/`OptionSet` pair).
+  api.nvim_create_autocmd('OptionSet', {
+    group = M._group,
+    pattern = { 'fileformat', 'bomb', 'eol' },
+    callback = function(args)
+      M.clear(args.buf)
+    end,
+  })
+end
+
+--- (Re)create the module-level events.  Called on every attach and whenever
+--- `toggle_current_line_blame` runs, because `use_focus` decides which events
+--- matter.
+function M.setup()
+  configure()
 end
 
 --- Start watching `bufnr`: the decoration follows the cursor after
@@ -204,21 +387,15 @@ function M.attach(bufnr)
   }, function()
     M.render(bufnr)
   end)
-  local ids = {}
-  local function on(events, fn)
-    ids[#ids + 1] = api.nvim_create_autocmd(events, { buffer = bufnr, callback = fn })
-  end
-  on({ 'CursorMoved', 'CursorMovedI' }, call)
-  on({ 'TextChanged', 'TextChangedI' }, function()
-    M.clear(bufnr)
+  M._bufs[bufnr] = { call = call, cancel = cancel }
+  configure()
+  if config.get().current_line_blame then
     call()
-  end)
-  M._bufs[bufnr] = { call = call, cancel = cancel, ids = ids }
-  call()
+  end
 end
 
---- Stop watching `bufnr`, drop its pending render, its autocmds, its
---- decoration and its cached blame.
+--- Stop watching `bufnr`, drop its pending render, its decoration and its
+--- cached blame.
 ---
 --- The timer must go: `Repo:dispose()` and `VimLeavePre` have to leave no live
 --- handles behind (the `uv_count('timer')` assertion of autocmds_spec).
@@ -227,9 +404,6 @@ function M.detach(bufnr)
   local state = M._bufs[bufnr]
   if state then
     state.cancel()
-    for _, id in ipairs(state.ids) do
-      pcall(api.nvim_del_autocmd, id)
-    end
     M._bufs[bufnr] = nil
   end
   M._cache[bufnr] = nil
@@ -239,11 +413,11 @@ end
 --- Re-render every watched buffer: `toggle_current_line_blame` turns the
 --- decoration on (after the delay) or clears it on the spot.
 function M.refresh_all()
+  configure()
   for bufnr in pairs(M._bufs) do
+    M.clear(bufnr)
     if config.get().current_line_blame then
       M._bufs[bufnr].call()
-    else
-      M.clear(bufnr)
     end
   end
 end
@@ -260,11 +434,11 @@ function M.line(bufnr, lnum, cb)
     preview.close()
     return cb(nil, false)
   end
-  blame_for(bufnr, function(err, result, st)
+  blame_for(bufnr, function(err, entry, st)
     if err then
       return cb(err)
     end
-    local bl = result and result.lines[lnum]
+    local bl = entry and entry.result.lines[lnum]
     if not bl then
       return cb(string.format('no blame for line %d', lnum))
     end

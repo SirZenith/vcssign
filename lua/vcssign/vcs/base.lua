@@ -28,14 +28,31 @@ local NORMALIZE_OPTS = { expand_env = false }
 ---@class vcssign.BlameOpts
 ---@field from integer?  1-based first line, inclusive
 ---@field to integer?    1-based last line, inclusive
+---@field ignore_whitespace boolean?  ignore whitespace-only changes (git's `-w`)
+---@field extra_opts string[]?  extra arguments appended to the blame command (git)
 
 --- Where one final line came from.  `rev` is whatever `show` accepts for that
 --- line: a 40-hex object id for git, a revision number as text for svn.
 ---@class vcssign.BlameLine
 ---@field rev string       git: the 40-hex object id; svn: the revision number as text ('-' = locally modified)
 ---@field author string
----@field time integer?    Unix seconds, when the VCS reports one
+---@field time integer?    Unix seconds, when the VCS reports one (git: the *author* time)
 ---@field summary string?  git: the commit summary line
+--- The fields below mirror what gitsigns hands to `current_line_blame_formatter`
+--- (expanded by `vcssign.blame_formatter`).  All of them are optional: no single
+--- adapter fills every one in (svn has no `summary`, git has no `kind`, ...).
+---@field filename string?     the path the VCS reports for the blamed file
+---@field orig_lnum integer?   the line's number in the commit that introduced it
+---@field final_lnum integer?  the line's number in the blamed file
+---@field author_name string?  `author`, under gitsigns' name for it
+---@field author_mail string?  the bare address (no angle brackets)
+---@field author_time integer? Unix seconds of the author date
+---@field author_tz string?    `+HHMM`
+---@field committer string?
+---@field committer_mail string?
+---@field committer_time integer?
+---@field committer_tz string?
+---@field previous string?     `<sha> <filename>`: the commit blamed before a rename
 
 --- Result of `blame`: `lines[n]` attributes final line `n`, holes are lines
 --- outside a `-L` window (or lines the VCS skipped).  `max_lineno` is the

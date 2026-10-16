@@ -537,6 +537,33 @@ window is not run twice` 只在全量里红（`repo_spec` 单跑 20/20）。原�
 短路）。插件**从不写窗口的 `'signcolumn'`** —— 它是窗口选项，由用户自己设（Neovim 默认 `'auto'` 有
 sign 就开列）。这样 noice 那类崩溃不是靠「先比后写」绕开，而是整条写窗口选项的路径都不存在了。
 
+**M6 之后的第二个对齐（用户要求）：行内 blame 全面对齐 gitsigns**。Step 11 的 `lua/vcssign/blame.lua`
+按 gitsigns 重写了：
+
+- `current_line_blame_opts` 现在与 gitsigns 同一套：`virt_text`、`virt_text_pos`（也支持
+  `right_align`，放不下时回落 `eol`）、`virt_text_priority`（200）、`delay`（默认从 500 改成 1000）、
+  `ignore_whitespace`（git `-w`）、`use_focus`、`extra_opts`；新增 `current_line_blame_formatter`
+  （默认 `' <author>, <author_time:%R> - <summary> '`，与 gitsigns 逐字相同）与
+  `current_line_blame_formatter_nc`（`' Not Committed Yet '`）。
+- 占位符由新模块 `lua/vcssign/blame_formatter.lua` 展开：gitsigns 的同一份占位符表（`<author>`、
+  `<author_name>`、`<author_mail>`、`<author_time>`、`<author_tz>`、`<committer*>`、`<sha>`、
+  `<abbrev_sha>`、`<summary>`、`<previous>`、`<filename>`、`<lnum>`、`<orig_lnum>`、`<final_lnum>`）、
+  日期 `:<strftime>`、`%R` 相对时间（`4 months ago`），以及**函数式 formatter**（可以返回 virt_text
+  块）。适配器答不出的占位符原样保留（svn 没有 `<summary>`），所以默认格式另有一份
+  `DEFAULT_NO_SUMMARY`。
+- 装饰改成一个 extmark（`id = 1`，gitsigns 同款），文本同时写进 `vim.b.vcssign_blame_line` 与
+  `vim.b.vcssign_blame_line_dict`。事件从「每缓冲区一条 autocmd」变成模块级 augroup（gitsigns 的
+  `setup()` 形状）：`CursorMoved`/`CursorMovedI`/`BufEnter`/`WinResized` 刷新，`InsertEnter`/`BufLeave`
+  清，`use_focus` 时再加 `FocusGained`/`FocusLost`，另外 `OptionSet fileformat,bomb,eol` 也清。
+- 适配器面：git 的 porcelain 解析补齐 `author-mail`（去掉尖括号）/`author-time`/`author-tz`、
+  `committer*`、`summary`、`filename` 与 **original line number**（`orig_lnum`）；`ignore_whitespace`
+  走 `-w`，`extra_opts` 追加到命令行。svn 从 `<date>` 解析 `author_time`/`author_tz`（`<date>` 是
+  UTC 的 `…Z`，而 `os.time` 按**本地**时区解释，所以要把偏移补回去）。
+- 缓存键从 `changedtick` 扩成 `changedtick + ignore_whitespace + extra_opts`：同一个文件带与不带
+  `-w` 是两个答案。
+- 新增 `test/blame_formatter_spec.lua`（7 例，纯函数、不需要仓库），`blame_spec` 扩到 11 例
+  （`virt_text = false`、`ignore_whitespace` 穿过空白改动、`use_focus` 不碰未聚焦窗口）。
+
 ### §6.2 怎么推进后续步骤（工作契约）
 
 1. **路标就是 §6 的表**。一步一提交，标题沿用仓库既有风格：`feat(scope): 中文摘要（M6 Step N）` /
@@ -610,8 +637,25 @@ sign 就开列）。这样 noice 那类崩溃不是靠「先比后写」绕开�
   `nui/split/init.lua:170` → `attach.lua:302`（`vim.wo[win].signcolumn = sc`）`C: in function '__newindex'`）：
   `vim.wo[win].signcolumn = <同一个值>` **也会触发 `OptionSet`**（实测：同一个值写三次 = 三次
   `OptionSet`），而 nui 开窗是**在自己的 `nvim_win_call` 里**执行 `:vsplit` 的，那串 `OptionSet`
-  处理器一炸就沿着我们写窗口选项那一行往上冒。修法：**先读后比、值相同就不写**，写时 `pcall` 、窗口失效就跳过；
-  装饰性的窗口选项永远不许打断别人开窗（`fix(attach)`，`attach_spec` 三条用例）。
+  处理器一炸就沿着我们写窗口选项那一行往上冒。当时的修法是「先读后比、值相同就不写」（`d743bba`，`attach_spec`
+  三条用例）—— **M6 之后这条路径连同 `set_signcolumn` / `reapply_signcolumn` / `WinEnter` 订阅一起删掉了**
+  （见 §6.1 末两条）：`signcolumn` 变成布尔、插件从不写窗口选项，这一类问题不再有机会发生。
+
+- **异步取数回来时，当初的许可可能已经失效**：探针（`temp/probe_focus.lua`，已删）里
+  `:vsplit` + `:enew` 换走焦点后 `blame.clear(bufnr)`，60 ms 后 extmark 自己回来了 —— 一个仍在飞的
+  `git blame` 回调（栈：`exec.lua:149` → `git.lua:306` → `blame.lua:197` → 写 extmark 的
+  `blame.lua:284`）在 `vim.wait` 里跑完了，而它只判了「窗口与行号没变」。修法：把「现在还要不要这个
+  装饰」收成一个 `still_wanted(bufnr, win, lnum)`（开关、插入模式、窗口、行号、`use_focus`、折叠），
+  **取数前后各判一次**；`blame_spec` 的 `use_focus keeps an unfocused window bare` 用例就是它。
+  凡是「先取数、再落笔」的装饰（blame / preview / 将来的别的）都要这么写。
+- **`%R` 的单位表照抄 gitsigns**：一年是 `365 * 24 * 60 * 60`。写成 `365 * 30 * 24 * 60 * 60`
+  （= 30 年）时，400 天前会被说成 `13 months ago`；`blame_formatter_spec` 的
+  `relative_time is gitsigns %R` 钉住这条。
+- **`vim.tbl_extend` 表达不了「删掉一个字段」**：Lua 表里没有 nil 值，`{ summary = nil }` 就是空表，
+  覆盖后默认值还在。测「适配器答不出的字段」要么造一个干净的输入表，要么用 `false` 之类哨兵再显式剔除。
+- **别经 heredoc 传 Lua 转义**：把 `\n` 写进 python 补丁脚本的字符串里（工具参数本身是 JSON），
+  落到 Lua 文件里就是一个真的换行 → `stylua` 报 `unclosed string`。探针与 spec 用 `write` 工具直接写，
+  或在 Lua 里用 `%c` + `10` 代替 `\n`。
 
 ### §6.4 下一步（Step 13）的入口
 

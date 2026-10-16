@@ -168,11 +168,40 @@ function M.is_tracked(root, rel, cb)
   end)
 end
 
+--- `2026-10-16T09:00:00.000000Z` (svn always reports UTC) as Unix seconds.
+---
+--- `os.time` reads its table as *local* time, so the offset it applied is added
+--- back; without that the annotation would be shifted by the machine's timezone.
+---@param date string?
+---@return integer?
+local function utc_seconds(date)
+  if not date then
+    return nil
+  end
+  local y, mo, d, h, mi, s = date:match('^(%d%d%d%d)-(%d%d)-(%d%d)T(%d%d):(%d%d):(%d%d)')
+  if not y then
+    return nil
+  end
+  local as_local = os.time({
+    year = tonumber(y),
+    month = tonumber(mo),
+    day = tonumber(d),
+    hour = tonumber(h),
+    min = tonumber(mi),
+    sec = tonumber(s),
+    isdst = false,
+  })
+  local offset = as_local - os.time(os.date('!*t', as_local))
+  return as_local + offset
+end
+
 --- Parse `svn blame --xml` into `{[lineno] = vcssign.BlameLine}`.
 ---
 --- svn spreads one `<entry>` over several lines and omits the whole `<commit>`
 --- element for a line that only exists in the working copy, which is how a
---- locally modified line is recognised (`rev = '-'`, `author = '-'`).
+--- locally modified line is recognised (`rev = '-'`, `author = '-'`).  It only
+--- knows the *current* line numbers, so `orig_lnum` mirrors `final_lnum`, and
+--- the commit date is the one field of gitsigns' set that svn does report.
 ---@param stdout string
 ---@return vcssign.BlameResult
 function M.parse_blame(stdout)
@@ -182,9 +211,19 @@ function M.parse_blame(stdout)
     local lineno = tonumber(attrs:match('line%-number="(%d+)"'))
     if lineno then
       local revision = body:match('<commit%s+revision="(%d+)"')
+      local author = revision and body:match('<author>(.-)</author>')
+      local time = utc_seconds(revision and body:match('<date>(.-)</date>'))
       lines[lineno] = {
         rev = revision or '-',
-        author = (revision and body:match('<author>(.-)</author>')) or '-',
+        author = author or '-',
+        author_name = author or '-',
+        -- kept for the float and for callers that only want the date
+        time = time,
+        author_time = time,
+        author_tz = time and '+0000' or nil,
+        lnum = lineno,
+        orig_lnum = lineno,
+        final_lnum = lineno,
       }
       if lineno > max_lineno then
         max_lineno = lineno

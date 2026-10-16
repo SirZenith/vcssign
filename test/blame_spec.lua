@@ -1,10 +1,10 @@
---- M6 Step 11: current-line blame (`config.current_line_blame`, keys `hb` /
---- `tb`).
+--- M6 Step 11, realigned with gitsigns: current-line blame
+--- (`config.current_line_blame`, keys `hb` / `tb`).
 ---
---- The formatting cases need no repository at all: what a line of blame *says*
---- is the formatting table's business.  The rest run against a real repository
---- and read the extmarks and the float, so what is pinned is what the user
---- sees, not how the adapter was called.
+--- The formatting cases need no repository at all (see
+--- `blame_formatter_spec.lua`); the rest run against a real repository and read
+--- the extmarks, the `vim.b` record and the float, so what is pinned is what the
+--- user sees, not how the adapter was called.
 local api = vim.api
 
 local actions = require('vcssign.actions')
@@ -16,6 +16,11 @@ local manager = require('vcssign.repo_manager')
 local preview = require('vcssign.preview')
 
 local helpers = require('helpers')
+
+--- A deterministic format: gitsigns' default leans on `%R` (a relative date)
+--- and on the object id, neither of which an assertion can spell out.
+local FMT = ' <author> - <summary> '
+local FMT_NC = ' Not Committed Yet '
 
 --- Buffers a case opened, so it can close them again (in `guarded`).
 ---@type table<integer, true>
@@ -42,10 +47,17 @@ local function guarded(fn)
 end
 
 --- Turn the decoration on with the shortest delay the timer accepts.
-local function enable_blame()
+---@param over? table<string, any>  extra `current_line_blame_opts`
+local function enable_blame(over)
   config.setup({
     current_line_blame = true,
-    current_line_blame_opts = { delay = 1, virt_text_pos = 'eol' },
+    current_line_blame_opts = vim.tbl_extend(
+      'force',
+      { delay = 1, virt_text_pos = 'eol' },
+      over or {}
+    ),
+    current_line_blame_formatter = FMT,
+    current_line_blame_formatter_nc = FMT_NC,
   })
 end
 
@@ -128,13 +140,23 @@ end
 ---@param time integer?
 ---@return vcssign.BlameLine
 local function line(rev, time)
-  return { rev = rev, author = 'Ada Lovelace', time = time, summary = 'add the thing' }
+  return {
+    rev = rev,
+    author = 'Ada Lovelace',
+    author_name = 'Ada Lovelace',
+    author_time = time,
+    time = time,
+    summary = 'add the thing',
+  }
 end
 
 return {
   {
-    name = 'a committed line is blamed as its revision, author, date and subject',
+    name = 'a committed line is formatted through current_line_blame_formatter',
     fn = guarded(function() --[[ no repository needed ]]
+      config.setup({
+        current_line_blame_formatter = ' <author_name> <author_time:%Y-%m-%d> - <summary> ',
+      })
       local bl =
         line(string.rep('abcdef12', 5), os.time({ year = 2020, month = 1, day = 2, hour = 12 }))
       eq(
@@ -144,14 +166,15 @@ return {
       )
       eq(
         blame.line_text(bl),
-        'abcdef12 Ada Lovelace 2020-01-02 add the thing',
-        'the inline form appends the subject'
+        ' Ada Lovelace 2020-01-02 - add the thing ',
+        'the configured format, placeholders expanded'
       )
-      -- svn reports a short numeric revision and no subject at all.
+      -- A VCS that reports neither a subject nor a commit date (svn does have
+      -- dates; this is the shape of a line it cannot attribute) still formats.
       eq(
-        blame.line_text({ rev = '41', author = 'Ada' }),
-        '41 Ada',
-        'a numeric revision stays whole'
+        blame.line_text({ rev = '41', author = 'Ada' }, { has_summary = false }),
+        ' Ada <author_time:%Y-%m-%d> - <summary> ',
+        'every placeholder the adapter cannot answer stays visible'
       )
     end),
   },
@@ -160,10 +183,12 @@ return {
     fn = guarded(function()
       eq(
         blame.line_text({ rev = string.rep('0', 40), author = 'Not Committed Yet' }),
-        'Not Committed Yet',
+        FMT_NC,
         'git: an all-zero sha'
       )
-      eq(blame.line_text({ rev = '-', author = '-' }), 'Not Committed Yet', 'svn: no <commit>')
+      eq(blame.line_text({ rev = '-', author = '-' }), FMT_NC, 'svn: no <commit>')
+      -- commit_text is what the float shows, so it stays the human summary.
+      eq(blame.commit_text({ rev = '-', author = '-' }), 'Not Committed Yet')
     end),
   },
   {
@@ -180,6 +205,11 @@ return {
       helpers.wait_for(function()
         return vim.deep_equal(marked_rows(bufnr), { 0 })
       end, 'the blame of line 1')
+      eq(vim.b[bufnr].vcssign_blame_line, ' t - three lines ', 'the text is kept in vim.b')
+      ok(
+        vim.b[bufnr].vcssign_blame_line_dict.abbrev_sha:match('^%x+$'),
+        'and the fields behind it too'
+      )
 
       move_to(bufnr, 3)
       helpers.wait_for(function()
@@ -206,6 +236,75 @@ return {
     end),
   },
   {
+    name = 'virt_text = false keeps the annotation out of the buffer',
+    fn = guarded(function()
+      enable_blame({ virt_text = false })
+      local dir = helpers.git_repo('blame-novirt')
+      local bufnr = open_attached(dir .. '/base.txt')
+
+      move_to(bufnr, 1)
+      helpers.wait_for(function()
+        return vim.b[bufnr].vcssign_blame_line ~= nil
+      end, 'the annotation text')
+      eq(marked_rows(bufnr), {}, 'no extmark is written')
+      eq(vim.b[bufnr].vcssign_blame_line, ' t - init ', 'the text is still available')
+    end),
+  },
+  {
+    name = 'ignore_whitespace blames through a whitespace-only change',
+    fn = guarded(function()
+      local dir = helpers.git_repo('blame-ws')
+      -- A whitespace-only change *in the working copy* (`base` -> `  base`):
+      -- `git blame` reads the file, so the buffer is not what has to change.
+      helpers.write(dir .. '/base.txt', '  base')
+      local bufnr = open_attached(dir .. '/base.txt')
+
+      enable_blame({ ignore_whitespace = true })
+      blame.render(bufnr)
+      helpers.wait_for(function()
+        return vim.b[bufnr].vcssign_blame_line == ' t - init '
+      end, 'the annotation of the committed line')
+
+      -- Without `-w` the same line is nobody's yet.
+      enable_blame()
+      blame.render(bufnr)
+      helpers.wait_for(function()
+        return vim.b[bufnr].vcssign_blame_line == FMT_NC
+      end, 'the uncommitted annotation')
+    end),
+  },
+  {
+    name = 'use_focus keeps an unfocused window bare',
+    fn = guarded(function()
+      enable_blame()
+      local dir = helpers.git_repo('blame-focus')
+      local bufnr = open_attached(dir .. '/base.txt')
+      move_to(bufnr, 1)
+      helpers.wait_for(function()
+        return #marked_rows(bufnr) == 1
+      end, 'the annotation of the focused window')
+
+      -- A second window on another buffer takes the focus.
+      vim.cmd('vsplit')
+      vim.cmd('enew')
+      local other = api.nvim_get_current_buf()
+      touched[other] = true
+      blame.clear(bufnr)
+      blame.render(bufnr)
+      vim.wait(60)
+      eq(marked_rows(bufnr), {}, 'an unfocused window is left alone')
+      eq(marked_rows(bufnr), {}, 'an unfocused window is left alone')
+
+      -- With `use_focus` off, the same render draws.
+      enable_blame({ use_focus = false })
+      blame.setup() -- what `toggle_current_line_blame` does for the user
+      blame.render(bufnr)
+      helpers.wait_for(function()
+        return #marked_rows(bufnr) == 1
+      end, 'the annotation once the focus does not matter')
+    end),
+  },
+  {
     name = 'the switch turns the decoration on and off, and says which way',
     fn = guarded(function()
       local dir = helpers.git_repo('blame-toggle')
@@ -213,8 +312,8 @@ return {
       helpers.sh({ 'git', '-C', dir, 'add', '-A' })
       helpers.sh({ 'git', '-C', dir, 'commit', '-qm', 'two lines' })
       local bufnr = open_attached(dir .. '/base.txt')
-      move_to(bufnr, 1)
       enable_blame()
+      move_to(bufnr, 1)
       helpers.wait_for(function()
         return #marked_rows(bufnr) == 1
       end, 'the decoration to appear')
@@ -226,6 +325,7 @@ return {
       helpers.wait_for(function()
         return #marked_rows(bufnr) == 0
       end, 'the decoration to go')
+      eq(vim.b[bufnr].vcssign_blame_line, nil, 'and the text goes with it')
 
       local back = helpers.capture_notify(function()
         actions.toggle_current_line_blame()
