@@ -53,6 +53,8 @@ local M = {}
 ---@field attached boolean
 ---@field enabled boolean       false = the pipeline found nothing to diff against
 ---@field shown boolean         the user's sign switch (`M.toggle`)
+---@field ready boolean         false until the first attach chain has answered
+---@field waiters fun(err: string?, st: vcssign.AttachState?)[]  see `M.ready`
 ---@field unsubscribe fun()[]
 ---@field refresh fun()          debounced
 ---@field refresh_cancel fun()
@@ -69,6 +71,32 @@ local function unobserve(st)
   st.unsubscribe = {}
 end
 
+--- Answer the waiters `M.ready` parked on this state.
+---
+--- Called exactly once per attach chain: with `err` when the buffer can never be
+--- diffed (no repository, no relative path, the repository gone), and without it
+--- once the first render has happened.  The callbacks run in the main loop —
+--- `manager.attach`'s answer and `show`'s both arrive there — so they may use the
+--- vim API.
+---@param st vcssign.AttachState
+---@param err? string
+local function settle(st, err)
+  if st.ready then
+    return
+  end
+  st.ready = true
+  local waiters = st.waiters
+  st.waiters = {}
+  for _, cb in ipairs(waiters) do
+    -- A waiter that throws must not take the attach chain down with it: it is a
+    -- caller's continuation, not part of the pipeline.
+    local ok, werr = pcall(cb, err, err and nil or st)
+    if not ok then
+      log.error('buffer %d: a ready waiter failed: %s', st.bufnr, werr)
+    end
+  end
+end
+
 --- The repository vanished (deleted from under the editor): drop back to
 --- "no signs", but do **not** call `manager.detach`.  `repo_manager._remove`
 --- already cleared every `_by_ref` entry pointing at this repository, and this
@@ -81,6 +109,7 @@ local function deactivate(st)
   signs.clear(st.bufnr)
   st.refresh_cancel()
   unobserve(st)
+  settle(st, 'the repository is gone')
 end
 
 --- Whether this buffer gets a staged layer at all: only git has a staging
@@ -280,6 +309,8 @@ function M.attach(bufnr)
     attached = false,
     enabled = true,
     shown = true,
+    ready = false,
+    waiters = {},
     unsubscribe = {},
   }
   -- The debounced refresh.  `debounce_trailing` dispatches through
@@ -313,19 +344,19 @@ function M.attach(bufnr)
       st.enabled = false
       -- `log.debug`, not `log.warn`: the stderr contract allows one line.
       log.debug('buffer %d: %s', bufnr, err or 'no repository')
-      return
+      return settle(st, err or 'no repository')
     end
     if not manager.hold(ref, repo) then
       st.enabled = false
       log.debug('buffer %d: repository is no longer tracked', bufnr)
-      return
+      return settle(st, 'the repository is no longer tracked')
     end
     st.repo, st.root, st.system = repo, repo.root, repo.system
     st.rev = config.get().rev
     st.rel = base.relpath(path, repo.root)
     if not st.rel then
       log.debug('buffer %d: %s is outside %s', bufnr, path, repo.root)
-      return
+      return settle(st, string.format('%s is outside %s', path, repo.root))
     end
     st.attached = true
     -- Keys first, so `]c` works the moment the buffer has a repository even if
@@ -345,6 +376,7 @@ function M.attach(bufnr)
     }
     load_base(st, function()
       M._render(st)
+      settle(st)
     end)
   end)
 
@@ -428,6 +460,33 @@ function M.refresh(bufnr, cb)
   end)
 end
 
+--- Run `cb(err, st)` once `bufnr`'s baseline is known.
+---
+--- The action layer needs this: a hunk action runs *after* the signs exist, but
+--- `:Vcssign stage_hunk` can be the first thing typed in a session, when the
+--- buffer is still loading its baseline.  `attach` is idempotent, so asking for
+--- an unattached buffer starts the pipeline instead of failing; the wait itself
+--- is a waiter list rather than a poll, so nothing here needs a timer.
+---@param bufnr integer
+---@param cb fun(err: string?, st: vcssign.AttachState?)
+function M.ready(bufnr, cb)
+  bufnr = bufnr or api.nvim_get_current_buf()
+  local st = M._bufs[bufnr] or M.attach(bufnr)
+  if not st then
+    return cb(string.format('buffer %d cannot be attached', bufnr), nil)
+  end
+  if not st.ready then
+    st.waiters[#st.waiters + 1] = cb
+    return
+  end
+  if not st.attached then
+    -- Either the pipeline found no repository (`enabled` is false) or the
+    -- repository went away after it did; both mean "nothing to act on".
+    return cb(string.format('no repository for %s', st.path), nil)
+  end
+  cb(nil, st)
+end
+
 --- Detach one buffer: clear its signs, cancel its debounce, drop its
 --- subscriptions and release its repository reference.
 ---@param bufnr integer
@@ -439,6 +498,7 @@ function M.detach(bufnr)
   signs.clear(bufnr)
   st.refresh_cancel()
   unobserve(st)
+  settle(st, 'the buffer was detached')
   keymap.detach(bufnr)
   M._bufs[bufnr] = nil
   manager.detach('attach:' .. bufnr)
@@ -522,6 +582,7 @@ function M.forget_all()
     signs.clear(st.bufnr)
     st.refresh_cancel()
     unobserve(st)
+    settle(st, 'the signs were dropped')
   end
   M._bufs = {}
 end

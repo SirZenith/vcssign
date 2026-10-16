@@ -7,8 +7,9 @@
 --- `dispatch` is the single entry point a mapping calls, so the mapping does
 --- not need to know which module implements an action, and an action that does
 --- not exist yet answers the person who pressed the key instead of failing
---- silently.  Step 8 lands navigation; the hunk actions, the word diff, blame
---- and the rev diff are Steps 9–11 and are absent from `ACTIONS` until then.
+--- silently.  Step 8 landed navigation, Step 9 the hunk actions; the word diff,
+--- the hunk preview, blame and the rev diff are Steps 10–11 and are absent from
+--- `ACTIONS` until then.
 local api = vim.api
 local config = require('vcssign.config')
 
@@ -23,6 +24,12 @@ local M = {}
 ---@return table
 local function navigator()
   return require('vcssign.nav')
+end
+
+--- `vcssign.actions`, resolved the same way — it requires `attach` too.
+---@return table
+local function acts()
+  return require('vcssign.actions')
 end
 
 --- Everything a mapping hands to an action.
@@ -44,6 +51,24 @@ local ACTIONS = {
   end,
   prev_hunk = function(ctx)
     return navigator().prev(ctx.bufnr, ctx.count, ctx)
+  end,
+  -- Hunk actions (§4).  `nil` target: the action works on the buffer the mapping
+  -- belongs to, which `ctx.bufnr` carries — the mapping is buffer-local, so the
+  -- buffer that was current when the key was pressed is the one it edits.
+  stage_hunk = function(ctx)
+    return acts().stage_hunk(nil, ctx)
+  end,
+  undo_stage_hunk = function(ctx)
+    return acts().undo_stage_hunk(nil, ctx)
+  end,
+  reset_hunk = function(ctx)
+    return acts().reset_hunk(nil, ctx)
+  end,
+  stage_buffer = function(ctx)
+    return acts().stage_buffer(nil, ctx)
+  end,
+  reset_buffer = function(ctx)
+    return acts().reset_buffer(nil, ctx)
   end,
 }
 
