@@ -191,6 +191,14 @@ Summary of conflicts:
         非零退出→`exit N: <首行 stderr>` 且保留 res、命令不存在→`spawn failed` 不抛异常、
         超时→杀死且回调恰好一次、`timeout=0` 表示不超时、config 默认值、`split_nul/split_lines/first_line`、
         **`stdin` 四例**（字符串原样写入不补尾换行 / `string[]` 逐元素补 `\n` / ≥256 KiB 不截断 / 带 stdin 超时不留 timer 句柄）。
+  - ✅ `hunk_spec`（20 用例，M6 Step 3）：**纯函数**，不碰仓库——六种类型判定（含首行删除→`topdelete`）、
+        `filter_common` 的暂存/未暂存拆分、`sort` 与稳定性、`lines_of` 切片、
+        `build_patch` 的**零上下文 unified 输出逐字断言**（省略 `,1`、必须以 `\n` 结尾、`\ No newline at end of file`）、
+        以及三个**真实** `git apply --cached --unidiff-zero -` 接受用例（change / 首行插入 / 删除）。
+  - ✅ `diff_spec`（10 用例，M6 Step 3）：**纯函数**——`normalize`/`split`/`join` 边界（`''`/`'a'`/`'a\n'`/`'a\n\n'`）、
+        空基线全 `add`、两侧相同 0 hunk（**钉住 E5 换行约定**）、一行改动 1 个 `change`、
+        `ignore_cr_at_eol` 默认值与覆盖、`algorithm` 透传（myers/histogram 同 hunk）、
+        性能防回归（20000 行、孤立改动、hunks == 200、< 200ms——`linematch = true` 对**超大 hunk** 是二次型，见文件注释）。
   - ⬜ `vcs_svn_spec` 的 `<1.9` 降级用例（当前用真实 svn 1.14 只覆盖了 `--show-item` 可用路径）
   - ⬜ git `unstage` 的旧版回退分支（需 git < 2.23，本机无法制造；仅对错误文案做了实测确认）
   - ⬜ `Repo` 的 `refresh_now` 在 fast-event 上下文中被调用时的 `vim.schedule` 分支
@@ -311,7 +319,7 @@ Summary of conflicts:
 |------|--------|----------------|
 | config / doc | 7 + 6 | 无 |
 | exec / repo | **13 + 20** | git（svn 部分用 svn） |
-| vcs_git / vcs_svn / vcs_registry | 17 + 18 + 9 | git / svn / 两者 |
+| vcs_git / vcs_svn / vcs_registry | 16 + 18 + 8 | git / svn / 两者 |
 | autocmds | 10 | git |
 | actions / cli | 19 + 11 | git, svn, svnadmin |
 
@@ -329,6 +337,19 @@ Summary of conflicts:
   （旧值是以 `status --porcelain=v1 -z --untracked-files=all` 结尾、路径为 `runtime-retry` 的那条；
   断言时不要硬编码旧串。）（其余用例的告警都被主动吞掉：`repo_spec` 的失败用例把 `vim.notify` 打桩、
   `actions`/`cli` 的通知类断言走 `helpers.capture_notify`。）
+
+### M6 Step 3 之后的实况（158 用例）
+
+在 Step 2 表上再加两张纯函数 spec：
+
+| spec | 用例数 | 需要的外部命令 |
+|------|--------|----------------|
+| `hunk_spec` | 20 | git（真跑 `git apply` 的三个用例） |
+| `diff_spec` | 10 | git（`REQUIRES` 门槛，运行时其实只用 nvim 内置引擎） |
+
+- 工程门：`make test` = **`158 tests, 0 failed`**（= 128 + 30）；`make format-check` / `make lint` 干净。
+- stderr 合同不变：仍是**恰好 1 行**（同 Step 2 那条 `rev-parse --show-toplevel`），Step 3 没有新增告警。
+- `diff.lua` / `hunk.lua` 是**纯函数**（D39：不起外部 `git diff`），`hunk_spec` / `diff_spec` 只依赖 `vim.text.diff`。
 
 ## 7. M5 实测与踩坑
 
