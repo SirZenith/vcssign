@@ -344,7 +344,7 @@ commit = { message_input = 'input' },
 | 7 | git 暂存态双层 sign（`filter_common(HEAD↔buf, unstaged)` + `signs_staged` 高亮） | ✅ **已完成**（`4bfe0ce`，184 → **189** 用例，全绿） |
 | 8 | `nav.lua`（`]c`/`[c`，计数/环绕）+ `keymap.lua`；`nav_spec` 13 | ✅ **已完成**（`f54b6af`，189 → **202** 用例，全绿） |
 | 9 | hunk 级动作（`stage_hunk`/`unstage_hunk`/`reset_hunk`/`stage_buffer`/`reset_buffer`）+ CLI；`actions_spec` 19→30 | ✅ **已完成**（`a5e544a`，202 → **213** 用例，全绿；`preview_hunk` 挪到 Step 10，见 §6.1） |
-| 10 | `worddiff.lua`（成对行逐字符 diff）+ `preview.lua`（`virt_lines` 删除预览 / hunk 浮窗） | ⬜ 待做（入口见 §6.2 / §6.4） |
+| 10 | `worddiff.lua`（成对行按段 diff）+ `preview.lua`（`virt_lines` 删除预览 / hunk 浮窗） | ✅ **已完成**（`1317890`，213 → **229** 用例，全绿；`worddiff_spec` 9 + `preview_spec` 7） |
 | 11 | `blame.lua`（`current_line_blame` + `blame_line` 浮窗）+ `revdiff.lua`（`diffthis [rev]`）；各约 6 | ⬜ 待做（入口见 §6.2 / §6.4） |
 | 12 | 文档与帮助回写（`00`–`06`、`doc/vcssign.txt`、`doc_spec`） | ⬜ 待做（入口见 §6.2 / §6.4） |
 | 13 | 独立审查（`code-reviewer` 审 M6 起点..HEAD）+ 修复 | ⬜ 待做（入口见 §6.2 / §6.4） |
@@ -355,7 +355,7 @@ commit = { message_input = 'input' },
 
 ---
 
-### §6.1 已落地（截至 `a5e544a`）
+### §6.1 已落地（截至 `1317890`）
 
 | SHA | 提交 | 验证（`make test`） |
 |---|---|---|
@@ -372,6 +372,8 @@ commit = { message_input = 'input' },
 | `4bfe0ce` | Step 7：git 暂存态双层 sign（`load_head` + `filter_common` + `…Staged` 暗色） | 184 → **189**，全绿；`attach_spec` 16、`signs_spec` 14 单跑 **34/34** |
 | `f54b6af` | Step 8：hunk 导航与默认键位（`nav.lua` + `keymap.lua` + `signs.sign_line`） | 189 → **202**，全绿；`nav_spec` 13/13，本步动到的五个 spec 单跑 **72/72** |
 | `a5e544a` | Step 9：hunk 级动作（`actions.lua` 的五个动作 + `attach.ready` 等待者 + CLI / keymap 接线） | 202 → **213**，全绿；`actions_spec` 19 → 30，本步动到的四个 spec 单跑 **76/76** |
+| `5942dd9` | `fix(test)`：`repo_spec` 的探针计数限定到被测仓库（Step 10 全量首跑的 flake） | 用例数不变，只让全量运行稳定 |
+| `1317890` | Step 10：词级 diff 与 hunk 预览（`worddiff.lua` + `preview.lua` + 渲染出口 `clear_layers` + CLI / keymap 接线） | 213 → **229**，全绿；`worddiff_spec` 9 + `preview_spec` 7 单跑 **16/16** |
 
 **Step 2 引入的回归（交接要点，别再踩）**：Step 2 把监听集收敛成「只监听 metadata 目录」（D38），
 而 **libuv 从不报告「被监听目录自身消失」** —— 实测：把 `.git` 改名走，挂在 `.git` 上的 handler
@@ -426,6 +428,9 @@ rename 事件（3 events）。于是工作副本被删后 `Repo` 不会自杀，
 （`attach_spec` 20 + `actions_spec` 30 + `nav_spec` 13 + `cli_spec` 13）、
 `make format-check` 零输出、`make lint` → `0 warnings / 0 errors in 38 files`。
 
+**工程门（`1317890` 实测）**：`make test` **229/229**、本步的两个新 spec 单跑 **16/16**、
+`make format-check` 零输出、`make lint` → `0 warnings / 0 errors in 42 files`。
+
 **Step 9 的三个决定（都写在代码注释里，交接时别改回去）**：
 
 1. **`attach.ready(bufnr, cb)` 用等待者列表，不是轮询**：hunk 动作要求「先有基线再算 hunk」，
@@ -441,7 +446,30 @@ rename 事件（3 events）。于是工作副本被删后 `Repo` 不会自杀，
    `M.stage`（整份文件），`reset_hunk` 回答「nothing to discard」。
 
 **`preview_hunk` 挪到了 Step 10**：它要的是渲染（浮窗），Step 9 只做「改状态」的动作；§4 的
-`hp` 键位仍然指向它，`keymap.ACTIONS` 里暂时还是占位提示。
+`hp` 键位当时仍然是占位提示，`1317890` 已经把它接上（见下面的第 3 条）。
+
+**Step 10 的三个决定（交接时别改回去）**：
+
+1. **词级 diff 按「段序列」做，不按字符序列做**：`vim.text.diff` / `vim.diff` 只收**字符串**（传列表会
+   `bad argument #1 to '?' (expected string)`），而且只按 `\n` 分行。于是把一行切成「词 / 空白 / 标点
+   （单个 UTF-8 字符）」的段，用 `\n` 连起来喂给它，拿到的 `indices` 就是「按段的 diff」；再把改动段
+   映射回字节列（`end_col` 是**独占**语义）。中文因此是逐字粒度，正好是想要的。
+2. **xdiff 的 hunk 两端可能带公共前后缀，必须自己剪**：`'a = 1 2' → 'a = 1'` 实测报成
+   `{ start_a = 5, count_a = 3, start_b = 5, count_b = 1 }`（「删掉行尾的 ` 2`」被写成「`1`,` `,`2`
+   换成 `1`」），直接渲染会在新行上多画一块「` 1` 是新增的」。`worddiff.M.ranges` 于是对每个 hunk 的
+   a / b 段序列剪掉公共前缀与公共后缀，剪空了就不标。
+3. **渲染出口只有一个，而且是三层一起清**：`attach` 新增的局部 `clear_layers(bufnr)`（sign + 词级 +
+   预览）取代了原来的 `signs.clear`：`base_text == nil`、`shown == false`、`deactivate`、`detach`、
+   `forget_all`、`toggle` 关掉 —— 六个出口都走它。以后再加一层渲染，先想清楚它在哪些出口要被清掉。
+   另外 `word_diff` / `deleted_preview` 都是**渲染时现读** `config.get()`（改配置立刻生效，
+   `toggle_word_diff` 只需要翻转配置 + `attach.refresh_all()`）；hunk 浮窗用 `filetype=diff` 借配色方案
+   的高亮（不新开高亮组），`CursorMoved`（`once = true`、buffer-local）一关。
+
+**Step 10 全量首跑的那 1 个红不是本步的缺陷**：`repo_spec: a manual refresh inside the debounce
+window is not run twice` 只在全量里红（`repo_spec` 单跑 20/20）。原因是 `repo_spec` 的
+`count_probes` 数的是**所有**仓库的 `rev-parse` / `wc-root`，而这条用例的观察窗口有 2.3s ——
+前面某个 spec 留下的仓库在窗口内应了自己的 watcher，计数就多一个。`5942dd9` 把计数限定到
+**第一个**探测所在的 cwd（`fn` 一上来就动被测仓库），用例语义没变。再跑全量即 **229/229**。
 
 ### §6.2 怎么推进后续步骤（工作契约）
 
@@ -475,6 +503,10 @@ rename 事件（3 events）。于是工作副本被删后 `Repo` 不会自杀，
 - `git show HEAD:<f>` 在 **unborn HEAD** 上报 `fatal: invalid object name 'HEAD'.`（不是空基线），只有 `:<f>` 可用。
 - `vim.text.diff({a}, {b}, { result_type = 'indices' })`：1 基 `{start_a, count_a, start_b, count_b}`，
   `count` 可为 0（纯插入/删除）；`on_hunk` 返回负数会抛 `E5113`（**不能**用它中断）。
+- `vim.text.diff` / `vim.diff` **只收字符串**（传列表 → `bad argument #1 (expected string)`，Step 10 实测）；
+  `vim.split(s, '\\zs')` 不分字符（返回 `{ s }`），要 `vim.fn.split(s, '\\zs')` 才逐字符。
+- **xdiff 的 `indices` 两端可能带公共前后缀**（见 §6.1 Step 10 第 2 条）：直接按 `indices` 画行内区间会多
+  画一块，先剪 a / b 段序列的公共前后缀。
 - `diff.linematch` 默认已改成 `false`：它是二次型，实测 500 行全改 1.1s、2000 行 69s、5000 行 OOM。
 - **`signcolumn` 是窗口选项**：`vim.wo[bufnr]` 写不进，要对 `win_findbuf(bufnr)` 的每个窗口设置。
 - **`on_lines` / `on_reload` 在 textlock 里**：只能置标记，刷新必须经 `debounce` 回主循环（D19）。
@@ -517,34 +549,34 @@ rename 事件（3 events）。于是工作副本被删后 `Repo` 不会自杀，
 - `require('vcssign.repo')`：`repo:on_update(fn)` / `repo:on_error(fn)` / `repo:on_delete(fn)` /
   `repo:mark_dirty()` / `repo:refresh_now(cb)` / `repo:dispose()`。
 
-**Step 9 已经完成**（`a5e544a`）：`lua/vcssign/actions.lua` 现在有 `M.stage_hunk` / `M.unstage_hunk`
-（别名 `M.undo_stage_hunk`）/ `M.reset_hunk` / `M.stage_buffer` / `M.reset_buffer`，签名统一是
-`(target: string?, opts: { bufnr?: integer, lnum?: integer }?)`；它们不抛异常、也不返回值，结果经
-`log.notify` / `log.notify_error` 报出。`lua/vcssign/cli.lua` 的 `M.subcommands` 已是
-`toggle` / `refresh` / `stage_hunk` / `undo_stage_hunk` / `reset_hunk` / `stage_buffer` / `reset_buffer` /
-`diff` / `commit` / `debug`。
+**Step 10 已经完成**（`1317890`）：`lua/vcssign/worddiff.lua`（`M.render(bufnr, hunks, base_lines, buf_lines)` /
+`M.ranges(old, new)` / `M.clear(bufnr)` / `M.namespace()` / `M.define_highlights()`；命名空间
+`vcssign_worddiff`，组 `VcssignWordDiff`）与 `lua/vcssign/preview.lua`（`M.render_deleted(bufnr, hunks,
+base_lines, buf_lines)` / `M.hunk_text(h, base_lines, buf_lines)` / `M.toggle_hunk(bufnr, h, lnum, base_lines,
+buf_lines)` / `M.close()` / `M.is_open(bufnr)` / `M.clear(bufnr)` / `M.namespace()` / `M.define_highlights()`；
+命名空间 `vcssign_preview`，组 `VcssignDeleteVirtLn`）都由 `attach` 的渲染出口调用（局部 `clear_layers`）。
+`actions.lua` 多了 `M.preview_hunk(target, opts)`（经 `hunk_ctx`，所以自带 `attach.ready` 的等待语义）
+与 `M.toggle_word_diff()`；`cli.M.subcommands` 现在是 11 项（多了 `preview_hunk`）；`keymap.ACTIONS` 里
+`preview_hunk` / `toggle_word_diff` 已经是实现。
 
-**Step 10 要做的事**：`worddiff.lua`（把 change hunk 里**成对**的 removed / added 行做行内 diff，落在
-`vcssign_worddiff` 命名空间；`config.word_diff` 开关 + `<leader>tw`）+ `preview.lua`（`config.deleted_preview`
-把被删行以 `virt_lines` 内联在锚行下方，落在 `vcssign_preview` 命名空间；`preview_hunk` 浮窗、`hp` 键位
-与 `:Vcssign preview_hunk` 子命令）：
+**Step 11 要做的事**：`blame.lua`（`current_line_blame` 的行内虚拟文本 + `blame_line` 浮窗 / `hb` 键位）
+与 `revdiff.lua`（`diffthis` / `diffthis_rev`，`hd` 用 `config.rev`、`hD` 问一个 rev）：
 
-- 行内 diff 不要直接对字符调 `vim.text.diff`（正文太长会慢）：先按「词 / 空白 / 标点」切成段，对**段序列**
-  做 `diff.run`，再把改动段映射回字节区间；渲染用 `nvim_buf_set_extmark` 的 `end_col` + `hl_group`，
-  同一行可以有多个区间。
-- `virt_lines` 走 `nvim_buf_set_extmark(..., { virt_lines = { … }, virt_lines_above = false })`；被删行的文本
-  来自 `hunk.lines_of(h, base_lines, buf_lines)` 的 removed 侧。
-- 浮窗用 `nvim_open_win`（`relative = 'cursor'`，宽度取窗口的 0.8，`max_height` 也要设），可以照
-  `actions.show_diff` 的写法。
-- `preview_hunk` 只读不改：它仍然经 `hunk_ctx` 拿 hunk（于是自动获得 `attach.ready` 的等待语义），
-  但不动 index、不写磁盘。
-- `M.subcommands` 加 `preview_hunk`（`doc_spec` 钉住子命令与 doc）；`keymap.ACTIONS` 里
-  `preview_hunk` / `toggle_word_diff` 两处占位换成实现（`toggle_current_line_blame` 属 Step 11）；
-  `doc/vcssign.txt` §4 的 `word_diff` / `deleted_preview` 说明与键位括注同步。
+- 适配器已经就绪：`system.blame(root, rel, { from, to }, cb)`（git 是 `blame --line-porcelain -L`，svn 是
+  `blame --xml`，见 §5.5）、能力位 `capabilities.blame`；`system.show(root, rev, rel, cb)` 任意 rev 都行。
+- 行内 blame 落 `vcssign_blame` 命名空间（`virt_text` + `current_line_blame_opts.virt_text_pos`），`delay`
+  用 `debounce` 或 `vim.defer_fn` 去抖；`CursorMoved` 与 `CursorMovedI` 都要接，换缓冲区 / `filetype` 变化要清。
+- `blame_line` 是浮窗：复用 `preview.lua` 的浮窗写法（`relative='cursor'`、`style='minimal'`、
+  `CursorMoved` 关闭），`filetype` 用 `git` 或默认，不新开高亮组。
+- `diffthis` / `diffthis_rev` 复用 `actions.show_diff` 的 diff 缓冲区与 `config.diff.mode`；`hD` 用
+  `vim.ui.input` 问 rev（照 `ask_message` 的写法，取消就什么都不做）。
+- `blame_spec` 约 6 例、`revdiff_spec` 约 6 例；若动 `cli.subcommands` / 键位 / 配置面，`doc/vcssign.txt`
+  与 `test/doc_spec.lua` 同步（`current_line_blame` / `current_line_blame_opts` / `hb` / `hd` / `hD` 已在文档里，
+  只需把「随后接上」的措辞改掉）。
 
-**Step 10 的验收**：`worddiff_spec` 约 8 例（成对行的行内区间；行数不等时的降级；`word_diff = false`
-时零 extmark；切换键）、预览的用例随实现补上（删除预览的 `virt_lines` 内容与锚行、`deleted_preview = false`
-时不画、浮窗的行数与内容、`hp` 与 `:Vcssign preview_hunk` 走同一条路径）。全量用例继续绿。
+**Step 11 的验收**：`blame_spec` 断言 `hb` 浮窗内容含 sha + author（用真仓库），`current_line_blame` 打开后
+光标行出现虚文本、移动光标后换成新行的 blame、关闭后清空；`revdiff_spec` 断言 `diffthis HEAD~1` 打开的
+只读缓冲区内容与 `git diff HEAD~1` 一致。全量用例继续绿。
 
 ## §7 验收标准（用户可点）
 
