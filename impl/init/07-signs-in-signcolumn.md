@@ -345,7 +345,7 @@ commit = { message_input = 'input' },
 | 8 | `nav.lua`（`]c`/`[c`，计数/环绕）+ `keymap.lua`；`nav_spec` 13 | ✅ **已完成**（`f54b6af`，189 → **202** 用例，全绿） |
 | 9 | hunk 级动作（`stage_hunk`/`unstage_hunk`/`reset_hunk`/`stage_buffer`/`reset_buffer`）+ CLI；`actions_spec` 19→30 | ✅ **已完成**（`a5e544a`，202 → **213** 用例，全绿；`preview_hunk` 挪到 Step 10，见 §6.1） |
 | 10 | `worddiff.lua`（成对行按段 diff）+ `preview.lua`（`virt_lines` 删除预览 / hunk 浮窗） | ✅ **已完成**（`1317890`，213 → **229** 用例，全绿；`worddiff_spec` 9 + `preview_spec` 7） |
-| 11 | `blame.lua`（`current_line_blame` + `blame_line` 浮窗）+ `revdiff.lua`（`diffthis [rev]`）；各约 6 | ⬜ 待做（入口见 §6.2 / §6.4） |
+| 11 | `blame.lua`（`current_line_blame` + `blame_line` 浮窗）+ `revdiff.lua`（`diffthis [rev]`）；各约 6 | ✅ **已完成**（`22ad24a`，229 → **244** 用例，全绿；`blame_spec` 8 + `revdiff_spec` 7） |
 | 12 | 文档与帮助回写（`00`–`06`、`doc/vcssign.txt`、`doc_spec`） | ⬜ 待做（入口见 §6.2 / §6.4） |
 | 13 | 独立审查（`code-reviewer` 审 M6 起点..HEAD）+ 修复 | ⬜ 待做（入口见 §6.2 / §6.4） |
 | 14 | 终验（全量两遍幂等、stderr 合同、`git diff --check` 干净、逐 SHA 复跑） | ⬜ 待做（入口见 §6.2 / §6.4） |
@@ -355,7 +355,7 @@ commit = { message_input = 'input' },
 
 ---
 
-### §6.1 已落地（截至 `1317890`）
+### §6.1 已落地（截至 `22ad24a`）
 
 | SHA | 提交 | 验证（`make test`） |
 |---|---|---|
@@ -374,6 +374,7 @@ commit = { message_input = 'input' },
 | `a5e544a` | Step 9：hunk 级动作（`actions.lua` 的五个动作 + `attach.ready` 等待者 + CLI / keymap 接线） | 202 → **213**，全绿；`actions_spec` 19 → 30，本步动到的四个 spec 单跑 **76/76** |
 | `5942dd9` | `fix(test)`：`repo_spec` 的探针计数限定到被测仓库（Step 10 全量首跑的 flake） | 用例数不变，只让全量运行稳定 |
 | `1317890` | Step 10：词级 diff 与 hunk 预览（`worddiff.lua` + `preview.lua` + 渲染出口 `clear_layers` + CLI / keymap 接线） | 213 → **229**，全绿；`worddiff_spec` 9 + `preview_spec` 7 单跑 **16/16** |
+| `22ad24a` | Step 11：当前行 blame 与 `diffthis [rev]`（`blame.lua` + `revdiff.lua` + `preview.M.open`） | 229 → **244**，全绿；`blame_spec` 8 + `revdiff_spec` 7 单跑 **15/15** |
 
 **Step 2 引入的回归（交接要点，别再踩）**：Step 2 把监听集收敛成「只监听 metadata 目录」（D38），
 而 **libuv 从不报告「被监听目录自身消失」** —— 实测：把 `.git` 改名走，挂在 `.git` 上的 handler
@@ -465,6 +466,23 @@ rename 事件（3 events）。于是工作副本被删后 `Repo` 不会自杀，
    `toggle_word_diff` 只需要翻转配置 + `attach.refresh_all()`）；hunk 浮窗用 `filetype=diff` 借配色方案
    的高亮（不新开高亮组），`CursorMoved`（`once = true`、buffer-local）一关。
 
+**Step 11 的三个决定（交接时别改回去）**：
+
+1. **blame 的缓存键是 `changedtick`，不是时间**：`blame.lua` 给每个缓冲区存一份 `{tick, result}`，渲染
+   时先比 tick —— 相等就直接复用，不等才重新 `blame`。所以「只移动光标」是零子进程的
+   （`blame_spec` 用 `exec.run` 计数器断言 0 次），按一次撤销/重做才会重新问。装饰是 extmark 的
+   `virt_text`（`eol`，前后各一个空格），落在 `vcssign_blame` 命名空间；关掉开关时 `blame.render`
+   只清命名空间、不撤自动命令（重开零成本）。
+2. **浮窗只有一个实现**：Step 10 的 `preview.toggle_hunk` 与新加的
+   `preview.open(bufnr, lnum, text, opts)`（`opts.filetype` / `opts.title`）共用同一扇窗；`blame_line`
+   走 `open`，所以 hunk 预览与 blame 的行为（同一个位置再按一次就关、`CursorMoved` / `BufLeave`
+   自动关）是一份代码。
+3. **diff 窗口从 `actions` 挪进了 `revdiff`**：`actions` 现在只剩 `M.diffthis` / `M.diffthis_rev`
+   两个薄包装，`diffthis` 不带 rev 时**直接调 `M.diff`**（复用基线 diff 的全部行为，包括
+   「no changes to show」），带 rev 时才走 `show(root, rev, rel)`。`revdiff.text` 写一次
+   `diff --git` 三行头，每个 hunk 用 `hunk.build_patch(..., { headers = false })`，所以整段文本
+   可以直接喂给 `filetype=diff` 的缓冲区。
+
 **Step 10 全量首跑的那 1 个红不是本步的缺陷**：`repo_spec: a manual refresh inside the debounce
 window is not run twice` 只在全量里红（`repo_spec` 单跑 20/20）。原因是 `repo_spec` 的
 `count_probes` 数的是**所有**仓库的 `rev-parse` / `wc-root`，而这条用例的观察窗口有 2.3s ——
@@ -513,6 +531,15 @@ window is not run twice` 只在全量里红（`repo_spec` 单跑 20/20）。原�
 - svn blame 没有 time/summary，本地未提交行的 revision 是 `-`；`svn log` 在 WC 上只到 BASE（要看 URL）。
 - headless nvim **不发** `VimResized` / `FocusGained` 等事件 → 测试用 `nvim_exec_autocmds` 驱动；
   `DirChanged` 的 scope 在 `v:event` 里（回调参数里没有）。
+- **headless 不会自己触发 `CursorMoved`**：`nvim_win_set_cursor` 不产生事件，所以「移动光标 →
+  blame 跟着动」这类用例要显式 `nvim_exec_autocmds('CursorMoved', { buffer = bufnr })`
+  （`FocusGained` / `DirChanged` 同理，见下一条）。
+- **浮窗不在 `bufwinid()` 的名单里**：它没有窗口槽位，`vim.fn.bufwinid('vcssign://…')` 返回 -1
+  （`Invalid window id`）。要读浮窗内容就遍历 `nvim_list_wins()` 找
+  `nvim_win_get_config(win).relative ~= ''` 的那个。
+- **`svn cat -r 1 <file>` 可能报 `E195012: Unable to find repository location … in revision 1`**：
+  文件是后来才进版本库的。和某个历史 rev 比时要挑该文件确实存在的 rev（spec 里用 `HEAD`）。
+- **`virt_text` 挂在 `eol` 上要自己带空格**（`{ ' ' .. text .. ' ' }`），否则装饰和源码行黏在一起。
 - 测试卫生：每个用例包 `guarded(fn)`（失败也清场）；`helpers.capture_notify` 必须**排空 `vim.schedule`**
   再还原 `vim.notify`；`helpers.uv_count` 只数**未 closing** 的句柄；跑测试前 fixture 要在（`make fixtures`），
   `temp/_spec` 由 `helpers.cleanup()` 清。
@@ -524,7 +551,7 @@ window is not run twice` 只在全量里红（`repo_spec` 单跑 20/20）。原�
   的 python 补丁（`assert src.count(old) == 1` 守卫 + `io.open(..., encoding='utf-8', newline='')` 回写）。
   `edit` 工具对「尚无观察」的文件可能拒绝改，此时同样走 python 补丁。
 
-### §6.4 下一步（Step 10）的入口
+### §6.4 下一步（Step 12）的入口
 
 **已经就绪、可以直接消费的接口**（`6eaef2b` 冻结，`2193802` / `4bfe0ce` 补齐开关与暂存层，`f54b6af` 补上导航与键位）：
 
@@ -549,34 +576,21 @@ window is not run twice` 只在全量里红（`repo_spec` 单跑 20/20）。原�
 - `require('vcssign.repo')`：`repo:on_update(fn)` / `repo:on_error(fn)` / `repo:on_delete(fn)` /
   `repo:mark_dirty()` / `repo:refresh_now(cb)` / `repo:dispose()`。
 
-**Step 10 已经完成**（`1317890`）：`lua/vcssign/worddiff.lua`（`M.render(bufnr, hunks, base_lines, buf_lines)` /
-`M.ranges(old, new)` / `M.clear(bufnr)` / `M.namespace()` / `M.define_highlights()`；命名空间
-`vcssign_worddiff`，组 `VcssignWordDiff`）与 `lua/vcssign/preview.lua`（`M.render_deleted(bufnr, hunks,
-base_lines, buf_lines)` / `M.hunk_text(h, base_lines, buf_lines)` / `M.toggle_hunk(bufnr, h, lnum, base_lines,
-buf_lines)` / `M.close()` / `M.is_open(bufnr)` / `M.clear(bufnr)` / `M.namespace()` / `M.define_highlights()`；
-命名空间 `vcssign_preview`，组 `VcssignDeleteVirtLn`）都由 `attach` 的渲染出口调用（局部 `clear_layers`）。
-`actions.lua` 多了 `M.preview_hunk(target, opts)`（经 `hunk_ctx`，所以自带 `attach.ready` 的等待语义）
-与 `M.toggle_word_diff()`；`cli.M.subcommands` 现在是 11 项（多了 `preview_hunk`）；`keymap.ACTIONS` 里
-`preview_hunk` / `toggle_word_diff` 已经是实现。
+**Step 11 已经完成**（`22ad24a`）：`lua/vcssign/blame.lua`（`M.render(bufnr)` / `M.clear(bufnr)` /
+`M.attach(bufnr)` / `M.detach(bufnr)` / `M.refresh_all()` / `M.namespace()` / `M.define_highlights()` /
+`M.commit_text(bl)` / `M.line_text(bl)` / `M.line(bufnr, lnum, cb)`；命名空间 `vcssign_blame`，组
+`VcssignBlame`，`current_line_blame_opts.delay` 去抖）与 `lua/vcssign/revdiff.lua`
+（`M.text(rel, base_text, buf_lines)` / `M.show(t, text)` / `M.buffer(t)`）。`actions` 多了
+`M.blame_line(target, opts)` / `M.diffthis(target, opts)` / `M.diffthis_rev(target, opts)`（原来的
+`diff_buffer` / `show_diff` 已挪进 `revdiff`）；`preview` 多了 `M.open`；`attach` 的 `clear_layers` 与
+`define_highlights` 调用都多了 blame 一层；`cli.M.subcommands` 现在是 13 项（多了 `diffthis` /
+`blame_line`，注意 `diffthis` 的参数是 **rev 而不是路径**）；`keymap.ACTIONS` 里只剩
+`setqflist` / `setqflist_all` 是占位提示。
 
-**Step 11 要做的事**：`blame.lua`（`current_line_blame` 的行内虚拟文本 + `blame_line` 浮窗 / `hb` 键位）
-与 `revdiff.lua`（`diffthis` / `diffthis_rev`，`hd` 用 `config.rev`、`hD` 问一个 rev）：
+**Step 12 要做的事**：把 `impl/init/00`–`06` 与 `doc/vcssign.txt` / `doc_spec` 对齐到 M6 的实际交付
+（§4 的配置面逐键、§7 的验收 10 条逐条对照实现与 spec），随后 Step 13 独立审查（`code-reviewer`
+审 M6 起点..HEAD）、Step 14 终验（全量两遍幂等、stderr 合同、`git diff --check`、逐 SHA 复跑）。
 
-- 适配器已经就绪：`system.blame(root, rel, { from, to }, cb)`（git 是 `blame --line-porcelain -L`，svn 是
-  `blame --xml`，见 §5.5）、能力位 `capabilities.blame`；`system.show(root, rev, rel, cb)` 任意 rev 都行。
-- 行内 blame 落 `vcssign_blame` 命名空间（`virt_text` + `current_line_blame_opts.virt_text_pos`），`delay`
-  用 `debounce` 或 `vim.defer_fn` 去抖；`CursorMoved` 与 `CursorMovedI` 都要接，换缓冲区 / `filetype` 变化要清。
-- `blame_line` 是浮窗：复用 `preview.lua` 的浮窗写法（`relative='cursor'`、`style='minimal'`、
-  `CursorMoved` 关闭），`filetype` 用 `git` 或默认，不新开高亮组。
-- `diffthis` / `diffthis_rev` 复用 `actions.show_diff` 的 diff 缓冲区与 `config.diff.mode`；`hD` 用
-  `vim.ui.input` 问 rev（照 `ask_message` 的写法，取消就什么都不做）。
-- `blame_spec` 约 6 例、`revdiff_spec` 约 6 例；若动 `cli.subcommands` / 键位 / 配置面，`doc/vcssign.txt`
-  与 `test/doc_spec.lua` 同步（`current_line_blame` / `current_line_blame_opts` / `hb` / `hd` / `hD` 已在文档里，
-  只需把「随后接上」的措辞改掉）。
-
-**Step 11 的验收**：`blame_spec` 断言 `hb` 浮窗内容含 sha + author（用真仓库），`current_line_blame` 打开后
-光标行出现虚文本、移动光标后换成新行的 blame、关闭后清空；`revdiff_spec` 断言 `diffthis HEAD~1` 打开的
-只读缓冲区内容与 `git diff HEAD~1` 一致。全量用例继续绿。
 
 ## §7 验收标准（用户可点）
 

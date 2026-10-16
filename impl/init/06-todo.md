@@ -113,7 +113,7 @@ M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
       键位动作 / API / `:helptags` tag 唯一）（05 §5）
 - [ ] CI（backlog，**未做**）：ubuntu+windows matrix——本机无 GitHub 远端，写了也无法验证；接入步骤见 05 §4
 
-## M6 · 行级 sign（07，P0 转向）—— 🚧 进行中（Step 1–10/14 完成，229/229）
+## M6 · 行级 sign（07，P0 转向）—— 🚧 进行中（Step 1–11/14 完成，244/244）
 
 > 用户要求把「文件状态侧边栏」换成 gitsigns 式的**行级 sign**（状态直接进 `'signcolumn'`）。
 > 设计、探针实测与分步计划见 `07-signs-in-signcolumn.md`；**交接说明见该文 §6.1–§6.4**
@@ -131,7 +131,7 @@ M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
 - [x] **Step 8** hunk 导航与默认键位（`nav.lua` 的 `]c`/`[c`；`keymap.lua` 的 buffer-local 默认映射，未落地动作先提示） —— `f54b6af`（189 → 202；`nav_spec` 13 例）
 - [x] **Step 9** hunk 级动作 + CLI（`stage_hunk` / `undo_stage_hunk` / `reset_hunk` / `stage_buffer` / `reset_buffer`；`attach.ready` 的等待者让命令可以抢在基线落地之前到达） —— `a5e544a`（202 → 213；`actions_spec` 19 → 30；`preview_hunk` 挪到 Step 10）
 - [x] **Step 10** 词级 diff（`worddiff.lua`）+ 删除预览与 hunk 浮窗（`preview.lua`）+ `hp` / `tw` 接线 —— `1317890`（213 → 229；`worddiff_spec` 9 + `preview_spec` 7）
-- [ ] **Step 11** `blame.lua` + `revdiff.lua`
+- [x] **Step 11** 当前行 blame（`blame.lua`：行内 `virt_text`、`changedtick` 缓存、`blame_line` 浮窗） + `revdiff.lua`（`diffthis [rev]`，diff 窗口从 `actions` 挪进来） —— `22ad24a`（229 → 244；`blame_spec` 8 + `revdiff_spec` 7）
 - [ ] **Step 12** 文档与帮助回写（`00`–`06`、`doc/vcssign.txt`、`doc_spec`）
 - [ ] **Step 13** 独立审查（`code-reviewer` 审 M6 起点..HEAD）+ 修复
 - [ ] **Step 14** 终验（全量两遍幂等、stderr 合同、`git diff --check`、逐 SHA 复跑）
