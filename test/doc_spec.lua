@@ -166,4 +166,33 @@ M[#M + 1] = {
   end,
 }
 
+M[#M + 1] = {
+  name = 'every default keymap action is implemented, or an honest placeholder',
+  fn = function()
+    local keymap = require('vcssign.keymap')
+    local missing = {}
+    for lhs, action in pairs(config.defaults.keymaps) do
+      if
+        type(action) == 'string'
+        and keymap.ACTIONS[action] == nil
+        and keymap.PLACEHOLDERS[action] == nil
+      then
+        missing[#missing + 1] = string.format('%s -> %s', lhs, action)
+      end
+    end
+    table.sort(missing)
+    -- The default surface may not advertise an action nobody implements.  This
+    -- is the check that was missing when `setqflist` / `setqflist_all` were
+    -- documented as working while `keymap.dispatch` answered "not implemented
+    -- yet": a name appearing in the help file is not the same thing as the key
+    -- doing something.
+    eq(missing, {}, 'default keymaps must dispatch somewhere')
+    -- And the placeholder list may not rot: an action that *is* implemented must
+    -- not stay on it, or the documentation would keep apologising for it.
+    for action in pairs(keymap.PLACEHOLDERS) do
+      eq(keymap.ACTIONS[action], nil, action .. ' is implemented: drop it from PLACEHOLDERS')
+    end
+  end,
+}
+
 return M

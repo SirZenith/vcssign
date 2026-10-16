@@ -225,13 +225,14 @@ M.unstage = base.unsupported('unstage')
 --- Apply a unified diff to the working copy.
 ---
 --- The patch goes through a temporary file because svn 1.14.5 refuses stdin.
---- `--strip N` drops N leading path components, which is measured to matter:
---- a bare unidiff (`--- f`) and svn's own format (with `Index:`) apply at
---- `--strip 0`, while a git-style patch (`--- a/f` / `+++ b/f`) is *rejected*
---- there and only applies at `--strip 1` (`--strip 2` fails outright with
---- `svn: E195018: Cannot strip 2 components from 'f.txt'`).  We keep
---- `--strip 0` (the svn-native dialect) and require callers to emit bare
---- headers; `hunk.compose` must not add the `a/`+`b/` prefixes.
+--- `--strip N` drops N leading path components.  Measured with svn 1.14.5
+--- (07 §11.2, reshaped in Step 9): `--strip 0` accepts *both* dialects — a bare
+--- unidiff (`--- f`), svn's own format (with `Index:`) and git's headers
+--- (`--- a/f` / `+++ b/f`, which is what `hunk.build_patch` emits) all apply
+--- and print `U <path>` — while `--strip 1` conflicts and `--strip 2` fails
+--- outright with `svn: E195018: Cannot strip 2 components from 'f.txt'`.
+--- `--strip 0` is therefore the right value for every caller, and no caller
+--- has to strip the `a/`/`b/` prefixes `hunk.build_patch` adds.
 ---
 --- A conflict is NOT an error to svn (§5.3): it exits 0 and writes
 --- `<file>.svnpatch.rej` while printing `C         <path>` and

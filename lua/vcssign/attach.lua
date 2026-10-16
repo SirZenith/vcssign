@@ -57,6 +57,7 @@ local M = {}
 ---@field tracked boolean?
 ---@field untracked boolean
 ---@field attached boolean
+---@field abandoned boolean    the repository went away; a later `attach` rebuilds
 ---@field enabled boolean       false = the pipeline found nothing to diff against
 ---@field shown boolean         the user's sign switch (`M.toggle`)
 ---@field ready boolean         false until the first attach chain has answered
@@ -121,8 +122,15 @@ end
 ---@param st vcssign.AttachState
 local function deactivate(st)
   st.attached = false
+  -- Terminal, but recoverable: `M.attach` rebuilds an abandoned state
+  -- instead of handing this one back, so the buffer can be picked up again
+  -- if the repository comes back.  It is *not* `M.detach`: this runs inside
+  -- `repo_manager`'s `on_delete` emit, where re-entering the manager would
+  -- dispose the repository that is still being announced.
+  st.abandoned = true
   st.repo = nil
   clear_layers(st.bufnr)
+  keymap.detach(st.bufnr)
   blame.detach(st.bufnr)
   st.refresh_cancel()
   unobserve(st)
@@ -272,14 +280,39 @@ end
 ---
 --- `'signcolumn'` is a *window* option: `vim.wo[bufnr]` would not take effect,
 --- so the buffer's windows are looked up and each one set.
+---
+--- With `signcolumn = false` the option is the user's to keep, so all that is
+--- left is to say *once* that the column they set hides the signs (07 §8): a
+--- silently sign-free buffer is the worst of the three outcomes.
 ---@param bufnr integer
 local function set_signcolumn(bufnr)
   local sc = config.get().signcolumn
+  local windows = vim.fn.win_findbuf(bufnr)
   if sc == false then
+    local current = #windows > 0 and vim.wo[windows[1]].signcolumn or vim.o.signcolumn
+    if current == 'no' or current == 'number' then
+      vim.notify_once(
+        'vcssign: `signcolumn` is ' .. current .. ', so no signs will show',
+        vim.log.levels.WARN
+      )
+    end
     return
   end
-  for _, win in ipairs(vim.fn.win_findbuf(bufnr)) do
+  for _, win in ipairs(windows) do
     vim.wo[win].signcolumn = sc
+  end
+end
+
+--- Re-apply `config.signcolumn` to the windows showing `bufnr`.
+---
+--- `M.attach` runs from `BufReadPost`, which can be *before* the buffer has a
+--- window, and `:split` adds windows later on; both would keep the global
+--- value.  `vcssign.autocmds` calls this from `WinEnter`, which fires for
+--- every buffer, hence the cheap no-op for buffers this module does not own.
+---@param bufnr integer
+function M.reapply_signcolumn(bufnr)
+  if M._bufs[bufnr] then
+    set_signcolumn(bufnr)
   end
 end
 
@@ -316,10 +349,14 @@ function M.attach(bufnr)
   -- Idempotent: a second attach for the same path must not spawn anything.
   local prev = M._bufs[bufnr]
   if prev then
-    if prev.path == path then
+    if prev.path == path and not prev.abandoned then
       return prev
     end
-    -- `:saveas` / `:e` renamed the buffer onto another file.
+    -- Either `:saveas` / `:e` renamed the buffer onto another file, or the
+    -- repository we were attached to went away (`abandoned`).  A buffer that
+    -- was *never* in a repository also has `attached == false`, but it is not
+    -- abandoned: it keeps answering with the cached state, or every `BufEnter`
+    -- would run detection again.
     M.detach(bufnr)
   end
 
@@ -331,6 +368,7 @@ function M.attach(bufnr)
     hunks = {},
     untracked = false,
     attached = false,
+    abandoned = false,
     enabled = true,
     shown = true,
     ready = false,
@@ -435,6 +473,25 @@ function M.mark_dirty(bufnr)
   st.refresh()
 end
 
+--- Rebuild a state that has answered "no repository", so the pipeline can try
+--- again.
+---
+--- `M.attach` hands such a state back on purpose: re-probing there would run
+--- detection for every `BufEnter` of every file that lives outside a working
+--- copy.  An explicit request is different — `:Vcssign refresh` and `toggle`
+--- are the user saying "look again", and that is how a repository created
+--- after the buffer was opened is picked up without a `:e!`.
+---@param bufnr integer
+---@return vcssign.AttachState? st  the old state, or a fresh one
+local function revive(bufnr)
+  local st = M._bufs[bufnr]
+  if not st or st.attached or not st.ready then
+    return st
+  end
+  M.detach(bufnr)
+  return M.attach(bufnr)
+end
+
 --- Turn this buffer's signs on or off (what `:Vcssign toggle` does).
 ---
 --- Off clears the column and stops the refresh work; on re-renders from a
@@ -444,9 +501,16 @@ end
 ---@return boolean? shown  the new state, nil when the buffer cannot be attached
 function M.toggle(bufnr)
   bufnr = bufnr or api.nvim_get_current_buf()
-  local st = M._bufs[bufnr] or M.attach(bufnr)
+  local prev = M._bufs[bufnr]
+  local st = revive(bufnr) or M.attach(bufnr)
   if not st then
     return nil
+  end
+  if st ~= prev then
+    -- No state at all, or one that had answered "no repository": its switch
+    -- was effectively off, so this press turns the signs *on* instead of
+    -- flipping a state that was just built straight back off.
+    return st.shown
   end
   st.shown = not st.shown
   if st.shown then
@@ -467,12 +531,24 @@ end
 ---@param bufnr integer
 ---@param cb? fun(err: string?)
 function M.refresh(bufnr, cb)
-  local st = M._bufs[bufnr]
-  if not st or not st.attached or not st.repo then
+  local st = revive(bufnr)
+  if not st then
     if cb then
       cb('not attached')
     end
     return
+  end
+  if not st.attached then
+    -- Revived, or still loading: wait for the pipeline's own answer and only
+    -- then read the baseline, so `cb(nil)` keeps meaning "the signs are
+    -- current now".  A state that answered "no repository" calls back with
+    -- the error instead of looping.
+    return M.ready(bufnr, function(err, ready)
+      if not ready then
+        return cb and cb(err or 'not attached')
+      end
+      M.refresh(bufnr, cb)
+    end)
   end
   load_base(st, function()
     if M._bufs[bufnr] ~= st or not st.attached then
@@ -609,6 +685,7 @@ end
 function M.forget_all()
   for _, st in pairs(M._bufs) do
     clear_layers(st.bufnr)
+    keymap.detach(st.bufnr)
     blame.detach(st.bufnr)
     st.refresh_cancel()
     unobserve(st)

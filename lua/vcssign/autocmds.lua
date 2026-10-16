@@ -93,6 +93,13 @@ function M.setup()
     M.detach_buffer(args.buf)
   end)
 
+  -- `'signcolumn'` is a window option and `attach` can run before the buffer
+  -- has a window (`nvim file`, a later `:split`), so every window that starts
+  -- showing an attached buffer gets `config.signcolumn` re-applied.
+  subscribe('WinEnter', function(args)
+    attach.reapply_signcolumn(args.buf)
+  end)
+
   -- The worktree and the index may disagree again the moment the file lands on
   -- disk.  `on_lines` already covers an edit, but `:w` can happen with no text
   -- change at all (a write after an external edit), so the event gets its own

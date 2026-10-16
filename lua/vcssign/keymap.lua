@@ -45,7 +45,9 @@ end
 --- `dispatch` says so.  When a later step lands, its entry is added here and
 --- nothing else in this file changes.
 ---@type table<string, fun(ctx: vcssign.KeymapCtx)>
-local ACTIONS = {
+--- Exported for `test/doc_spec.lua`, which pins that every default keymap
+--- action is either in here or on the honest placeholder list below.
+M.ACTIONS = {
   next_hunk = function(ctx)
     return navigator().next(ctx.bufnr, ctx.count, ctx)
   end,
@@ -95,6 +97,18 @@ local ACTIONS = {
   end,
 }
 
+--- The default keymaps whose action this milestone does not implement.
+---
+--- They stay in `config.defaults.keymaps` (the key surface is frozen) and keep
+--- answering with a single `notify_once`; `test/doc_spec.lua` pins that nothing
+--- *else* on the default surface is a placeholder, so an action name cannot
+--- quietly join this list.
+---@type table<string, boolean>
+M.PLACEHOLDERS = {
+  setqflist = true,
+  setqflist_all = true,
+}
+
 --- Run one action for one buffer.
 ---@param action string
 ---@param opts? { bufnr?: integer, count?: integer, wrap?: boolean }
@@ -106,7 +120,7 @@ function M.dispatch(action, opts)
     count = (opts and opts.count) or vim.v.count1,
     wrap = opts and opts.wrap,
   }
-  local fn = ACTIONS[action]
+  local fn = M.ACTIONS[action]
   if fn then
     return fn(ctx)
   end
@@ -134,19 +148,21 @@ end
 
 --- Remove the mappings this module installed for `bufnr`.
 ---
---- Only the configured `lhs` are touched and a mapping that is not there is not
---- an error — autocmds drive `attach`/`detach`, and a `:e!` cycle runs both.
---- vim keeps one mapping per lhs, so a user mapping on the same lhs was
---- overwritten while the buffer was attached; deleting it here is the honest
---- counterpart of having installed it.
+--- Only the `lhs` this module actually installed are touched — the value must
+--- be a string, the same test `M.attach` applies, so a key the user set to
+--- `false` or mapped to a function of their own is left alone.  A mapping that
+--- is not there is not an error: autocmds drive `attach`/`detach`, and a `:e!`
+--- cycle runs both.
 ---@param bufnr integer
 function M.detach(bufnr)
   local maps = config.get().keymaps
   if maps == false then
     return
   end
-  for lhs in pairs(maps) do
-    pcall(vim.keymap.del, 'n', lhs, { buffer = bufnr })
+  for lhs, action in pairs(maps) do
+    if type(action) == 'string' then
+      pcall(vim.keymap.del, 'n', lhs, { buffer = bufnr })
+    end
   end
 end
 
