@@ -340,7 +340,7 @@ commit = { message_input = 'input' },
 | 3 | `hunk.lua`（类型/`from_indices`/`sort`/`dedupe`/`filter_common`/`build_patch`/`lines_of`）+ `diff.lua`（`vim.text.diff` 封装）；`hunk_spec` 约 12、`diff_spec` 约 8 | ✅ **已完成**（`5e8e485`，125 → 158 用例） |
 | 4 | 适配器新接口 `show/is_tracked/blame/apply_patch/revert`；`VcsCaps` 换字段；`vcs_git_spec`/`vcs_svn_spec` 各约 10–12 | ✅ **已完成**（`7acc713`，150 用例；两处探针结论在 `e6c4f1b` 更正） |
 | 5 | `signs.lua`（双命名空间 + 放置规则 + numhl/linehl）+ `attach.lua`（守卫/基线/diff/渲染/`nvim_buf_attach`）；`attach_spec` 约 14 | ✅ **已完成**（`6eaef2b`，150 → 178 用例） |
-| 6 | 刷新触发（`on_lines` 防抖 / `on_reload` / `repo:on_update`）+ 生命周期 autocmd + 开关；`autocmds_spec` 10→约 12、`cli_spec` 17→约 14 | ⬜ 待做（入口见 §6.2 / §6.4） |
+| 6 | 刷新触发（`on_lines` 防抖 / `on_reload` / `repo:on_update`）+ 生命周期 autocmd + 开关；`autocmds_spec` 10→12、`cli_spec` 11→13、`attach_spec` 14→16 | ✅ **已完成**（`2193802`，178 → **184** 用例，全绿） |
 | 7 | git 暂存态双层 sign（`filter_common(HEAD↔buf, unstaged)` + `signs_staged` 高亮） | ⬜ 待做（入口见 §6.2 / §6.4） |
 | 8 | `nav.lua`（`]c`/`[c`，计数/环绕）+ `keymap.lua`；`nav_spec` 约 8 | ⬜ 待做（入口见 §6.2 / §6.4） |
 | 9 | hunk 级动作（`stage_hunk`/`unstage_hunk`/`reset_hunk`/`stage_buffer`/`reset_buffer`/`preview_hunk`）+ CLI；`actions_spec` 24→约 30 | ⬜ 待做（入口见 §6.2 / §6.4） |
@@ -355,7 +355,7 @@ commit = { message_input = 'input' },
 
 ---
 
-### §6.1 已落地（截至 `6eaef2b`）
+### §6.1 已落地（截至 `2193802`）
 
 | SHA | 提交 | 验证（`make test`） |
 |---|---|---|
@@ -368,6 +368,7 @@ commit = { message_input = 'input' },
 | `e6c4f1b` | `fix(vcs)`：svn 追踪判定改用 `svn info` + 07 两处实测更正 | **151** |
 | `6eaef2b` | Step 5：`signs.lua` + `attach.lua` | 150 → **178** |
 | `e4142b0` | 本文档：Step 1–5 标完成 + §6.1–§6.4 交接说明（纯文档） | — |
+| `2193802` | Step 6：自动触发、生命周期与逐缓冲开关（`autocmds` / `cli` / `init` 接到 `attach`） | 178 → **184**，全绿；本步动到的三个 spec 单跑 **41/41** |
 
 **Step 2 引入的回归（交接要点，别再踩）**：Step 2 把监听集收敛成「只监听 metadata 目录」（D38），
 而 **libuv 从不报告「被监听目录自身消失」** —— 实测：把 `.git` 改名走，挂在 `.git` 上的 handler
@@ -385,6 +386,20 @@ rename 事件（3 events）。于是工作副本被删后 `Repo` 不会自杀，
 
 **工程门（`6eaef2b` 实测）**：`make test` **178/178**、`make format-check` 零输出、
 `make lint` → `0 warnings / 0 errors in 35 files`；工作区干净（只有 `.pi/` 计划目录未跟踪）。
+
+**工程门（`2193802` 实测）**：`make test` **184/184**、本步动到的三个 spec 单跑 **41/41**、
+`make format-check` 零输出、`make lint` → `0 warnings / 0 errors in 35 files`。
+
+**Step 6 的三个红都是「等待条件不够」，实现没问题**（用例注释已写明，别再踩）：
+1. `:Vcssign refresh` 会起**两条异步链**：仓库检测（绑 `cmd:` 引用）与缓冲区自己那次
+   `attach`（绑 `attach:<bufnr>` 引用）。断言 `ref_count` 之前必须等
+   `attach.state(bufnr).attached`，否则在**全量**运行里（前面的 spec 会留下在飞的检测）
+   会读到只到位一半的引用数 —— 而单跑同一个 spec 反而过得去，是典型的顺序敏感 flake。
+2. `toggle` 重新打开是**异步**的：它重读基线再渲染，`sign_count` 不会在下一次 `cli.run`
+   返回时就有值；断言要 `wait_for`。
+3. `VimLeavePre` 用例原本只等 `repo.has_loaded and not repo.is_updating`（覆盖 `Repo` 自己
+   的探测）。Step 6 之后 `attach` 的 `load_base` 也会起 `exec`，而在飞命令的超时 timer 不
+   受 `VimLeavePre` 影响（用例注释本来就承认这一半），所以等待条件要再补一条「缓冲区已渲染」。
 
 **stderr 合同要留意**：进程 stderr 的行数会在 **0/1 之间浮动**。那一行来自 `repo_spec` 的 retry 用例
 （`with_config({ exec_timeout_ms = 1 })`）里 `log.warn` 打出的超时告警，是否出现取决于命令有没有在
