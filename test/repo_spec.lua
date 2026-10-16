@@ -457,7 +457,11 @@ return {
             end, 'the refresh to fail')
 
             -- The cache is untouched, the failure is remembered, a retry queued.
-            eq(helpers.status_set(repo:entries()), cached, 'a failed run keeps the last good status')
+            eq(
+              helpers.status_set(repo:entries()),
+              cached,
+              'a failed run keeps the last good status'
+            )
             ok(repo.last_error ~= nil, 'the error must be remembered')
             ok(repo._retry_timer ~= nil, 'a backoff retry must be scheduled')
             eq(errors, 1, 'on_error must fire once per failed run')

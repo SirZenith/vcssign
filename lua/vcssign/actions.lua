@@ -193,25 +193,25 @@ function M.open(target, opts)
 
   local escaped = vim.fn.fnameescape(t.path)
   ---@type boolean, any
-  local ok, err
+  local ok, open_err
   if opts and opts.tab then
-    ok, err = pcall(vim.cmd, 'tabedit ' .. escaped)
+    ok, open_err = pcall(vim.cmd, 'tabedit ' .. escaped)
   else
     local win = editor_window()
     if win == nil then
       -- Nothing but sidebars (and other non-ordinary windows) on screen: give
       -- the file a window of its own rather than taking the sidebar's.
-      ok, err = pcall(vim.cmd, 'vsplit ' .. escaped)
+      ok, open_err = pcall(vim.cmd, 'vsplit ' .. escaped)
     else
       vim.api.nvim_set_current_win(win)
-      ok, err = pcall(vim.cmd, 'edit ' .. escaped)
+      ok, open_err = pcall(vim.cmd, 'edit ' .. escaped)
     end
   end
   if not ok then
     -- `:vsplit` fails for want of room (E36), and this runs inside an async
     -- command callback: an uncaught error would surface as "Error in callback"
     -- instead of as an answer to the key the user pressed.
-    fail(tostring(err))
+    fail(tostring(open_err))
   end
 end
 
@@ -430,7 +430,11 @@ function M.commit(target, opts)
       if cmd_err then
         return fail(cmd_err)
       end
-      info('committed %s%s', t.rel_path, summary and summary ~= '' and (' (' .. summary .. ')') or '')
+      info(
+        'committed %s%s',
+        t.rel_path,
+        summary and summary ~= '' and (' (' .. summary .. ')') or ''
+      )
       repo:refresh_now()
     end)
   end

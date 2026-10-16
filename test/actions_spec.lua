@@ -209,7 +209,10 @@ return {
       eq(seen[1].level, vim.log.levels.INFO)
       -- The VCS agrees, and the worktree side is gone (staged *and* modified
       -- would mean the file was touched again after staging).
-      eq(helpers.sh({ 'git', '-C', dir, 'diff', '--cached', '--name-only' }):gsub('%s+$', ''), 'base.txt')
+      eq(
+        helpers.sh({ 'git', '-C', dir, 'diff', '--cached', '--name-only' }):gsub('%s+$', ''),
+        'base.txt'
+      )
       eq(entry_of(repo, 'base.txt').status.worktree, nil)
     end),
   },
@@ -289,7 +292,10 @@ return {
           return #s > 0
         end)
       end)
-      eq(helpers.sh({ 'git', '-C', dir, 'log', '-1', '--format=%s' }):gsub('%s+$', ''), 'feat: change base')
+      eq(
+        helpers.sh({ 'git', '-C', dir, 'log', '-1', '--format=%s' }):gsub('%s+$', ''),
+        'feat: change base'
+      )
       ok(seen[1].message:find('committed base.txt', 1, true), seen[1].message)
       -- The index is clean again, so the sidebar's list empties out.
       helpers.wait_for(function()
@@ -434,7 +440,8 @@ return {
       helpers.wait_for(function()
         return vim.api.nvim_get_current_win() ~= before
       end, 'the diff window')
-      local text = table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_get_current_buf(), 0, -1, false), '\n')
+      local text =
+        table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_get_current_buf(), 0, -1, false), '\n')
       ok(has_line(text, '+changed'), 'the staged line is in the diff:\n' .. text)
       ok(not has_line(text, '+changed again'), 'the newer worktree edit is not:\n' .. text)
     end),
@@ -511,7 +518,10 @@ return {
       vim.api.nvim_win_set_cursor(win, { 1, 0 })
 
       actions.open(entry(repo, 'base.txt'))
-      ok(same_path(vim.api.nvim_buf_get_name(0), dir .. '/base.txt'), 'the file is in the current window')
+      ok(
+        same_path(vim.api.nvim_buf_get_name(0), dir .. '/base.txt'),
+        'the file is in the current window'
+      )
       ok(win_of(sidebar_buf) ~= nil, 'and the sidebar is still on screen')
       ok(vim.api.nvim_get_current_win() ~= win, 'the sidebar window was not taken over')
     end),
@@ -600,7 +610,6 @@ return {
       helpers.wait_for(function()
         return entry_of(outer_repo, 'inner/') ~= nil
       end, 'the outer repository to list the nested checkout')
-
 
       -- The row belongs to the outer repository: its `rel_path` is relative to
       -- the outer root, and handing that to the inner repository (which is what
@@ -714,7 +723,10 @@ return {
         -- The warning about the unimplemented mode, then the normal answer.
         ok(seen[1].message:find('not implemented', 1, true), seen[1].message)
         eq(seen[1].level, vim.log.levels.WARN)
-        eq(helpers.sh({ 'git', '-C', dir, 'log', '-1', '--format=%s' }):gsub('%s+$', ''), 'fallback still works')
+        eq(
+          helpers.sh({ 'git', '-C', dir, 'log', '-1', '--format=%s' }):gsub('%s+$', ''),
+          'fallback still works'
+        )
       end)
     end),
   },

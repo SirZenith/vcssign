@@ -171,8 +171,15 @@ return {
       eq(vim.wo[win].spell, false)
       eq(vim.wo[win].winfixwidth, true)
       eq(vim.api.nvim_win_get_width(win), config.get().sidebar.width)
-      ok(vim.api.nvim_win_get_position(win)[2] >= vim.o.columns / 2, 'the default position is the right edge')
-      eq(#vim.api.nvim_tabpage_list_wins(0), 2, 'the sidebar splits, it does not replace the window')
+      ok(
+        vim.api.nvim_win_get_position(win)[2] >= vim.o.columns / 2,
+        'the default position is the right edge'
+      )
+      eq(
+        #vim.api.nvim_tabpage_list_wins(0),
+        2,
+        'the sidebar splits, it does not replace the window'
+      )
       eq(vim.api.nvim_get_current_win(), win, 'open focuses the sidebar')
     end),
   },
@@ -235,7 +242,7 @@ return {
     fn = guarded(function()
       reset()
       local repo = repo_with_changes('sidebar-toggle')
-      local state, bufnr, win = open_sidebar(repo)
+      local state, bufnr = open_sidebar(repo)
 
       sidebar.toggle(repo)
       eq(sidebar.is_open(repo), false, 'a focused sidebar closes')
@@ -572,9 +579,15 @@ return {
         eq(#captured, 1, 'the user is told')
         eq(captured[1].level, vim.log.levels.WARN)
         ok(captured[1].message:find('float', 1, true), captured[1].message)
-        ok(captured[1].message:find('right', 1, true), 'and what happened instead: ' .. captured[1].message)
+        ok(
+          captured[1].message:find('right', 1, true),
+          'and what happened instead: ' .. captured[1].message
+        )
         local win = sidebar.win(repo)
-        ok(vim.api.nvim_win_get_position(win)[2] >= vim.o.columns / 2, 'the sidebar is on the right')
+        ok(
+          vim.api.nvim_win_get_position(win)[2] >= vim.o.columns / 2,
+          'the sidebar is on the right'
+        )
       end)
     end),
   },
@@ -628,7 +641,10 @@ return {
       ok(sidebar.state(git_repo) ~= nil and sidebar.state(svn_repo) ~= nil, 'both are tracked')
       local git_buf, svn_buf = sidebar.bufnr(git_repo), sidebar.bufnr(svn_repo)
       ok(git_buf ~= svn_buf, 'two buffers, not one shared by accident')
-      ok(vim.api.nvim_buf_get_name(svn_buf):find('vcssign://svn/', 1, true), 'named for its own system')
+      ok(
+        vim.api.nvim_buf_get_name(svn_buf):find('vcssign://svn/', 1, true),
+        'named for its own system'
+      )
 
       sidebar.close(git_repo)
       eq(sidebar.is_open(git_repo), false)
@@ -668,7 +684,10 @@ return {
       end)
       ok(captured[1].message:find('cannot load the action layer', 1, true), captured[1].message)
       eq(captured[1].level, vim.log.levels.ERROR)
-      ok(not captured[1].message:find('not implemented', 1, true), 'a load failure is not a missing feature')
+      ok(
+        not captured[1].message:find('not implemented', 1, true),
+        'a load failure is not a missing feature'
+      )
       package.preload['vcssign.actions'] = nil
 
       -- And an action the module simply does not have is named as such.

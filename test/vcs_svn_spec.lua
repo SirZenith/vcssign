@@ -214,7 +214,10 @@ return {
       local unstage_err = helpers.wait(function(cb)
         svn.unstage(repo, { 'base.txt' }, cb)
       end)
-      ok(unstage_err and unstage_err:match('capability unsupported'), 'unstage must report unsupported')
+      ok(
+        unstage_err and unstage_err:match('capability unsupported'),
+        'unstage must report unsupported'
+      )
     end,
   },
   {

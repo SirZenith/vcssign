@@ -61,26 +61,30 @@ local warned_no_show_item = false
 ---@param path string
 ---@param cb fun(err: string?, root: string?)
 function M.get_root_async(path, cb)
-  exec.run(build({ 'info', '--show-item', 'wc-root' }), { cwd = base.dirname_of(path) }, function(err, res)
-    if not err then
-      local root = exec.split_lines(res.stdout)[1]
-      if root and root ~= '' then
-        return cb(nil, base.normalize(root))
+  exec.run(
+    build({ 'info', '--show-item', 'wc-root' }),
+    { cwd = base.dirname_of(path) },
+    function(err, res)
+      if not err then
+        local root = exec.split_lines(res.stdout)[1]
+        if root and root ~= '' then
+          return cb(nil, base.normalize(root))
+        end
+        err = 'svn: empty wc-root output'
       end
-      err = 'svn: empty wc-root output'
-    end
-    if err:lower():match('invalid option') or err:lower():match('unknown option') then
-      if not warned_no_show_item then
-        warned_no_show_item = true
-        vim.notify(
-          'vcssign: this svn does not support --show-item (< 1.9); using the marker scan for root detection',
-          vim.log.levels.WARN
-        )
+      if err:lower():match('invalid option') or err:lower():match('unknown option') then
+        if not warned_no_show_item then
+          warned_no_show_item = true
+          vim.notify(
+            'vcssign: this svn does not support --show-item (< 1.9); using the marker scan for root detection',
+            vim.log.levels.WARN
+          )
+        end
+        return cb(nil, M.find_root_sync(path))
       end
-      return cb(nil, M.find_root_sync(path))
+      cb(err)
     end
-    cb(err)
-  end)
+  )
 end
 
 -- ▏ status ───────────────────────────────────────────────────────────────────

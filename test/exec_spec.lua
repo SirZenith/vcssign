@@ -32,10 +32,14 @@ return {
     fn = function()
       local res
       local err = helpers.wait(function(cb)
-        exec.run({ 'git', 'status', '--definitely-not-an-option' }, { cwd = helpers.plugin_root }, function(e, r)
-          res = r
-          cb(e)
-        end)
+        exec.run(
+          { 'git', 'status', '--definitely-not-an-option' },
+          { cwd = helpers.plugin_root },
+          function(e, r)
+            res = r
+            cb(e)
+          end
+        )
       end)
       ok(err ~= nil, 'a failing command must report an error')
       ok(err:match('^exit %d+: ') ~= nil, 'the error must name the exit code: ' .. tostring(err))
@@ -52,10 +56,14 @@ return {
       -- binary, so this must be caught inside `exec.run`.
       local raised = pcall(function()
         err = helpers.wait(function(cb)
-          exec.run({ 'vcssign-does-not-exist-' .. tostring(vim.uv.hrtime()) }, { cwd = helpers.plugin_root }, function(e)
-            called = called + 1
-            cb(e)
-          end)
+          exec.run(
+            { 'vcssign-does-not-exist-' .. tostring(vim.uv.hrtime()) },
+            { cwd = helpers.plugin_root },
+            function(e)
+              called = called + 1
+              cb(e)
+            end
+          )
         end)
       end)
       eq(raised, true, 'the failure must be delivered through the callback')

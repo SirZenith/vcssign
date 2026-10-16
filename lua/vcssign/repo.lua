@@ -317,22 +317,26 @@ function M:_schedule_retry()
   end
   self._retry_timer = timer
   log.debug('%s: retrying in %dms', self.root, delay)
-  timer:start(delay, 0, vim.schedule_wrap(function()
-    local armed = self._retry_timer == timer
-    if armed then
-      self._retry_timer = nil
-    end
-    timer:stop()
-    if not timer:is_closing() then
-      timer:close()
-    end
-    -- `_cancel_retry` may have closed the timer while this callback was
-    -- already queued (a successful run landed between firing and this
-    -- tick): a cancelled retry must not spawn another run.
-    if armed and not self.is_deleted then
-      self:_do_refresh()
-    end
-  end))
+  timer:start(
+    delay,
+    0,
+    vim.schedule_wrap(function()
+      local armed = self._retry_timer == timer
+      if armed then
+        self._retry_timer = nil
+      end
+      timer:stop()
+      if not timer:is_closing() then
+        timer:close()
+      end
+      -- `_cancel_retry` may have closed the timer while this callback was
+      -- already queued (a successful run landed between firing and this
+      -- tick): a cancelled retry must not spawn another run.
+      if armed and not self.is_deleted then
+        self:_do_refresh()
+      end
+    end)
+  )
 end
 
 ---@private
@@ -429,9 +433,13 @@ function M:_watch(path, recursive)
   end
   -- libuv callbacks run in a fast event context (verified), so everything the
   -- handler touches has to be dispatched to the main loop first.
-  local ok, err = handle:start(path, recursive and { recursive = true } or {}, vim.schedule_wrap(function(e, filename, events)
-    self:_on_fs_event(path, e, filename, events)
-  end))
+  local ok, err = handle:start(
+    path,
+    recursive and { recursive = true } or {},
+    vim.schedule_wrap(function(e, filename, events)
+      self:_on_fs_event(path, e, filename, events)
+    end)
+  )
   if not ok then
     log.debug('cannot watch %s: %s', path, tostring(err))
     if not handle:is_closing() then
