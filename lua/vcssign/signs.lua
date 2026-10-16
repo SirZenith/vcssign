@@ -184,6 +184,32 @@ function M.define_highlights()
   end
 end
 
+--- The buffer line a hunk's sign hangs on (§3.2).
+---
+--- This rule is also what `nav` uses to decide where `]c` / `[c` land, so it
+--- lives here rather than being spelled out twice: the mark the user sees and
+--- the line the cursor jumps to are the same line by construction.
+---
+--- `add`/`change`/`untracked`/`changedelete` anchor on the hunk's first added
+--- line; `delete` hangs on the line *above* the removed block (there is no
+--- removed line in the buffer to hold it); `topdelete` is a `delete` at the
+--- very top, so it has no line above and hangs on line 1 instead.
+---@param h vcssign.Hunk
+---@return integer? lnum  1-based, nil for a hunk type with no anchor
+function M.sign_line(h)
+  local ty = h.type
+  if ty == 'delete' then
+    return h.removed.start - 1
+  end
+  if ty == 'topdelete' then
+    return 1
+  end
+  if ty == 'add' or ty == 'change' or ty == 'untracked' or ty == 'changedelete' then
+    return h.added.start
+  end
+  return nil
+end
+
 --- Draw `hunks` into one namespace, as a full re-render of that layer.
 ---
 --- The namespace is cleared first: `place` is "this layer's whole picture",
@@ -241,16 +267,14 @@ function M.place(bufnr, hunks, opts)
         end
         put(h.added.start + i, line_ty)
       end
-    elseif ty == 'topdelete' then
-      -- removed.start == 1 (decided by hunk.lua): there is no line above.
-      put(1, 'topdelete')
-    elseif ty == 'delete' then
-      -- §3.2: the sign hangs on the line *above* the removed block.
-      put(h.removed.start - 1, 'delete')
-    elseif ty == 'changedelete' then
-      -- hunk.lua never produces this; an externally built hunk is rendered as
-      -- a change whose (single) added line is the changedelete.
-      put(h.added.start, 'changedelete')
+    elseif ty == 'topdelete' or ty == 'delete' or ty == 'changedelete' then
+      -- One sign, placed by the shared rule.  hunk.lua never produces
+      -- `changedelete`; an externally built hunk is rendered as a change whose
+      -- (single) added line is the changedelete.
+      local lnum = M.sign_line(h)
+      if lnum then
+        put(lnum, ty)
+      end
     end
   end
   return placed
