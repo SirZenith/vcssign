@@ -22,7 +22,10 @@ function M.get(name)
   end
   local ok, system = pcall(require, path)
   if not ok then
-    vim.notify(string.format('vcssign: failed to load VCS system %q: %s', name, system), vim.log.levels.ERROR)
+    vim.notify(
+      string.format('vcssign: failed to load VCS system %q: %s', name, system),
+      vim.log.levels.ERROR
+    )
     return nil
   end
   return system

@@ -75,7 +75,10 @@ return {
       -- A .git file whose gitdir points nowhere is debris too (a worktree whose
       -- main repository is gone).
       vim.fn.delete(vim.fs.joinpath(dir, '.git'), 'rf')
-      vim.fn.writefile({ 'gitdir: ' .. vim.fs.joinpath(dir, 'missing-gitdir') }, vim.fs.joinpath(dir, '.git'))
+      vim.fn.writefile(
+        { 'gitdir: ' .. vim.fs.joinpath(dir, 'missing-gitdir') },
+        vim.fs.joinpath(dir, '.git')
+      )
       eq(git.find_root_sync(dir), nil)
 
       vim.fn.delete(dir, 'rf')

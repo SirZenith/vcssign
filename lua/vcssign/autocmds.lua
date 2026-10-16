@@ -97,7 +97,10 @@ function M.setup()
   ---@param event string|string[]
   ---@param callback function
   local function subscribe(event, callback, opts)
-    vim.api.nvim_create_autocmd(event, vim.tbl_extend('force', { group = group, callback = callback }, opts or {}))
+    vim.api.nvim_create_autocmd(
+      event,
+      vim.tbl_extend('force', { group = group, callback = callback }, opts or {})
+    )
   end
 
   -- Files: attaching on both events covers `nvim file` (BufReadPost, before the

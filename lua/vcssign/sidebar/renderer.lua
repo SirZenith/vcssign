@@ -102,7 +102,8 @@ local function primary_status(status)
   if worktree == nil then
     return index
   end
-  return status_type.sign_priority(worktree) > status_type.sign_priority(index) and worktree or index
+  return status_type.sign_priority(worktree) > status_type.sign_priority(index) and worktree
+    or index
 end
 
 --- How badly a row wants attention.  The same ranking the sign column uses, so

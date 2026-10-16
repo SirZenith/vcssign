@@ -48,16 +48,6 @@ end
 -- asynchronously, so a case has to wait for its notification while the stub
 -- is still in place.
 local collect = helpers.capture_notify
----@param repo vcssign.Repo
----@param rel string
----@return vcssign.StatusEntry
-local function entry(repo, rel)
-  local found = helpers.entry(repo:entries(), rel)
-  if not found then
-    error('no status entry for ' .. rel, 2)
-  end
-  return found
-end
 
 --- A git repo with one modified file, *not* attached yet.
 ---@param name string
@@ -93,7 +83,6 @@ return {
       eq(sidebar.open_count(), 1)
       eq(manager.count(), 1)
       ok(manager.get_by_path(dir .. '/base.txt') ~= nil, 'the repository is tracked now')
-
 
       -- No argument at all is the same as `toggle` (04 §3).
       cli.run({})
@@ -186,7 +175,10 @@ return {
         end, 'the file to be staged')
       end)
       ok(seen[1].message:find('staged base.txt', 1, true), seen[1].message)
-      eq(helpers.sh({ 'git', '-C', dir, 'diff', '--cached', '--name-only' }):gsub('%s+$', ''), 'base.txt')
+      eq(
+        helpers.sh({ 'git', '-C', dir, 'diff', '--cached', '--name-only' }):gsub('%s+$', ''),
+        'base.txt'
+      )
     end),
   },
   {
@@ -241,7 +233,10 @@ return {
           return found ~= nil and found.status.index == 'modified'
         end, 'the file under the cursor to be staged')
       end)
-      eq(helpers.sh({ 'git', '-C', dir, 'diff', '--cached', '--name-only' }):gsub('%s+$', ''), 'base.txt')
+      eq(
+        helpers.sh({ 'git', '-C', dir, 'diff', '--cached', '--name-only' }):gsub('%s+$', ''),
+        'base.txt'
+      )
     end),
   },
   {
@@ -260,7 +255,10 @@ return {
       end)
       eq(seen[1].level, vim.log.levels.INFO, 'not an error: most directories are not repositories')
       ok(seen[1].message:find('no repository found', 1, true), seen[1].message)
-      ok(seen[1].message:find(elsewhere, 1, true), 'and it names the path it looked at: ' .. seen[1].message)
+      ok(
+        seen[1].message:find(elsewhere, 1, true),
+        'and it names the path it looked at: ' .. seen[1].message
+      )
       eq(sidebar.count(), 0)
       vim.fn.delete(elsewhere, 'rf')
     end),
@@ -446,7 +444,11 @@ return {
       -- repository — which is not tracked yet, so the honest answer is "not
       -- yet", not the outer repository's view of the file.
       eq(vcssign.get_status(inner .. '/base.txt'), nil)
-      eq(vcssign.get_status(outer .. '/base.txt').worktree, 'modified', 'the outer file is answered from the outer cache')
+      eq(
+        vcssign.get_status(outer .. '/base.txt').worktree,
+        'modified',
+        'the outer file is answered from the outer cache'
+      )
 
       -- The cold call warmed the inner repository up.
       helpers.wait_for(function()

@@ -94,7 +94,15 @@ return {
       reset()
       autocmds.setup()
       local events = watched()
-      for _, event in ipairs({ 'BufReadPost', 'BufEnter', 'BufDelete', 'BufWipeout', 'DirChanged', 'FocusGained', 'VimLeavePre' }) do
+      for _, event in ipairs({
+        'BufReadPost',
+        'BufEnter',
+        'BufDelete',
+        'BufWipeout',
+        'DirChanged',
+        'FocusGained',
+        'VimLeavePre',
+      }) do
         eq(events[event], true, event .. ' is watched')
       end
       -- Calling setup() again replaces the group instead of doubling it: two
@@ -211,9 +219,9 @@ return {
 
       -- `:lcd` fires the same event but does not change the *global* directory,
       -- so it must not rebind the reference to an unrelated repository.
-      local elsewhere = vim.fn.tempname()
-      vim.fn.mkdir(elsewhere, 'p')
-      vim.cmd('lcd ' .. vim.fn.fnameescape(elsewhere))
+      local lcd_target = vim.fn.tempname()
+      vim.fn.mkdir(lcd_target, 'p')
+      vim.cmd('lcd ' .. vim.fn.fnameescape(lcd_target))
       vim.wait(100, function()
         return false
       end)

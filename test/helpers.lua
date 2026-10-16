@@ -35,11 +35,9 @@ function M.wait(fn, timeout)
     err, argc, values = e, select('#', ...), { ... }
     finished = true
   end)
-  if
-    not vim.wait(timeout or 30000, function()
-      return finished
-    end, 5)
-  then
+  if not vim.wait(timeout or 30000, function()
+    return finished
+  end, 5) then
     error('timeout: async operation never completed', 2)
   end
   return err, unpack(values, 1, argc)
@@ -79,7 +77,12 @@ function M.status_set(entries)
   for _, entry in ipairs(entries) do
     rows[#rows + 1] = {
       rel_path = entry.rel_path,
-      text = string.format('%s:%s/%s', entry.rel_path, entry.status.index or '-', entry.status.worktree or '-'),
+      text = string.format(
+        '%s:%s/%s',
+        entry.rel_path,
+        entry.status.index or '-',
+        entry.status.worktree or '-'
+      ),
     }
   end
   table.sort(rows, function(a, b)

@@ -177,21 +177,26 @@ function M.run(cmd, opts, cb)
     end
   end
 
-  local ok, started = pcall(vim.system, cmd, { cwd = opts.cwd, text = true, env = env }, function(res)
-    ---@type vcssign.ExecResult
-    local result = {
-      cmd = cmd,
-      code = res.code,
-      signal = res.signal or 0,
-      stdout = res.stdout or '',
-      stderr = res.stderr or '',
-    }
-    if res.code ~= 0 then
-      finish(M.error_message(result), result)
-    else
-      finish(nil, result)
+  local ok, started = pcall(
+    vim.system,
+    cmd,
+    { cwd = opts.cwd, text = true, env = env },
+    function(res)
+      ---@type vcssign.ExecResult
+      local result = {
+        cmd = cmd,
+        code = res.code,
+        signal = res.signal or 0,
+        stdout = res.stdout or '',
+        stderr = res.stderr or '',
+      }
+      if res.code ~= 0 then
+        finish(M.error_message(result), result)
+      else
+        finish(nil, result)
+      end
     end
-  end)
+  )
   proc = started
 
   if not ok then

@@ -75,7 +75,9 @@ end
 ---@return table[] extmark details with `sign_text`
 local function signs_at(bufnr, line)
   local found = {}
-  for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(bufnr, renderer.ns, 0, -1, { details = true })) do
+  for _, mark in
+    ipairs(vim.api.nvim_buf_get_extmarks(bufnr, renderer.ns, 0, -1, { details = true }))
+  do
     if mark[2] == line and mark[4].sign_text then
       found[#found + 1] = mark[4]
     end
@@ -97,7 +99,9 @@ end
 ---@param line integer
 ---@return string?
 local function line_hl(bufnr, line)
-  for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(bufnr, renderer.ns, 0, -1, { details = true })) do
+  for _, mark in
+    ipairs(vim.api.nvim_buf_get_extmarks(bufnr, renderer.ns, 0, -1, { details = true }))
+  do
     if mark[2] == line and mark[4].line_hl_group then
       return mark[4].line_hl_group
     end
@@ -170,19 +174,27 @@ return {
     name = 'long paths keep their tail and lose their head',
     fn = function()
       local deep = 'src/very/deeply/nested/directory/tree/with/a/file.txt'
-      local items = renderer.build({ entry(deep, { worktree = 'modified' }) }, { width = 30, group_by = 'none' })
+      local items = renderer.build(
+        { entry(deep, { worktree = 'modified' }) },
+        { width = 30, group_by = 'none' }
+      )
       local text = items[1].text
-      ok(vim.fn.strchars(text) <= 30 - renderer.sign_cells - 1, 'row text fits the budget, got ' .. text)
+      ok(
+        vim.fn.strchars(text) <= 30 - renderer.sign_cells - 1,
+        'row text fits the budget, got ' .. text
+      )
       eq(vim.fn.strcharpart(text, 0, 1), '…', 'the head is cut')
       ok(text:find('file.txt', 1, true), 'the file name survives, got ' .. text)
-      eq(text:sub(-#('file.txt')), 'file.txt', 'the tail is kept intact')
+      eq(text:sub(-#'file.txt'), 'file.txt', 'the tail is kept intact')
     end,
   },
   {
     name = 'a rename row shows where the file came from',
     fn = function()
-      local items =
-        renderer.build({ entry('new/name.txt', { index = 'renamed', orig_path = 'old/name.txt' }) }, { group_by = 'none' })
+      local items = renderer.build(
+        { entry('new/name.txt', { index = 'renamed', orig_path = 'old/name.txt' }) },
+        { group_by = 'none' }
+      )
       eq(items[1].text, 'new/name.txt (from old/name.txt)')
     end,
   },
@@ -240,7 +252,10 @@ return {
       local bufnr = scratch_buffer()
       renderer.draw(
         bufnr,
-        renderer.build({ entry('both.txt', { index = 'added', worktree = 'modified' }) }, { group_by = 'none' })
+        renderer.build(
+          { entry('both.txt', { index = 'added', worktree = 'modified' }) },
+          { group_by = 'none' }
+        )
       )
       local signs = signs_at(bufnr, 0)
       eq(#signs, 2, 'two signs')
@@ -270,7 +285,11 @@ return {
       }, { group_by = 'none' })
       renderer.draw(bufnr, items)
       for row = 1, #items do
-        eq(#signs_at(bufnr, row - 1), 1, 'one sign on row ' .. row .. ' (' .. items[row].text .. ')')
+        eq(
+          #signs_at(bufnr, row - 1),
+          1,
+          'one sign on row ' .. row .. ' (' .. items[row].text .. ')'
+        )
       end
       eq(signs_at(bufnr, row_of(items, 'edited.txt') - 1)[1].sign_text, ' M')
       eq(signs_at(bufnr, row_of(items, 'staged.txt') - 1)[1].sign_text, ' A')
@@ -285,7 +304,10 @@ return {
     fn = function()
       for _, status in pairs(status_type.StatusType) do
         ok(renderer.highlights[status_type.hl_group(status)] ~= nil, 'text group for ' .. status)
-        ok(renderer.highlights[status_type.sign_hl_group(status)] ~= nil, 'sign group for ' .. status)
+        ok(
+          renderer.highlights[status_type.sign_hl_group(status)] ~= nil,
+          'sign group for ' .. status
+        )
       end
       ok(renderer.highlights['VcssignHeader'] ~= nil, 'group headers')
       ok(renderer.highlights['VcssignError'] ~= nil, 'the error placeholder')
@@ -296,7 +318,11 @@ return {
     fn = function()
       vim.api.nvim_set_hl(0, 'VcssignAdded', { fg = 0x123456 })
       renderer.define_highlights()
-      eq(vim.api.nvim_get_hl(0, { name = 'VcssignAdded' }).fg, 0x123456, 'define_highlights must not stomp a user colour')
+      eq(
+        vim.api.nvim_get_hl(0, { name = 'VcssignAdded' }).fg,
+        0x123456,
+        'define_highlights must not stomp a user colour'
+      )
       -- Everything else is defined exactly as documented, because `default =
       -- true` leaves the field alone once somebody set it.
       for group, link in pairs(renderer.highlights) do
@@ -319,7 +345,9 @@ return {
       eq(loading[1].kind, 'banner')
       ok(loading[1].text:find('refreshing', 1, true), loading[1].text)
 
-      local failed = renderer.for_repo(fake_repo({}, { has_loaded = false, last_error = 'fatal: not a git repository' }))
+      local failed = renderer.for_repo(
+        fake_repo({}, { has_loaded = false, last_error = 'fatal: not a git repository' })
+      )
       eq(failed[1].kind, 'banner')
       ok(failed[1].text:find('not a git repository', 1, true), failed[1].text)
 
@@ -342,12 +370,22 @@ return {
       -- 40 columns is the default sidebar width: the budget is 35 characters,
       -- and the reason alone is 66 — the classic case where trimming the head
       -- (right for a path) would leave only the parenthetical tail.
-      renderer.draw(bufnr, renderer.for_repo(fake_repo({}, { has_loaded = false, last_error = reason }), 40))
+      renderer.draw(
+        bufnr,
+        renderer.for_repo(fake_repo({}, { has_loaded = false, last_error = reason }), 40)
+      )
       local banner = renderer.items(bufnr)[1]
       eq(banner.kind, 'banner')
       eq(vim.fn.strchars(banner.text), 35, 'it fills the row and no more')
-      eq(vim.fn.strcharpart(banner.text, vim.fn.strchars(banner.text) - 1, 1), '…', 'the cut is marked')
-      ok(banner.text:find('fatal: not a git repository', 1, true), 'the reason survives: ' .. banner.text)
+      eq(
+        vim.fn.strcharpart(banner.text, vim.fn.strchars(banner.text) - 1, 1),
+        '…',
+        'the cut is marked'
+      )
+      ok(
+        banner.text:find('fatal: not a git repository', 1, true),
+        'the reason survives: ' .. banner.text
+      )
       eq(line_hl(bufnr, 0), 'VcssignError', 'a failure reads as one')
 
       -- The other two placeholders are ordinary states, so they are not red.
@@ -376,7 +414,10 @@ return {
       renderer.draw(bufnr, items)
       local elapsed_ms = (vim.uv.hrtime() - started) / 1e6
       eq(#items, 1000 + 3, 'one header per group plus every entry')
-      ok(elapsed_ms < 200, string.format('1000 rows took %.1fms; the plan allows 200ms', elapsed_ms))
+      ok(
+        elapsed_ms < 200,
+        string.format('1000 rows took %.1fms; the plan allows 200ms', elapsed_ms)
+      )
       vim.api.nvim_buf_delete(bufnr, { force = true })
     end,
   },

@@ -122,16 +122,20 @@ end
 ---@param path string
 ---@param cb fun(err: string?, root: string?)
 function M.get_root_async(path, cb)
-  exec.run(build({ 'rev-parse', '--show-toplevel' }), { cwd = base.dirname_of(path) }, function(err, res)
-    if err then
-      return cb(err)
+  exec.run(
+    build({ 'rev-parse', '--show-toplevel' }),
+    { cwd = base.dirname_of(path) },
+    function(err, res)
+      if err then
+        return cb(err)
+      end
+      local root = exec.split_lines(res.stdout)[1]
+      if not root or root == '' then
+        return cb('git: empty --show-toplevel output')
+      end
+      cb(nil, base.normalize(root))
     end
-    local root = exec.split_lines(res.stdout)[1]
-    if not root or root == '' then
-      return cb('git: empty --show-toplevel output')
-    end
-    cb(nil, base.normalize(root))
-  end)
+  )
 end
 
 -- ▏ status ───────────────────────────────────────────────────────────────────
