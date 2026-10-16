@@ -1,6 +1,10 @@
 # 06 · 总实施 TODO 清单
 
-> 本文是 `impl/init/` 系列的**执行总索引**：把 01–05 各计划文件的实现步骤
+> 归档自早期计划文档 `06-todo.md`（M0–M6 实施计划，原 `impl/` 目录）。由 2026-10-16 的 `loop/` 迁移整篇移入 `loop/archive/`，状态：**已实现、冻结**。
+> 文中 `00`–`07` 的简写指的是本目录下的归档文档，对照表见 `loop/archive/README.md`；
+> 被抽取到 `loop/knowledge/` 的小节在正文里只留指针。
+
+> 本文是 早期计划目录 系列的**执行总索引**：把 01–05 各计划文件的实现步骤
 > 汇总为一份可勾选的总清单。每项标注出处（计划文件 §节）。
 > 状态标记：`[ ]` 未开始 / `[~]` 进行中 / `[x]` 完成。
 
@@ -147,30 +151,10 @@ M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
 **工程门（`a3e41fd` 实测）**：`make test` → **`250 tests, 0 failed`**（空闲连跑两遍一致）、`make format-check` 零输出、
 `make lint` → `0 warnings / 0 errors in 46 files`（本步只动文档，用例数不变）。
 
-### M6 之后：按用户要求做的三处 gitsigns 对齐
+> 本节已抽取到（归档后不再维护）：
+> - `loop/knowledge/nvim/signs-and-extmarks.md`
 
-> 都是 M6 交付之后用户实测/点名要的，不是 §6 表里的步骤；实现细节见 `07` §6.1 末尾三条与 §6.3。
-
-- `d743bba` `fix(attach)` —— **noice 崩溃**（用户实测）：`WinEnter` → `reapply_signcolumn` 会在别人的
-  `nvim_win_call`（`:Noice history`）里写 `'signcolumn'`，而**写入窗口已有的值也会触发 `OptionSet`**
-  （探针实测：同一个值写三次 = 三次事件），那条处理器链一炸就记在 `attach.lua:302` 上。当时修法是
-  「先读后比 + `pcall` + 失效窗口跳过」（250 → 253 用例）。
-- `55255cb` `refactor(signs)` —— **`signcolumn` 交给 gitsigns 的语义**：`config.signcolumn` 改成**布尔**
-  （默认 `true`，只决定要不要写 `sign_text`；为 `false` 且 `numhl`/`linehl` 也关着时连 extmark 都不放），
-  **插件从不写窗口的 `'signcolumn'`** —— 上面那次修复的整条路径（`set_signcolumn` /
-  `reapply_signcolumn` / `WinEnter` 订阅 / 告警）连同删掉，这类崩溃不再有机会发生
-  （253 → 250 用例；`attach_spec` 25 → 23，`autocmds_spec` 去掉两条窗口用例）。
-- `f66b074` `feat(blame)` —— **行内 blame 全面对齐 gitsigns**：`current_line_blame_opts` 全套
-  （`virt_text` / `virt_text_pos`（含 `right_align`）/ `virt_text_priority` / `delay` 500 → 1000 /
-  `ignore_whitespace` / `use_focus` / `extra_opts`）、`current_line_blame_formatter` +
-  `_nc`、新模块 `lua/vcssign/blame_formatter.lua`（gitsigns 的占位符表 + `:<strftime>` + `%R` 相对时间 +
-  函数式 formatter）、模块级事件 augroup + 单个 extmark（`id = 1`）+ `vim.b.vcssign_blame_line[_dict]`；
-  适配器补齐 porcelain 字段与 `orig_lnum`、`-w`、`extra_opts`，svn 从 `<date>` 解析 `author_time`。
-  顺手修掉一个竞态（取数回来时「还要不要这个装饰」要再判一次）（250 → 260 用例；
-  `blame_formatter_spec` 7 例、`blame_spec` 8 → 11）。
-
-**工程门（`f66b074` 实测）**：`make test` → **`260 tests, 0 failed`**、`make format-check` 零输出、
-`make lint` → `0 warnings / 0 errors in 48 files`；stderr 只剩 `repo_spec` retry 那一行。
+---
 
 ## 里程碑依赖
 
@@ -182,47 +166,15 @@ M0 ─→ M1 ─→ M2 ─→ M3 ─→ M4
 
 ## 附录 · 实测记录（2025-… 本会话，Windows / git 2.55.0.windows.2 / svn 1.14.5）
 
-### A1 · git `status --porcelain=v1 -z --untracked-files=all`（`temp/git-repo`）
+> 本节已抽取到（归档后不再维护）：
+> - `loop/knowledge/vcs/git-output-formats.md`
 
-NUL 分隔（下文以换行代替 NUL 展示；中文路径按 UTF-8 原样传输，无需引号解码）：
+---
 
-```
- M base.txt
- D old.txt
- R  renamed.txt
- 文件 名.txt          ← rename 条目的第二段（orig_path），紧跟新路径段之后，整体消费
- A  staged-add.txt
- AM staged-mod.txt
- ?? new.txt
- ?? untracked 名 .txt
-```
+> 本节已抽取到（归档后不再维护）：
+> - `loop/knowledge/vcs/svn-output-formats.md`
 
-要点确认：
-- rename 记录是**连续两段**（新路径 + orig_path），解析循环必须按 01 §4.2 的「双段消费」处理；
-- `core.quotepath` 引号转义**不会出现**在 `-z` 输出中（计划 D3 验证成立）；
-- 状态域实际形态：` M`（local M）、` D`（local D）、`R `（upstream R）、`A `、`AM`（upstream A + local M）、`??`（untracked）。
-
-冲突仓库 `temp/git-repo-conflict`：`UU conflict.txt`（upstream U + local U → conflicted）。
-
-`git rev-parse --show-toplevel`（`temp/git-worktree`）输出：`D:/Developer/nvim-plugins/vcssign/temp/git-worktree` —— 正斜杠绝对路径，直接可作 root 键（统一 `vim.fs.normalize`）。
-
-### A2 · `svn status`（`temp/svn-repo`）
-
-```
-MM      base.txt
-!       missing.txt
-?       new.txt
-D       old.txt
-A       prop.txt
-R       repl.txt
-```
-
-要点确认：
-- `MM` = 第 1 列 M（内容修改）+ 第 2 列 M（属性修改）—— 01 §5.2 的「列 1 主状态 + 列 2 属性补充」策略成立；
-- `!`（missing）、`R`（replaced，`svn rm --keep-local` + `svn add` 制得）按预期出现；
-- `svn info --show-item wc-root` 对 `svn-repo` 与 `nested/inner` 都返回正确绝对路径（svn ≥ 1.9 特性可用，D4 成立）；
-- file:// 仓库 URL 形态：`file:///D:/Developer/.../temp/svn-server/trunk`（三斜杠 + 盘符，`pwd -W` 可直接生成）。
-- **补充（M1 阶段）**：两处输出均为 **CRLF** 行尾；svn 路径用**反斜杠**且从**第 9 列**开始（`sub2\q.txt`、目录条目 `sub2` 与文件条目 `sub2/q.txt` 都出现）。
+---
 
 ### A3 · 其他实测结论（M1 阶段）
 
@@ -363,7 +315,8 @@ waiter 陈旧语义文档化、`!!`/`X`/`I` 前向兼容注释。`get_by_path` �
 7. **1000 行渲染 7ms**（build 1.7 + draw 5.3，三次采样 6.5/7.5/6.8）→ 远低于 300ms 去抖窗口，
    全量 clear + 重画这个策略站得住，条目级增量更新无需做。
 8. **按键可以真实按**：headless 下 `nvim_feedkeys('r', 'x', false)` 会走 buffer-local 映射
-   （`q` 关窗、`r` 刷新都实测过）；`<CR>` 要用真实 `` 字节，`'<CR>'` 这种记法不展开。
+   （`q` 关窗、`r` 刷新都实测过）；`<CR>` 要用真实 `
+` 字节，`'<CR>'` 这种记法不展开。
 
 ### 实现期自己踩到并修掉的三个坑
 

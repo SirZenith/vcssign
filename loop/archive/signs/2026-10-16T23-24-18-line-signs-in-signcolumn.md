@@ -1,5 +1,9 @@
 # 07 · M6 行级 sign（signcolumn）：设计与前置探针实测（M6）
 
+> 归档自早期计划文档 `07-signs-in-signcolumn.md`（M0–M6 实施计划，原 `impl/` 目录）。由 2026-10-16 的 `loop/` 迁移整篇移入 `loop/archive/`，状态：**已实现、冻结**。
+> 文中 `00`–`07` 的简写指的是本目录下的归档文档，对照表见 `loop/archive/README.md`；
+> 被抽取到 `loop/knowledge/` 的小节在正文里只留指针。
+
 > **为什么写这份文档**：M6 把插件从「文件级状态侧边栏」整体转向「行级 hunk sign」——
 > 这是目标层面的转向，不是一个新功能。转向的理由（`git status` 是 O(树) 而 sign 只需要
 > 基线文本）、随之冻结的接口与配置面（`VcsCaps`、适配器 `show/blame/apply_patch`、
@@ -50,7 +54,7 @@ git 与 svn 同时交付（基线 git=index、svn=BASE），能力差异用 `Vcs
 | `lua/vcssign/config.lua` | 改配置面 | 删 `sidebar`；新增 `signs/signs_staged/signcolumn/max_file_length/attach_to_untracked/rev/keymaps/word_diff/deleted_preview/current_line_blame/update_debounce_ms` |
 | 新增 `hunk/diff/attach/signs/nav/worddiff/preview/blame/revdiff/keymap.lua` | 新增 | 见 §3 |
 | `plugin/vcssign.vim` | 微调 | 只注册 `:Vcssign`（保持懒 `require`） |
-| `doc/vcssign.txt` + `impl/init/*` | 回写 | 本文即其中一份 |
+| `doc/vcssign.txt` + 早期计划文档 | 回写 | 本文即其中一份 |
 
 **已在本仓库 runtime 核对的可用原语（无需外部依赖）**
 - `vim.text.diff(a, b, opts)`（0.11+ 名字，`vim.diff` 为兼容别名）：`result_type='indices'` → 1 基
@@ -64,21 +68,10 @@ git 与 svn 同时交付（基线 git=index、svn=BASE），能力差异用 `Vcs
 
 ---
 
-## §2 关键决策（D38–D48）
-
-| 决策 | 内容 | 理由（为什么） |
-|---|---|---|
-| **D38** | 只做 sign，`Repo` 降级为「仓库会话」：去掉状态缓存与工作树遍历监听，只保留 `metadata_path`（git worktree/submodule 的 `gitdir:` 目标、svn 的 `.svn`）监听 + 防抖 + 退避重试 + 订阅广播 + `dispose` | sign 需要的是「基线文本变了」而不是「仓库里有什么」；`git status` 是 O(树)，每次编辑后跑一次是纯浪费 |
-| **D39** | 比对引擎用 nvim 内置 diff（`vim.text.diff`，`a`=基线文本、`b`=缓冲区文本），不为每个缓冲区起 `git diff` 进程；`diff.use_external = false` 为默认，保留 opt-in 外部回退位（backlog） | svn 没有 `git diff` 这类本地后端，内部 diff 让 git/svn 走同一条路；省进程、省临时文件、易测（纯函数） |
-| **D40** | hunk 类型与 gitsigns 对齐：`add\|change\|delete\|topdelete\|changedelete\|untracked`；git 暂存态用**双命名空间** + `filter_common` 拆「已暂存/未暂存」 | 同一行不会两层 sign 打架；类型名与用户熟悉的 gitsigns 一致 |
-| **D41** | patch 走 stdin：`git apply --cached --unidiff-zero -`、`git apply -R --unidiff-zero -`；svn **不支持 stdin**（见 §5 C6）→ `vim.fn.tempname()` 落临时文件 `svn patch --strip 0 <file>` 并删除 | git 侧省临时文件；svn 侧被 CLI 限制逼成临时文件 |
-| **D42** | 基线 = 配置 `rev`（默认 `index`）：git `index` ↔ svn `BASE`；未跟踪/未纳管 → 空基线 + `untracked` sign（`attach_to_untracked=true`）；索引里查不到的冲突文件回落 `HEAD` | 冲突文件在 index 里没有 stage 0（见 §5 B1），若不回落会整文件显示成「新增」 |
-| **D43** | 行尾统一靠两处：`exec` 的 `text=true`（stdout CRLF→LF）+ diff 的 `ignore_cr_at_eol = true`；缓冲区文本用 `nvim_buf_get_lines` 拼 `\n`（不含 CR） | 本机是 Windows；CRLF 差异若不消掉会让每一行都变成 hunk |
-| **D44** | 键位默认与 gitsigns 同形：`]c`/`[c`（可带计数、可环绕）+ `<leader>h{s,r,S,u,R,p,b,d,D,q,tw}`，buffer-local，`config.keymaps = false` 整体关 | 用户迁移成本低 |
-| **D45** | reset 类动作保护未保存改动：`vim.bo.modified` 为真时**拒绝并提示**（「有未保存修改，先 `:w` 或 `:e!`」），不做内存内 patch 应用 | gitsigns 用 text edit 同步改缓冲区，我们初版不做（列为 backlog）；拒绝比静默丢改动安全 |
-| **D46** | 不引入 async 框架（沿用回调链 + 错误优先 `cb(err, ...)`）、不动 D19「回调在主循环」契约、不新增依赖 | 与 M1–M5 的架构契约一致 |
-| **D47** | `signs.culhl` 用 Neovim 原生的 extmark 选项 `cursorline_hl_group`（与 gitsigns 同款），不建 `CursorMoved` 刷新链路，也不把它写进 `place` 的早退条件 | 原生机制只作用于带 `'cursorline'` 的光标行上的 sign 格，而 `signcolumn = false` 时没有 sign 文本也就没有那个格，自建刷新链只会白跑；gitsigns 的 guard 同样不含 `culhl` |
-| **D48** | `setup()` 结束前扫一次**窗口里的缓冲区**（`nvim_list_wins` 去重 → `attach.attach`），资格判断仍全部在 `attach.attach` 内 | 懒加载触发挂在 `BufEnter` 上时，插件是在该事件**之后**才配置的，当前文件不会再收到任何事件；只扫可见的窗口而不是全部已加载缓冲区（gitsigns 做的是后者：`"Attach to all open buffers"`），免得为会话里的历史缓冲区白挂仓库；隐藏缓冲区靠自己的 `BufEnter` 补上，不会漏 |
+> 本节已抽取到（归档后不再维护）：
+> - `loop/knowledge/decisions.md`
+>
+> D38–D48 的全文与理由都在该文档里。
 
 ---
 
@@ -188,126 +181,15 @@ commit = { message_input = 'input' },
 > 探针脚本 `temp/probe_m6_*.lua`，自建仓库在 `temp/_probe/`（均不进版本库）。
 > **以下每条都带实现结论**，Step 2+ 直接照做，不需要回读临时报告。
 
-### §5.1 `vim.system` 的 stdin 语义（→ D41 / D43）
+> 本节已抽取到（归档后不再维护）：
+> - `loop/knowledge/nvim/libuv-and-vim-system.md`
+> - `loop/knowledge/nvim/diff-and-hunks.md`
+> - `loop/knowledge/vcs/svn-output-formats.md`
+> - `loop/knowledge/nvim/signs-and-extmarks.md`
+>
+> §5.1/§5.5 在 libuv 文档，§5.2 在 diff 文档，§5.3 在 svn 文档，§5.4 在 signs 文档；§5.6（性能）保留在下方。
 
-| 输入 | 实测 stdout（`cat`） | 结论 |
-|---|---|---|
-| `stdin='a\nb\n'` | `len=4`，逐字节 `"a\nb\n"` | **原样写入，不吞不补** |
-| `stdin='a\nb'`（无尾 `\n`） | `len=3` `"a\nb"` | **不会补尾换行** → 补丁必须自带结尾 `\n` |
-| `stdin=''` | `len=0` | — |
-| `stdin={'a','b'}`（`string[]`） | `"a\nb\n"`（len 4） | **逐元素自动补一个 `\n`** |
-| `stdin={'a\n','b'}` | `"a\n\nb\n"` | 元素自带 `\n` 会再加一个 → 双换行 |
-
-**`text` 只影响 stdout 解码，不改写 stdin 字节**：`cat` 一个 CRLF 文件，`text=true` → `len=4 "a\nb\n"`（CRLF→LF），
-`text=false` → `len=6 "a\r\nb\r\n"`。用 `git hash-object --stdin` 对比：`stdin` 为 CRLF 时 `text=true`/`text=false`
-哈希相同（`15238d98…`）；`stdin` 为 LF 时 `text=true` 仍得 LF 哈希 `e563bc26…`（未被转成 CRLF）。
-
-**结论（照抄）**：喂 `git apply` 补丁**用单个 string**：`vim.system(cmd, {text=true, stdin=patch_str})`；
-`patch_str` 必须自带结尾 `\n`；**不要用 `string[]`**（逐行加 `\n` 会破坏补丁）。`text=true` 不改 stdin，只是方便读 stdout。
-
-### §5.2 git 行为（→ D41 / D42）
-
-**`git show :<rel>` 各场景**（原文照抄）
-
-| 场景 | 退出码 | 输出 / 报错 |
-|---|---|---|
-| 已暂存（与工作树不同） | 0 | 暂存区内容 |
-| 未跟踪 | 128 | `fatal: path 'u.txt' exists on disk, but not in the index` |
-| `git rm -f --cached` 之后 | 128 | 同上 |
-| 空仓库（unborn HEAD）`git show :<rel>` | 0 | 暂存内容（**无提交也 OK**） |
-| 空仓库 `git show HEAD:<rel>` | 128 | `fatal: invalid object name 'HEAD'.` |
-| 冲突文件 `git show :<rel>` | 128 | `fatal: path 'c.txt' is in the index, but not at stage 0` + `hint: Did you mean ':1:c.txt'?` |
-
-- 冲突可用 `git show :1:<rel>`/`:2:`/`:3:`（code 0，base/ours/theirs）；`git ls-files -u -- <rel>` 列出三 stage。
-- `git ls-files --error-unmatch -- <rel>`：已跟踪 → code 0，out `"f.txt\n"`；未跟踪/不存在 → code 1，
-  err `error: pathspec 'u2.txt' did not match any file(s) known to git` + `Did you forget to 'git add'?`。
-- **`git apply --cached --unidiff-zero -`（stdin，无临时文件）**：零上下文补丁（`@@ -1 +1,2 @@`）**必须加 `--unidiff-zero`**，
-  否则 `error: patch failed: f.txt:1` / `error: f.txt: patch does not apply`；加了 → code 0，`git show :f.txt` 变 `a\nb\n`，
-  `git diff --cached` 含该 hunk，工作树不变。**补丁结尾缺 `\n` → code 128 `error: corrupt patch at <stdin>:5`**。
-  末尾 `-` 可省（无补丁参数时 git 默认读 stdin），但显式写更清楚。
-- `git apply -R --unidiff-zero -`（工作树方向）：code 0，工作树 `a\nb\n` → `a\n`，`git diff` 显示反向 hunk。
-- **`git blame --line-porcelain -L 1,3 -- <file>` 首行**：`<40hex sha> <orig_lineno> <final_lineno> <num_lines>`
-  （第 3 个字段=**最终行号**）；随后 `author` / `author-mail` / `author-time`（Unix 秒）/ `summary` / `filename` /
-  `previous` / `boundary`，末行以 **TAB** 开头是源码内容。一次 call 只能对齐一种行号，按 4 行一组读。
-  工作树已改未提交的行 sha 全 0（`0000…0000`），`author Not Committed Yet`，`summary Version of f.txt from f.txt`。
-- `git status --porcelain=v1 -z -- <rel>`：未跟踪 → `"?? u.txt\0"`（**NUL 结尾**，无换行）；已暂存 → `"MM f.txt\0"`；按 `\0` 切分，前 2 字符=状态。
-- `git rm --cached`（不带 `-f`）在「暂存内容与工作树和 HEAD 都不同」时会失败（code 1，提示 `use -f`）。
-
-### §5.3 svn 行为（→ D41 / D42）
-
-- **`svn cat -r BASE f.txt`**：在已改 WC 上输出**最后一次提交内容**（`-r HEAD`、无 `-r` 同结果）。
-  `-r PREV`（rev0 无前驱）→ code 1 `svn: E195012: Unable to find repository location … in revision 0`。
-  未纳管文件 → code 1，err `svn: warning: W200005: '<abs path>' is not under version control` + `svn: E200009: Could not cat all targets …`。
-  `-r 99` → `svn: E160006: No such revision 99`。
-- **`svn blame`** 原始：未提交/修改行用 `-` 代替 rev 与 author（`     -          - MODIFIED-l1`），字段 `%6s` 版本 + 右对齐 author + 内容。
-  `svn blame -r BASE <file>` 可用。**耗时：200 行纯文本 141.1 ms，`--xml` 43.9 ms（更快 → 建议解析 XML）**。
-- `svn status -- <file>`：已改 → `M       <abs path>`；未纳管 → `?       <abs path>`（首字符 `?`）。
-- **`svn info -- <abs>` 的退出码就是「是否纳管」**：已纳管 → code 0；未纳管或路径不存在 →
-  code 1，stderr `svn: warning: W155010: The node '<abs>' was not found.`（空行）+
-  `svn: E200009: Could not display info for all targets because some targets don't exist`；
-  工作副本之外 → `svn: E155007: '<abs>' is not a working copy`（1.14.5 实测；旧版写 `W155007`）。
-  **实测更正**：`svn status -- <不存在的路径>` 无任何输出且 exit 0，用它判 `?` 会把不存在的路径读成「已跟踪」，
-  所以 `is_tracked` 改用 `svn info`（`lua/vcssign/vcs/svn.lua`），`test/vcs_svn_spec.lua` 有对应用例。
-  另：`status` 为 `!`（已纳管但磁盘丢失）的路径 `svn info` 仍 exit 0 → 仍算已跟踪。
-- **`svn revert <file>`**：code 0，`Reverted '<path>'`，工作树回 BASE，status 变干净 → 可直接丢弃工作树改动。
-- **`svn patch`（重点，照抄）**：
-  - **stdin 不可用**：`svn patch -` / `svn patch --strip 0 -` / `--strip 1 -` 全 code 1：`svn.EXE: invalid option: `。
-    svn 1.14.5 CLI **不支持**从 stdin 读补丁 → 必须写临时文件。
-  - **临时文件可行**：`svn patch --strip 0 <patchfile>` → `U         f.txt`（code 0，已应用）。
-    **实测（Step 9 重做：`temp/probe_svn2` 里全新 `svnadmin` 仓库 + WC，svn 1.14.5）**：`--strip 0` 下
-    **git 风格头照常应用** —— `diff --git a/x b/x` / `--- a/x` / `+++ b/x` 得到 `U         x`（exit 0）；
-    裸头（`--- rel`）同样应用；嵌套路径（`sub/inner.txt`）也照此。两种头都有活用例：
-    `test/vcs_svn_spec.lua` 的 `BARE_PATCH`、`actions_spec` 的 svn `reset_hunk`（走 `hunk.build_patch`
-    的 git 风格头 + `--reverse-diff`）。**旧文写「git 风格头在 `--strip 0` 下不成立」是把一次
-    `svn add` 过但**未提交**（BASE 里还没有）的文件的实验结果当成了头风格问题** —— 那种文件无论
-    哪种头都只会得到 `C` + `rejected hunk`。`--strip 1` 才会冲突（`C .`），`--strip 2` 报
-    `svn: E195018: Cannot strip 2 components from 'f.txt'`。
-    所以 `lua/vcssign/hunk.lua` 的 `build_patch` 只产一种头（git 风格）就够，svn 侧不需要切换风格。
-  - **反向**：`svn patch --reverse-diff <file>` 可用；**把 `+`/`-` 互换的 unidiff** 也可用于丢弃一个 hunk（svn-style 与 git-style+`--strip 0` 都验证成功）。
-  - **冲突不报错（反直觉）**：hunk 无法应用时 `svn patch` 仍 **退出码 0**，stdout 打 `C         f.txt` + `>         rejected hunk …`，
-    并写 `<file>.svnpatch.rej`，工作树保持不变。**不能用退出码判成败**，必须解析 stdout 的 `U `/`C ` 或检查 `.rej`。
-  - 偏移补丁会 fuzz 应用：`applied hunk @@ … with fuzz 1`。
-
-### §5.4 extmark sign 可见性（headless，→ §3.2 放置规则）
-
-探针：真实文件 + `nvim_win_set_buf` + `vim.wo.signcolumn=…` + `nvim_buf_set_extmark(…, {sign_text=…, sign_hl_group='ErrorMsg'})`
-+ `redraw` + `screenstring` 扫列。**headless 下 `screenstring` 可用**，能直接读屏幕单元格。
-
-**`signcolumn` 变体（sign 在第 2 行，读 col1..5）**
-
-| 值 | effective | row2 col1..5 | 可见 |
-|---|---|---|---|
-| `no` | `no` | `B B B B _` | **不可见** |
-| `number` | `number` | `X _ B B B` | 可见（第 1 列） |
-| `auto` | `auto` | `X _ B B B` | 可见（第 1 列） |
-| `yes` | `yes` | `X _ B B B` | 可见（第 1 列） |
-| `yes:2` | `yes:2` | `X _ _ _ B` | 占 4 格，文本第 5 列 |
-| `auto:2` | `auto:2` | `X _ B B B` | 按实际 sign 宽度，只占 1 列 |
-
-- **`signcolumn=yes:2` 时 sign 落在第 1 列（靠左，不靠右）**；单个 sign → `S _ _ _ B B`。
-  开 `number` 时 → `S _ _ _ _ _ 2 _`（sign 列在数字列**左侧**）。
-- **同一行两个命名空间（`yes:2`）**：`ns1 X(p0)` 后 `ns2 Y(p0)` → `Y _ X`；`ns1 X(p10)` 后 `ns2 Y(p20)` → `Y _ X`；
-  `ns1 XX(p0)` 后 `ns2 Y(p0)` → `Y _ X X`。**规则：最左列=优先级最高者，同优先级则后加者胜；第二个 sign 落在第 3 列。**
-- **`virt_lines` 与 sign 可共存**：默认渲染在该行**下方**（真实行有 sign，虚行 sign 列为空）；`virt_lines_above` 则在其上方。sign 只落在真实行。
-- **`sign_text` 最多 2 个显示单元格**：接受 `'X'`、`'XX'`(2 格)、`'▎'`、`'▎▎'`、`'●'`、`'▎X'`、`'аб'`；
-  **`'XXX'` 与 `'▎▎▎'` 报 `Invalid 'sign_text'`**（多字节每字宽 1 可用）。
-
-### §5.5 缓冲区 attach 与生命周期（→ Step 6，防 reload 丢状态）
-
-- **E1**：`nvim_buf_attach(buf, false, {on_lines=…})` + `nvim_buf_set_lines` → `on_lines` **同步触发**，
-  参数 `(event, bufnt, tick, first, last, new_last, old_byte_size)`；触发时 **`changedtick` 已是新值**（传入 tick == `nvim_buf_get_changedtick`）。行号 0 基，`last` 端开。
-- **E2（反直觉）**：`vim.cmd('edit!')` → **`on_detach`**，不是 `on_reload`（与 `api.txt` 文字描述相反）；bufnr 不变，
-  **extmark sign 在 reload 后仍保留**。`:e`（非 bang，文件被外部改动）也是 `on_detach`。
-  `on_reload` **只在整缓冲重载路径触发**：`vim.o.autoread=true` + 外部改文件 + `:checktime` → 每次 reload 触发一次，
-  回调仍保持 attach，之后 `on_lines` 继续工作，extmark 亦保留。
-  **结论**：**`:e`/`:e!` 后必须重新 attach**（`on_detach` + `BufReadPost` 双兜底）；只有 `:checktime`/autoread 路径依赖 `on_reload`。
-- **E3**：`nvim_buf_delete(buf, {force=true})`/`:bwipeout` 会触发 `on_detach`（切 buffer 时也会看到）。
-- **E4**：300ms 内连续 10 次 `nvim_buf_set_lines`（同步循环 / 间隔 30ms / `vim.schedule`）→ **`on_lines` 都触发 10 次，不合并**
-  → 刷新必须自己防抖（`update_debounce_ms`）。
-- **E5（换行约定必须一致）**：`joined = table.concat(get_lines(…), '\n')` = `"a\nb\nc"`（**末行无换行**）；
-  `diff(joined, joined) = {}`；`diff(joined..'\n', joined) = {{3,1,3,1}}`；`diff("x","x\n") = {{1,1,1,1}}`。
-  **结论**：buffer 侧与 git blob 侧必须用**同一约定**（推荐两边都 `concat(lines,'\n')`、末尾都不带 `\n`），
-  否则末行永远凭空多一个假 hunk；`ignore_cr_at_eol=true` 可消除 CRLF/A 差异。
+---
 
 ### §5.6 性能（→ D39 / D44 默认值）
 
@@ -588,78 +470,10 @@ sign 就开列）。这样 noice 那类崩溃不是靠「先比后写」绕开�
 6. **验证要真跑**：新行为先写 spec（`guarded(fn)` 包住用例）。只有确实无法自动化的才写「手动实测记录」，
    探针脚本放 `temp/`（已 gitignore），**写完删掉**，别留噪音。
 
-### §6.3 已知坑与实测（别重踩）
+> 本节已抽取到（归档后不再维护）：
+> - `loop/knowledge/lua/pitfalls.md`
 
-- **libuv 不报告被监听目录自身消失** → 存活探测必须挂在**父目录**上（见 §6.1）。
-- `svn patch` 的路径剥离（**Step 9 实测更正**）：git 风格头（`--- a/x`）配 `--strip 0` **能正常应用**
-  （打印 `U <file>`），裸头也可以；`--strip 1` 才会冲突，`--strip 2` 报 `E195018: Cannot strip 2 components`。
-  旧文写「只吃裸头」，是把一次**未提交文件**（只 `svn add` 过、BASE 里还不存在）的实验当成了头风格问题。
-  所以 `hunk.build_patch` 只产一种头就够，svn 侧不需要切换风格，`vcs/svn.lua` 的 `apply_patch` 一行没改。
-- `svn patch` **冲突时退出码仍然是 0**（stdout 打 `C <file>` + `rejected hunk`，并写 `<file>.svnpatch.rej`）：
-  必须解析 stdout 才算成功 —— `vcs/svn.lua` 的 `apply_patch` 已经这么做（`e6c4f1b` 之后），Step 9 只是验证。
-- `git show HEAD:<f>` 在 **unborn HEAD** 上报 `fatal: invalid object name 'HEAD'.`（不是空基线），只有 `:<f>` 可用。
-- `vim.text.diff({a}, {b}, { result_type = 'indices' })`：1 基 `{start_a, count_a, start_b, count_b}`，
-  `count` 可为 0（纯插入/删除）；`on_hunk` 返回负数会抛 `E5113`（**不能**用它中断）。
-- `vim.text.diff` / `vim.diff` **只收字符串**（传列表 → `bad argument #1 (expected string)`，Step 10 实测）；
-  `vim.split(s, '\\zs')` 不分字符（返回 `{ s }`），要 `vim.fn.split(s, '\\zs')` 才逐字符。
-- **xdiff 的 `indices` 两端可能带公共前后缀**（见 §6.1 Step 10 第 2 条）：直接按 `indices` 画行内区间会多
-  画一块，先剪 a / b 段序列的公共前后缀。
-- `diff.linematch` 默认已改成 `false`：它是二次型，实测 500 行全改 1.1s、2000 行 69s、5000 行 OOM。
-- **`signcolumn` 是窗口选项**：`vim.wo[bufnr]` 写不进，要对 `win_findbuf(bufnr)` 的每个窗口设置。
-- **`on_lines` / `on_reload` 在 textlock 里**：只能置标记，刷新必须经 `debounce` 回主循环（D19）。
-- svn blame 没有 time/summary，本地未提交行的 revision 是 `-`；`svn log` 在 WC 上只到 BASE（要看 URL）。
-- headless nvim **不发** `VimResized` / `FocusGained` 等事件 → 测试用 `nvim_exec_autocmds` 驱动；
-  `DirChanged` 的 scope 在 `v:event` 里（回调参数里没有）。
-- **headless 不会自己触发 `CursorMoved`**：`nvim_win_set_cursor` 不产生事件，所以「移动光标 →
-  blame 跟着动」这类用例要显式 `nvim_exec_autocmds('CursorMoved', { buffer = bufnr })`
-  （`FocusGained` / `DirChanged` 同理，见下一条）。
-- **浮窗不在 `bufwinid()` 的名单里**：它没有窗口槽位，`vim.fn.bufwinid('vcssign://…')` 返回 -1
-  （`Invalid window id`）。要读浮窗内容就遍历 `nvim_list_wins()` 找
-  `nvim_win_get_config(win).relative ~= ''` 的那个。
-- **`svn cat -r 1 <file>` 可能报 `E195012: Unable to find repository location … in revision 1`**：
-  文件是后来才进版本库的。和某个历史 rev 比时要挑该文件确实存在的 rev（spec 里用 `HEAD`）。
-- **`virt_text` 挂在 `eol` 上要自己带空格**（`{ ' ' .. text .. ' ' }`），否则装饰和源码行黏在一起。
-- **`on_detach` 与 `on_lines` 都不在 fast context**（Step 13 探针实测 `vim.in_fast_event() == false`）：
-  `nvim_buf_attach` 的三个回调都在主循环里跑，所以 `M.detach` 直接在 `on_detach` 里调是安全的；
-  D19「只能置标记」的边界只对 textlock 里的 `on_lines` / `on_reload` 成立。
-- **「默认面答应了、实现没跟上」这类问题是 `doc_spec` 查不出来的**：`doc_spec` 只断言名字在
-  `doc/vcssign.txt` 里出现（`hq` → `setqflist` 也在 `keymap.ACTIONS` 之外活了一整个里程碑）。
-  任何「文档承诺 + 键位/子命令」的组合都要配一条**语义**断言（Step 13 给默认键位补的就是这条）。
-- `vim.notify_once` 按**消息文本**去重：要「每个动作只提示一次」就得把动作名编进消息
-  （`keymap.dispatch` 的 `… is not implemented yet` 就是这么做的）。
-- 测试卫生：每个用例包 `guarded(fn)`（失败也清场）；`helpers.capture_notify` 必须**排空 `vim.schedule`**
-  再还原 `vim.notify`；`helpers.uv_count` 只数**未 closing** 的句柄；跑测试前 fixture 要在（`make fixtures`），
-  `temp/_spec` 由 `helpers.cleanup()` 清。
-- 写探针：`cd` 仓库根后 `nvim --headless -u NONE -l temp/probe_X.lua`（`-u NONE`，别依赖用户配置）。
-- **子 agent 沙箱**（本机实测）：可能拒 `sh` / `rm` / `git commit` / `nvim --headless`。可用替代：
-  `make test` / `make format` / `make lint` / `git add <显式路径>` / `git commit -F <消息文件>`；
-  探针写进 `temp/` 交给主 agent 跑。**只有主 agent 的 shell 是无限制的**，改动落地与验证留在主 agent 做。
-- 长命令会被 harness 截断（heredoc 尤甚，超过约 7KB 会被切在半句上）：长文件分块写，或改用「按行号手术」
-  的 python 补丁（`assert src.count(old) == 1` 守卫 + `io.open(..., encoding='utf-8', newline='')` 回写）。
-  `edit` 工具对「尚无观察」的文件可能拒绝改，此时同样走 python 补丁。
-- **在 `WinEnter` 里给窗口写 `'signcolumn'` 会踩到别的插件**（用户实测 noice：`:Noice history` 报
-  `nui/split/init.lua:170` → `attach.lua:302`（`vim.wo[win].signcolumn = sc`）`C: in function '__newindex'`）：
-  `vim.wo[win].signcolumn = <同一个值>` **也会触发 `OptionSet`**（实测：同一个值写三次 = 三次
-  `OptionSet`），而 nui 开窗是**在自己的 `nvim_win_call` 里**执行 `:vsplit` 的，那串 `OptionSet`
-  处理器一炸就沿着我们写窗口选项那一行往上冒。当时的修法是「先读后比、值相同就不写」（`d743bba`，`attach_spec`
-  三条用例）—— **M6 之后这条路径连同 `set_signcolumn` / `reapply_signcolumn` / `WinEnter` 订阅一起删掉了**
-  （见 §6.1 末两条）：`signcolumn` 变成布尔、插件从不写窗口选项，这一类问题不再有机会发生。
-
-- **异步取数回来时，当初的许可可能已经失效**：探针（`temp/probe_focus.lua`，已删）里
-  `:vsplit` + `:enew` 换走焦点后 `blame.clear(bufnr)`，60 ms 后 extmark 自己回来了 —— 一个仍在飞的
-  `git blame` 回调（栈：`exec.lua:149` → `git.lua:306` → `blame.lua:197` → 写 extmark 的
-  `blame.lua:284`）在 `vim.wait` 里跑完了，而它只判了「窗口与行号没变」。修法：把「现在还要不要这个
-  装饰」收成一个 `still_wanted(bufnr, win, lnum)`（开关、插入模式、窗口、行号、`use_focus`、折叠），
-  **取数前后各判一次**；`blame_spec` 的 `use_focus keeps an unfocused window bare` 用例就是它。
-  凡是「先取数、再落笔」的装饰（blame / preview / 将来的别的）都要这么写。
-- **`%R` 的单位表照抄 gitsigns**：一年是 `365 * 24 * 60 * 60`。写成 `365 * 30 * 24 * 60 * 60`
-  （= 30 年）时，400 天前会被说成 `13 months ago`；`blame_formatter_spec` 的
-  `relative_time is gitsigns %R` 钉住这条。
-- **`vim.tbl_extend` 表达不了「删掉一个字段」**：Lua 表里没有 nil 值，`{ summary = nil }` 就是空表，
-  覆盖后默认值还在。测「适配器答不出的字段」要么造一个干净的输入表，要么用 `false` 之类哨兵再显式剔除。
-- **别经 heredoc 传 Lua 转义**：把 `\n` 写进 python 补丁脚本的字符串里（工具参数本身是 JSON），
-  落到 Lua 文件里就是一个真的换行 → `stylua` 报 `unclosed string`。探针与 spec 用 `write` 工具直接写，
-  或在 Lua 里用 `%c` + `10` 代替 `\n`。
+---
 
 ### §6.4 下一步（Step 13）的入口
 
@@ -697,10 +511,10 @@ sign 就开列）。这样 noice 那类崩溃不是靠「先比后写」绕开�
 `blame_line`，注意 `diffthis` 的参数是 **rev 而不是路径**）；`keymap.ACTIONS` 里只剩
 `setqflist` / `setqflist_all` 是占位提示。
 
-**Step 12 已完成**（`a4b3551`）：`impl/init/00`–`05` 加上了 M6 的「已退役 / M6 起已变」标记与 05 的实况表
+**Step 12 已完成**（`a4b3551`）：早期计划的 `00`–`05` 加上了 M6 的「已退役 / M6 起已变」标记与 05 的实况表
 （逐 spec 用例数与所需命令、`FILTER` 子集判据、两个要会解读的现象），07 §5.3 / §11 的 svn 结论与
 `doc/vcssign.txt` 的三处措辞（`watch` / `retry_*` / `debug`）一并更正；用例数不变，`doc_spec` 6/6。
-**`impl/init/06` 与 `07` 的 §6 / §6.1 保持逐 SHA 记录，不当作「设计要求」读。**
+**早期计划的 `06` 与 `07` 的 §6 / §6.1 保持逐 SHA 记录，不当作「设计要求」读。**
 
 **Step 14（终验 = M6 收尾，`a3e41fd`）**：五条判据全部落地。
 
@@ -779,7 +593,7 @@ svn hunk 级丢弃的替代、`patch_of` 的基线新鲜度、`guarded` 收进 h
 8. `<leader>hb` 显示当前行 blame；`current_line_blame` 打开后随光标显示虚文本。
 9. `:Vcssign diffthis [rev]` 与任意 rev 比对。
 10. 以上交互都在 headless 测试里被断言（含屏幕单元格）；`make test lint format-check` 全绿；
-    `doc/vcssign.txt` 与 `impl/init/07-*.md` 与实现一致。
+    `doc/vcssign.txt` 与 早期计划的 `07-*.md` 与实现一致。
 
 ---
 
@@ -797,47 +611,22 @@ svn hunk 级丢弃的替代、`patch_of` 的基线新鲜度、`guarded` 收进 h
 
 ---
 
-## §9 与 gitsigns 的有意差异
-
-| 差异 | 说明 |
-|---|---|
-| **不引入 async 框架** | 沿用回调链 + 错误优先 `cb(err, ...)`（D46），不用 coroutine/plenary 那套 |
-| **用内置 diff，而非每缓冲区起外部进程** | `vim.text.diff`（D39）；svn 没有 `git diff` 本地后端，内部 diff 让 git/svn 同路 |
-| **不做 `:Gitsigns` 那类命令族** | 只保留 `:Vcssign` 的子命令集（`setqflist`、`toggle_deleted`、`select_hunk`、导航子命令族等列入 backlog，等用户点名） |
-| **svn 无暂存区 → 只有一层 sign** | `VcsCaps.staged_signs` 门控；git 才有 HEAD↔index↔worktree 双命名空间 |
-| **reset 类动作不做内存内 patch 应用** | 有未保存改动时直接拒绝（D45），而不是像 gitsigns 那样同步改缓冲区文本 |
+> 本节已抽取到（归档后不再维护）：
+> - `loop/knowledge/ecosystem/prior-art.md`
 
 ---
 
-## §10 backlog（明确不做，但记下来）
-
-1. `diff.use_external` 外部 diff 回退（D39 的 opt-in 位，处理内置 diff 与 `git diff` 行为不一致的边角）。
-2. `max_diff_lines`（hunk 数上限，与 `max_file_length` 互补）。
-3. `diffthis [rev]` 的 rev 列表补全（`git log --pretty=%h` / `svn log`）。
-4. **内存内 patch 应用**（即使缓冲区有未保存改动也能 reset，gitsigns 用 text edit 同步）。
-5. `:Vcssign setqflist`（把 hunk 灌进 quickfix）。
-6. **svn hunk 级丢弃的替代方案**（当前依赖反向补丁 + `svn patch --strip 0` 临时文件）。
-7. **`patch_of` 的基线新鲜度**（审查 F5）：动作读的是 `st.base_text`（上一次探测拿到的 index 内容）。
-   磁盘被别的程序改过时补丁会对不上，表现是 git 报 `patch does not apply` —— 安全但不友好。在动作前
-   做「磁盘 vs 缓冲区」的比对会在 CRLF / `autocrlf` 上有假阳性，所以留到能同时处理行尾时再做。
-8. **`guarded(fn)` 的复制**（审查 F9）：11 份 spec 各自抄了一份清场包装，该收进 `test/helpers.lua`。
+> 本节已抽取到（归档后不再维护）：
+> - `loop/workspace/signs/2026-10-16T23-59-34-backlog-signs-and-diff.md`
 
 ---
 
-## §11 待验证项（探针报告标为「不确定 / 需要再测」）
-
-> Step 13 的审查标出的 V1 已实测为否（`on_detach` / `on_lines` 都在主循环，见 §6.3）；V3（空文件的
-> `@@ -0,0 +1,1 @@` 与末行无换行的反向补丁）与 V5（`signcolumn` 覆盖）分别由 Step 13 新增的两条
-> `actions_spec` 用例、以及「一次性告警 + `WinEnter` 复设」落地。
-
-1. **`on_reload` 与 `:e!` 的差异**：仅在 Windows/nvim 0.12.4 组合实测 `:e!`→`on_detach`；不同平台/版本可能不同，
-   实现里两种都兜底（`on_detach` + `BufReadPost`）。
-2. **`svn patch --strip` 语义（Step 9 已实测，见 §5.3 / §6.3）**：`--strip 0` 下 git 风格头与裸头
-   都能正常应用；`--strip 1` 冲突、`--strip 2` 报 `E195018`；冲突时退出码仍是 0（必须解析 stdout）。
-   「补丁路径前缀 × WC 相对路径」的其余组合仍未穷举（当前只用 `--strip 0`）。
-3. **`git blame` 行号对齐在「hunk 含多行（`num_lines > 1`）」时未专门验证**，只验证了每组 1 行。
-4. **`yes:2` 下「两个 sign + 开启 number」时第二个 sign 的显示未稳定复现**（负优先级 sign 是否显示未定论）。
-5. **`svn blame` 大文件（> 1k 行）耗时未测**（本次只有 200 行数据）。
+> 本节已抽取到（归档后不再维护）：
+> - `loop/workspace/signs/2026-10-16T23-59-34-backlog-signs-and-diff.md`
+> - `loop/knowledge/vcs/svn-output-formats.md`
+> - `loop/workspace/testing/2026-10-16T23-59-34-backlog-ci-and-test-hygiene.md`
+>
+> 第 2 条（`svn patch --strip`）的事实已并入 svn 知识文档；第 5 条（`svn blame` 大文件耗时）在 testing 任务文档。
 
 ---
 
