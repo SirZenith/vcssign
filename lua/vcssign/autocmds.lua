@@ -9,7 +9,6 @@
 local config = require('vcssign.config')
 local log = require('vcssign.log')
 local manager = require('vcssign.repo_manager')
-local sidebar = require('vcssign.sidebar')
 
 local M = {}
 
@@ -50,8 +49,8 @@ function M.attach_buffer(bufnr)
     return
   end
   -- Only ordinary, on-disk files belong to a repository.  A `nofile` buffer
-  -- (our own sidebar, a terminal, a quickfix list) either has no name or has
-  -- one that means nothing on disk.
+  -- (a picker, a terminal, a quickfix list) either has no name or has one
+  -- that means nothing on disk.
   if vim.bo[bufnr].buftype ~= '' then
     return
   end
@@ -142,13 +141,9 @@ function M.setup()
     end
   end)
 
-  -- Nothing may outlive the session: buffers first (they hold subscriptions
-  -- into the repositories), then the repositories with their watchers.  The
-  -- first step is guarded because the second one — releasing handles — is the
-  -- part that must not be skipped: a sidebar that refuses to close (it is the
-  -- last window) would otherwise leave every watcher armed at exit.
+  -- Nothing may outlive the session: dispose of every repository and its
+  -- watchers.  Releasing the handles is the part that must not be skipped.
   subscribe('VimLeavePre', function()
-    pcall(sidebar.forget_all)
     manager.dispose_all()
   end)
 

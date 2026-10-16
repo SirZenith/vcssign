@@ -9,13 +9,11 @@ local autocmds = require('vcssign.autocmds')
 local config = require('vcssign.config')
 local helpers = require('helpers')
 local manager = require('vcssign.repo_manager')
-local sidebar = require('vcssign.sidebar')
 
---- Sidebar, repositories, autocmds, windows, cwd: everything a case can leave
---- behind, in the order that does not re-enter.
+--- Repositories, autocmds, windows, cwd: everything a case can leave behind, in
+--- the order that does not re-enter.
 local function reset()
   autocmds.disable()
-  sidebar.forget_all()
   manager.dispose_all()
   vim.cmd('silent! tabonly')
   if #vim.api.nvim_tabpage_list_wins(0) > 1 then
@@ -281,7 +279,7 @@ return {
     end),
   },
   {
-    name = 'VimLeavePre leaves no repository, sidebar or watcher behind',
+    name = 'VimLeavePre leaves no repository or watcher behind',
     fn = guarded(function()
       reset()
       autocmds.setup()
@@ -291,10 +289,6 @@ return {
         return attached(dir)
       end, 'the repository to be attached')
       local repo = manager.get_by_path(dir)
-      sidebar.open(repo)
-      helpers.wait_for(function()
-        return sidebar.open_count() == 1
-      end, 'the sidebar to open')
       eq(helpers.uv_count('fs_event') > 0, true, 'there is a watcher to leak')
 
       -- Let the first status run land first: an `exec` command that is still
@@ -308,13 +302,12 @@ return {
 
       vim.api.nvim_exec_autocmds('VimLeavePre', {})
       eq(manager.count(), 0, 'no repositories')
-      eq(sidebar.count(), 0, 'no sidebars')
       eq(helpers.uv_count('fs_event'), 0, 'no watch handles')
       eq(helpers.uv_count('timer'), 0, 'and no timers')
     end),
   },
   {
-    name = 'teardown survives a sidebar that is the last window',
+    name = 'teardown survives when the buffer is the last window',
     fn = guarded(function()
       reset()
       autocmds.setup()
@@ -323,19 +316,13 @@ return {
       helpers.wait_for(function()
         return attached(dir)
       end, 'the repository to be attached')
-      local repo = manager.get_by_path(dir)
-      sidebar.open(repo)
-      helpers.wait_for(function()
-        return sidebar.open_count() == 1
-      end, 'the sidebar to open')
-      -- Closing the last window raises (E444): the teardown must not let that
-      -- stop it from releasing the watchers.
-      vim.cmd('only')
+      -- The buffer is the only window: closing it (or closing the tab) raises
+      -- E444, so the teardown must not rely on a window close succeeding to
+      -- release the watchers.
       eq(#vim.api.nvim_tabpage_list_wins(0), 1)
 
       vim.api.nvim_exec_autocmds('VimLeavePre', {})
       eq(manager.count(), 0, 'the repositories still went')
-      eq(sidebar.count(), 0, 'and the sidebar state with them')
       eq(helpers.uv_count('fs_event'), 0, 'no watcher was left behind')
     end),
   },
