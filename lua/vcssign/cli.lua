@@ -23,6 +23,7 @@ M.subcommands = {
   'reset_hunk',
   'stage_buffer',
   'reset_buffer',
+  'preview_hunk',
   'diff',
   'commit',
   'debug',
@@ -162,6 +163,7 @@ for _, name in ipairs({
   'reset_hunk',
   'stage_buffer',
   'reset_buffer',
+  'preview_hunk',
 }) do
   commands[name] = function(path)
     local target = path or current_path()

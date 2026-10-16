@@ -10,7 +10,10 @@
 --- repository, removed on detach.  Step 7 adds the second layer: for
 --- git the staged changes (`HEAD`..*index*) are rendered into
 --- `vcssign_signs_staged` from a second baseline, filtered so no line is
---- painted twice (D40).  What this module owns is the per-buffer invariant set:
+--- painted twice (D40).  Step 10 adds the two opt-in previews, and they are
+--- rendered here: the inline word diff (`vcssign.worddiff`) inside the changed
+--- lines and the deleted-line preview (`vcssign.preview`) as virtual lines.
+--- What this module owns is the per-buffer invariant set:
 ---
 ---   * one attach per buffer, idempotent, keyed by the buffer's path;
 ---   * every VCS command is spawned through the repository manager and its
@@ -28,7 +31,9 @@ local hunk = require('vcssign.hunk')
 local keymap = require('vcssign.keymap')
 local log = require('vcssign.log')
 local manager = require('vcssign.repo_manager')
+local preview = require('vcssign.preview')
 local signs = require('vcssign.signs')
+local worddiff = require('vcssign.worddiff')
 
 local M = {}
 
@@ -97,6 +102,16 @@ local function settle(st, err)
   end
 end
 
+--- Everything vcssign draws in `bufnr`: the two sign layers, the inline word
+--- diff and the deleted-line preview.  The hunk preview window is closed too —
+--- it describes a hunk that is about to be redrawn.
+---@param bufnr integer
+local function clear_layers(bufnr)
+  signs.clear(bufnr)
+  worddiff.clear(bufnr)
+  preview.clear(bufnr)
+end
+
 --- The repository vanished (deleted from under the editor): drop back to
 --- "no signs", but do **not** call `manager.detach`.  `repo_manager._remove`
 --- already cleared every `_by_ref` entry pointing at this repository, and this
@@ -106,7 +121,7 @@ end
 local function deactivate(st)
   st.attached = false
   st.repo = nil
-  signs.clear(st.bufnr)
+  clear_layers(st.bufnr)
   st.refresh_cancel()
   unobserve(st)
   settle(st, 'the repository is gone')
@@ -208,9 +223,11 @@ function M._render(st)
   st.buf_text = diff.join(buf_lines)
   st.hunks, st.hunks_staged = {}, {}
   if st.base_text == nil then
-    signs.clear(st.bufnr)
+    clear_layers(st.bufnr)
     return
   end
+  -- Both previews read the same baseline as the signs, so it is split once.
+  local base_lines = diff.split(diff.normalize(st.base_text))
   if st.untracked then
     -- One hunk covering the whole file; `signs.place` puts one sign per line.
     st.hunks = {
@@ -237,10 +254,15 @@ function M._render(st)
   if st.shown then
     signs.place(st.bufnr, st.hunks)
     signs.place(st.bufnr, st.hunks_staged, { staged = true })
+    -- Step 10: the two opt-in previews are part of the same render.  They are
+    -- cleared and redrawn together with the signs, so they can never describe a
+    -- hunk the signs do not have anymore.
+    worddiff.render(st.bufnr, st.hunks, base_lines, buf_lines)
+    preview.render_deleted(st.bufnr, st.hunks, base_lines, buf_lines)
   else
     -- The switch is off: keep `st.hunks` (the accessors must stay truthful)
     -- but leave the column empty.
-    signs.clear(st.bufnr)
+    clear_layers(st.bufnr)
   end
 end
 
@@ -333,6 +355,8 @@ function M.attach(bufnr)
   -- jump width when the signs finally arrive.
   set_signcolumn(bufnr)
   signs.define_highlights()
+  worddiff.define_highlights()
+  preview.define_highlights()
 
   local ref = 'attach:' .. bufnr
   manager.attach(ref, path, function(err, repo)
@@ -430,7 +454,7 @@ function M.toggle(bufnr)
       M._render(st)
     end
   else
-    signs.clear(bufnr)
+    clear_layers(bufnr)
   end
   return st.shown
 end
@@ -495,7 +519,7 @@ function M.detach(bufnr)
   if not st then
     return
   end
-  signs.clear(bufnr)
+  clear_layers(bufnr)
   st.refresh_cancel()
   unobserve(st)
   settle(st, 'the buffer was detached')
@@ -579,7 +603,7 @@ end
 --- alive by a command reference.
 function M.forget_all()
   for _, st in pairs(M._bufs) do
-    signs.clear(st.bufnr)
+    clear_layers(st.bufnr)
     st.refresh_cancel()
     unobserve(st)
     settle(st, 'the signs were dropped')
