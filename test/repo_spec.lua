@@ -19,21 +19,34 @@ local config = require('vcssign.config')
 local exec = require('vcssign.exec')
 local repo_manager = require('vcssign.repo_manager')
 
---- Count how many *liveness probes* `fn` causes.
+--- Count how many *liveness probes* `fn` causes, for the repository `fn` works
+--- on.
 ---
 --- `repo.lua` reaches the adapters through module tables, so wrapping `exec.run`
 --- here is seen by every command the plugin spawns — no test hook in
 --- production code.  The probe is `git rev-parse --show-toplevel` (or
 --- `svn info --show-item wc-root`), so nothing else counts.
+---
+--- The count is scoped to the **first** cwd that probes: in a full run a
+--- leftover repository from an earlier spec can still answer its watcher
+--- inside these (long) windows, and counting that one too made this case red
+--- only in full runs (2026-10-17: `229 tests, 1 failed` on
+--- `runtime-manual-coalesce`, green when `repo_spec` runs alone).  `fn` always
+--- starts by touching the repository under test, so the first probe names it.
 ---@param fn fun()
 ---@return integer
 local function count_probes(fn)
   local real_run = exec.run
   local calls = 0
+  local subject = nil
   exec.run = function(cmd, opts, cb)
     local joined = table.concat(cmd, ' ')
     if joined:find('rev-parse', 1, true) or joined:find('wc-root', 1, true) then
-      calls = calls + 1
+      local cwd = opts and opts.cwd
+      subject = subject or cwd
+      if cwd == subject then
+        calls = calls + 1
+      end
     end
     return real_run(cmd, opts, cb)
   end
