@@ -1,5 +1,5 @@
 --- M6 Step 5–7: the sign layer's placement rules and highlight groups.
---- See impl/init/07-signs-in-signcolumn.md §3.2 / §4 (D40).
+--- See loop/archive/signs/2026-10-16T23-24-18-line-signs-in-signcolumn.md §3.2 / §4 (D40).
 ---
 --- No repository and no VCS binary: `signs.lua` maps `vcssign.Hunk[]` onto
 --- extmarks, so a scratch buffer pins every rule (which line a hunk anchors on,

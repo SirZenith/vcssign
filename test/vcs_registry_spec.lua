@@ -1,5 +1,5 @@
 --- M1 acceptance: the system registry and repository detection.
---- Covers impl/init/01-vcs-adapter.md §7.4 (nested repositories switch system
+--- Covers loop/archive/vcs/2026-10-16T17-33-54-vcs-adapter-git-svn.md §7.4 (nested repositories switch system
 --- based on the path), the probing fallback, and the `config.systems` ordering.
 local helpers = require('helpers')
 

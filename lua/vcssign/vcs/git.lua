@@ -1,6 +1,6 @@
 --- git adapter.
 ---
---- See impl/init/01-vcs-adapter.md §4.  Three things differ from the
+--- See loop/archive/vcs/2026-10-16T17-33-54-vcs-adapter-git-svn.md §4.  Three things differ from the
 --- vcs-helper.nvim reference implementation on purpose:
 ---   1. root detection asks git itself (worktrees and submodules, where `.git`
 ---      is a *file*, cannot be found by a pure marker scan);

@@ -2,7 +2,7 @@
 ---
 --- Specs are plain Lua modules returning a list of `{ name, fn }` cases; a
 --- failing assertion raises, and the runner (test/run.lua) turns that into a
---- `not ok` line.  See impl/init/05-testing-infra.md §3.
+--- `not ok` line.  See loop/archive/testing/2026-10-16T17-33-54-testing-infra-and-toolchain.md §3.
 local M = {}
 
 --- `vim.fs.normalize` is lexical and does not absolutise, so make sure the

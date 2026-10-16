@@ -12,7 +12,7 @@
 --- file of the current buffer).  Status entries are gone with the sidebar (M5)
 --- and the repository no longer caches a file list (D38), so a target is always
 --- resolved from the path itself.
---- See impl/init/04-commands-actions.md §2.
+--- See loop/archive/commands/2026-10-16T17-33-54-commands-and-actions.md §2.
 local attach = require('vcssign.attach')
 local blame = require('vcssign.blame')
 local config = require('vcssign.config')

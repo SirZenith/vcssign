@@ -5,7 +5,7 @@
 --- pipeline, and that nothing outlives its buffer or the session.  The policy
 --- (one cache per root, one command per debounce window) is `repo_spec`'s job;
 --- the pipeline itself is `attach_spec`'s.
---- See impl/init/07-signs-in-signcolumn.md §6.
+--- See loop/archive/signs/2026-10-16T23-24-18-line-signs-in-signcolumn.md §6.
 local attach = require('vcssign.attach')
 local autocmds = require('vcssign.autocmds')
 local config = require('vcssign.config')

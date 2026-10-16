@@ -1,9 +1,9 @@
 " vcssign: file status signs for git and svn.
 "
-" Thin on purpose (impl/init/04-commands-actions.md §1): the command is
+" Thin on purpose (loop/archive/commands/2026-10-16T17-33-54-commands-and-actions.md §1): the command is
 " registered here, and the Lua module tree is only loaded when it is first
 " used.  `setup()` stays optional — every layer has defaults — but it is what
-" turns on automatic attach (see impl/init/04-commands-actions.md §4).
+" turns on automatic attach (see loop/archive/commands/2026-10-16T17-33-54-commands-and-actions.md §4).
 
 if exists('g:loaded_vcssign')
   finish

@@ -1,6 +1,6 @@
 --- The diff view: the scratch window `:Vcssign diff` and `diffthis [rev]` show
 --- their text in, plus the text of an arbitrary-revision diff
---- (impl/init/07-signs-in-signcolumn.md §3, Step 11).
+--- (loop/archive/signs/2026-10-16T23-24-18-line-signs-in-signcolumn.md §3, Step 11).
 ---
 --- Two things share the module because they are the same view:
 ---
