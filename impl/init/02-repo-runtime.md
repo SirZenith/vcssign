@@ -94,15 +94,23 @@ Repo:start()           # 开始监听（manager 建仓时调用）
 
 ### 3.2 FS 监听（自动发现变更）
 
-监听集（`_init_watch`，M6 Step 2 起只此一项）：
+监听集（`_init_watch`，M6 Step 2 + `f1d1735` 修正后共两项）：
 
 | 路径 | 递归 | 为什么 |
 |------|------|--------|
 | `metadata_path` | 是（非 Linux） | index / wc 元数据变化 —— 这是 Repo 唯一需要的信号（D38） |
+| `root` | **否** | **只作存活探测**：libuv 从不报告「被监听目录自身消失」，见下 |
 
-> ⚠ **M6 Step 2（D38）**：`root` 与 `root` 的直接子目录**不再监听**。
-> 工作树文件的内容变化由「每次渲染前按需跑一次 `system.status`」覆盖（M7+），
-> 不再需要「文件一变就全仓刷新」。旧的 `_sync_watch_set`（root 层目录增删同步）随之删除。
+> ⚠ **M6 Step 2（D38）**：`root` 的直接子目录**不再监听**（工作树内容变化由缓冲区侧的
+> `on_lines` 防抖 + 按需 diff 覆盖，见 07 §3.2），旧的 `_sync_watch_set` 随之删除。
+>
+> ⚠ **但 `root` 自身的非递归监听必须留着**（`f1d1735` 修）：libuv **从不报告「被监听目录
+> 自身消失」** —— 实测把 `.git` 改名走，挂在 `.git` 上的 handler 收 **0 个事件**，而挂在
+> `root` 上的非递归 handler 立刻收到 `.git` / `.git-gone` 的 rename（3 events）。少了它，
+> 工作副本被删后 `Repo` 永不自杀，只能等某次无关 refresh 失败才被回收
+> （`repo_spec` 的「`.git` 消失」「`.svn` 消失」两个用例在 `3ecbdd7`..`7acc713` 上因此
+> 过滤运行必红、全量运行间歇红）。`_on_fs_event` 已有的「marker 不存在 ⇒ `_mark_deleted()`」
+> 分支就是这条探测的落点。
 
 > **实际监听的是 `metadata_path`**，不一定是 `<root>/<keyfile>`：git worktree / submodule 的
 > `.git` 是**文件**，真正的 index 在 `<main>/.git/worktrees/<name>/index`（在仓库之外）。

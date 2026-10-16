@@ -372,6 +372,32 @@ Summary of conflicts:
 - 工程门：`make test` = **`150 tests, 0 failed`**（158 − 8）；`make format-check` 干净；`make lint` = `Total: 0 warnings / 0 errors in 31 files`。
 - stderr 合同不变：仍是**恰好 1 行**（同 Step 2/3 那条 `rev-parse --show-toplevel`），本步没有新增告警。
 
+### M6 Step 5 之后的实况（178 用例）
+
+| spec | 用例数 | 需要的外部命令 |
+|------|--------|----------------|
+| config / doc | 7 + 6 | 无 |
+| exec / repo | 13 + 20 | git（svn 部分用 svn） |
+| vcs_git / vcs_svn / vcs_registry | **14** + **13** + 8 | git / svn / 两者 |
+| hunk / diff | **20 + 10** | git |
+| signs / attach | **13 + 14** | git |
+| autocmds | 10 | git |
+| actions / cli | 19 + 11 | git, svn, svnadmin |
+
+- 工程门：`make test` = `178 tests, 0 failed`；`make format-check` 零输出；
+  `make lint` = `Total: 0 warnings / 0 errors in 35 files`。
+- **stderr 合同要改写**：行数现在在 **0/1 之间浮动**。那一行仍来自 retry 用例
+  （`exec_timeout_ms = 1`）的 `log.warn`，是否出现取决于命令有没有在 1ms 内跑完，用例本身不断言它。
+  **别再按「恰好 1 行」写验收** —— Step 14 要么断言 0–1 行，要么把该用例的告警主动捕获掉。
+- **`FILTER=<spec> make test` 也必须绿**（这是本节新增的判据）。Step 2 引入的回归
+  （工作副本被删后 `Repo` 不自杀，见 07 §6.1）在 `3ecbdd7` / `5e8e485` / `7acc713` 上让
+  `FILTER=repo_spec` **稳定 2/20 红**、全量运行**间歇红**；`f1d1735`（root 上的非递归存活 watch）
+  修好后连跑两次 20/20 绿。**全量绿 ≠ 该 spec 单独跑绿**，两者都要测。
+- `hunk_spec` / `signs_spec` 是纯函数与放置规则 spec（读 extmark details，不依赖屏幕渲染）；
+  `attach_spec` 才用真仓库 + `helpers.screen_line` 断言 `signcolumn` 单元格。
+- 高亮断言后要复原（先 `highlight clear <组>` 再 `define_highlights()`），
+  `renderer_spec` 与 `signs_spec` 同法。
+
 ## 7. M5 实测与踩坑
 
 - stylua 100 列 vs 120 列：100 列重排 18 文件 383 行，120 列 10 文件 156 行；两者都过 `--check`，选 100 只为与 gitsigns 一致。

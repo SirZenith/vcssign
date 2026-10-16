@@ -113,6 +113,33 @@ M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
       键位动作 / API / `:helptags` tag 唯一）（05 §5）
 - [ ] CI（backlog，**未做**）：ubuntu+windows matrix——本机无 GitHub 远端，写了也无法验证；接入步骤见 05 §4
 
+## M6 · 行级 sign（07，P0 转向）—— 🚧 进行中（Step 1–5/14 完成，178/178）
+
+> 用户要求把「文件状态侧边栏」换成 gitsigns 式的**行级 sign**（状态直接进 `'signcolumn'`）。
+> 设计、探针实测与分步计划见 `07-signs-in-signcolumn.md`；**交接说明见该文 §6.1–§6.4**
+> （已落地 SHA 表 + 回归始末、每步工作契约、已知坑、Step 6 入口）。
+
+- [x] **Step 1** 退役侧边栏，留最小 sign 骨架 —— `080379c`（174 → 125，全绿）
+- [x] **Step 2** `Repo` 降级为元数据会话 + `exec` 支持 `stdin` —— `3ecbdd7`（128 用例；**本步引入回归**：只监听 metadata 后工作副本被删不再被发现）
+- [x] **Step 3** `hunk.lua` + `diff.lua`（`vim.text.diff` 封装）—— `5e8e485`（125 → 158）
+- [x] **Step 4** 适配器换血：`show` / `is_tracked` / `blame` / `apply_patch` / `revert`，`VcsCaps` 换字段 —— `7acc713`（150）
+- [x] **Step 5** `signs.lua`（双命名空间 + 放置规则 + 高亮）+ `attach.lua`（守卫 / 基线 / diff / 渲染 / `nvim_buf_attach`）—— `6eaef2b`（150 → 178）
+- [x] 顺带修掉两条独立缺陷：`f1d1735`（`fix(repo)` 根目录加非递归 watch，修 Step 2 的回归；`FILTER=repo_spec` 由 2/20 红 → 连跑两次 20/20 绿）、`e6c4f1b`（`fix(vcs)` svn 追踪判定改用 `svn info`，并更正 07 §3.1 / §5.3 的两处探针结论）
+- [x] 文档：`9b4eb90`（07 设计与探针实测）+ §6.1–§6.4 交接
+- [ ] **Step 6** 刷新触发（`on_lines` 防抖 / `on_reload` / `repo:on_update`）+ 生命周期 autocmd + 开关
+- [ ] **Step 7** git 暂存态双层 sign
+- [ ] **Step 8** `nav.lua`（`]c` / `[c`）+ `keymap.lua`
+- [ ] **Step 9** hunk 级动作 + CLI
+- [ ] **Step 10** `worddiff.lua` + `preview.lua`
+- [ ] **Step 11** `blame.lua` + `revdiff.lua`
+- [ ] **Step 12** 文档与帮助回写（`00`–`06`、`doc/vcssign.txt`、`doc_spec`）
+- [ ] **Step 13** 独立审查（`code-reviewer` 审 M6 起点..HEAD）+ 修复
+- [ ] **Step 14** 终验（全量两遍幂等、stderr 合同、`git diff --check`、逐 SHA 复跑）
+
+**工程门（`6eaef2b` 实测）**：`make test` → `178 tests, 0 failed`；`make format-check` → 零输出；
+`make lint` → `Total: 0 warnings / 0 errors in 35 files`。stderr 行数在 **0/1** 之间浮动
+（retry 用例的 1ms 超时告警，不参与断言）—— Step 14 定论。
+
 ## 里程碑依赖
 
 ```
