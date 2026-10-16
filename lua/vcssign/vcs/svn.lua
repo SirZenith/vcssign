@@ -127,23 +127,44 @@ function M.show(root, rev, rel, cb)
   end)
 end
 
---- Whether `rel` is under version control, decided by the first status column:
---- `?` is "not under version control".
+--- Whether `rel` is under version control, decided by `svn info`'s exit code.
 ---
---- Known wart (§5.3): a path that does not exist at all produces *no* status
---- output (exit 0), so it reads as tracked.  Callers that care must stat the
---- file first; the baseline path in Step 9 does, because it has to read the
---- file anyway.
+--- `svn status` cannot answer this: a path that does not exist produces *no*
+--- output at all (exit 0), which reads as "tracked" — the wart this replaced.
+--- `svn info` fails for every path it cannot describe, and the texts below are
+--- all "not tracked", i.e. an answer rather than a failure:
+---   * measured: `W155010: The node '<abs>' was not found.` (an unversioned
+---     *or* nonexistent path) followed by `E200009: Could not display info for
+---     all targets because some targets don't exist`;
+---   * measured (svn 1.14.5): `E155007: '<abs>' is not a working copy` outside
+---     any working copy; older builds spell it `W155007`;
+---   * `not under version control` (W200005), kept defensively.
+--- A *missing but tracked* path (status `!`) still answers `info` with exit 0,
+--- which is the wanted answer: it is under version control.
+--- Only an unrecognised non-zero exit is reported as an error.
 ---@param root string
 ---@param rel string
 ---@param cb fun(err: string?, tracked: boolean?)
 function M.is_tracked(root, rel, cb)
-  exec.run(build({ 'status', '--', abspath(root, rel) }), { cwd = root }, function(err, res)
-    if err then
-      return cb(err)
+  exec.run(build({ 'info', '--', abspath(root, rel) }), { cwd = root }, function(err, res)
+    if not err then
+      return cb(nil, true)
     end
-    local first = exec.split_lines(res.stdout)[1]
-    cb(nil, not (first and first:sub(1, 1) == '?'))
+    -- `err` is `exec.error_message`, which keeps only the *first* stderr line,
+    -- so match the full stderr channel as well.
+    local text = ((res and res.stderr) or '') .. ' ' .. err
+    local lower = text:lower()
+    if
+      lower:match('not under version control')
+      or lower:match('not a working copy')
+      or text:match('E200009')
+      or text:match('W155010')
+      or text:match('E155007')
+      or text:match('W155007')
+    then
+      return cb(nil, false)
+    end
+    cb(err)
   end)
 end
 
