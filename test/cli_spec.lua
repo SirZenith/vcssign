@@ -357,10 +357,10 @@ return {
     end),
   },
   {
-    name = 'plugin/vcssign.vim registers the command and it runs',
+    name = 'plugin/vcssign.lua registers the command and it runs',
     fn = guarded(function()
       reset()
-      vim.cmd('source ' .. vim.fn.fnameescape(helpers.plugin_root .. '/plugin/vcssign.vim'))
+      vim.cmd('source ' .. vim.fn.fnameescape(helpers.plugin_root .. '/plugin/vcssign.lua'))
       eq(vim.fn.exists(':Vcssign'), 2, 'defined as a user command')
 
       local dir = repo_dir('cli-shim')

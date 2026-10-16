@@ -26,7 +26,7 @@ unverified.
 ==============================================================================
 USAGE                                                          *vcssign-usage*
 
-No setup required. `plugin/vcssign.vim` registers |:Vcssign| and the
+No setup required. `plugin/vcssign.lua` registers |:Vcssign| and the
 functions in |vcssign-functions| work on their own.
 
 However, automatic attaching — discovering the repository in the background
