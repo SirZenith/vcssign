@@ -346,7 +346,7 @@ commit = { message_input = 'input' },
 | 9 | hunk 级动作（`stage_hunk`/`unstage_hunk`/`reset_hunk`/`stage_buffer`/`reset_buffer`）+ CLI；`actions_spec` 19→30 | ✅ **已完成**（`a5e544a`，202 → **213** 用例，全绿；`preview_hunk` 挪到 Step 10，见 §6.1） |
 | 10 | `worddiff.lua`（成对行按段 diff）+ `preview.lua`（`virt_lines` 删除预览 / hunk 浮窗） | ✅ **已完成**（`1317890`，213 → **229** 用例，全绿；`worddiff_spec` 9 + `preview_spec` 7） |
 | 11 | `blame.lua`（`current_line_blame` + `blame_line` 浮窗）+ `revdiff.lua`（`diffthis [rev]`）；各约 6 | ✅ **已完成**（`22ad24a`，229 → **244** 用例，全绿；`blame_spec` 8 + `revdiff_spec` 7） |
-| 12 | 文档与帮助回写（`00`–`06`、`doc/vcssign.txt`、`doc_spec`） | ⬜ 待做（入口见 §6.2 / §6.4） |
+| 12 | 文档与帮助回写（`00`–`06`、`doc/vcssign.txt`、`doc_spec`） | ✅ **已完成**（`a4b3551`，用例数仍 **244**，全绿；`doc_spec` 6/6 单跑） |
 | 13 | 独立审查（`code-reviewer` 审 M6 起点..HEAD）+ 修复 | ⬜ 待做（入口见 §6.2 / §6.4） |
 | 14 | 终验（全量两遍幂等、stderr 合同、`git diff --check` 干净、逐 SHA 复跑） | ⬜ 待做（入口见 §6.2 / §6.4） |
 
@@ -355,7 +355,7 @@ commit = { message_input = 'input' },
 
 ---
 
-### §6.1 已落地（截至 `22ad24a`）
+### §6.1 已落地（截至 `a4b3551`）
 
 | SHA | 提交 | 验证（`make test`） |
 |---|---|---|
@@ -375,6 +375,15 @@ commit = { message_input = 'input' },
 | `5942dd9` | `fix(test)`：`repo_spec` 的探针计数限定到被测仓库（Step 10 全量首跑的 flake） | 用例数不变，只让全量运行稳定 |
 | `1317890` | Step 10：词级 diff 与 hunk 预览（`worddiff.lua` + `preview.lua` + 渲染出口 `clear_layers` + CLI / keymap 接线） | 213 → **229**，全绿；`worddiff_spec` 9 + `preview_spec` 7 单跑 **16/16** |
 | `22ad24a` | Step 11：当前行 blame 与 `diffthis [rev]`（`blame.lua` + `revdiff.lua` + `preview.M.open`） | 229 → **244**，全绿；`blame_spec` 8 + `revdiff_spec` 7 单跑 **15/15** |
+| `a4b3551` | Step 12：文档与帮助回写（`00`–`05` 加 M6 标记、05 补实况表、07 §5.3 / §11 更正、`doc/vcssign.txt` 三处措辞） | 用例数仍 **244**，全绿；`doc_spec` 6/6 |
+
+**工程门（`a4b3551` 实测）**：`make test` **244/244**（同一棵树上空闲连跑两次都是 `244 tests, 0 failed`）、
+`make format-check` 零输出、`make lint` → `0 warnings / 0 errors in 46 files`。
+
+**Step 12 回读全文时更正的两处过时说法**（漂移的来源：旧文档把「当时的实现」写成了「设计要求」）：
+① 07 §5.3 / §11 第 2 条曾写「`svn patch --strip 0` 不吃 git 风格头」——被 Step 9 的实测推翻（见 §6.3）；
+② 04 的 `autocmds._attached`（「每个缓冲区只 attach 一次」的记忆表）已在 Step 6（`2193802`）删除，
+「只 attach 一次」现在由 `attach.lua` 按路径去重实现。**以后做这类回写要逐段核对代码，不能只加新章节。**
 
 **Step 2 引入的回归（交接要点，别再踩）**：Step 2 把监听集收敛成「只监听 metadata 目录」（D38），
 而 **libuv 从不报告「被监听目录自身消失」** —— 实测：把 `.git` 改名走，挂在 `.git` 上的 handler
@@ -551,7 +560,7 @@ window is not run twice` 只在全量里红（`repo_spec` 单跑 20/20）。原�
   的 python 补丁（`assert src.count(old) == 1` 守卫 + `io.open(..., encoding='utf-8', newline='')` 回写）。
   `edit` 工具对「尚无观察」的文件可能拒绝改，此时同样走 python 补丁。
 
-### §6.4 下一步（Step 12）的入口
+### §6.4 下一步（Step 13）的入口
 
 **已经就绪、可以直接消费的接口**（`6eaef2b` 冻结，`2193802` / `4bfe0ce` 补齐开关与暂存层，`f54b6af` 补上导航与键位）：
 
@@ -587,9 +596,23 @@ window is not run twice` 只在全量里红（`repo_spec` 单跑 20/20）。原�
 `blame_line`，注意 `diffthis` 的参数是 **rev 而不是路径**）；`keymap.ACTIONS` 里只剩
 `setqflist` / `setqflist_all` 是占位提示。
 
-**Step 12 要做的事**：把 `impl/init/00`–`06` 与 `doc/vcssign.txt` / `doc_spec` 对齐到 M6 的实际交付
-（§4 的配置面逐键、§7 的验收 10 条逐条对照实现与 spec），随后 Step 13 独立审查（`code-reviewer`
-审 M6 起点..HEAD）、Step 14 终验（全量两遍幂等、stderr 合同、`git diff --check`、逐 SHA 复跑）。
+**Step 12 已完成**（`a4b3551`）：`impl/init/00`–`05` 加上了 M6 的「已退役 / M6 起已变」标记与 05 的实况表
+（逐 spec 用例数与所需命令、`FILTER` 子集判据、两个要会解读的现象），07 §5.3 / §11 的 svn 结论与
+`doc/vcssign.txt` 的三处措辞（`watch` / `retry_*` / `debug`）一并更正；用例数不变，`doc_spec` 6/6。
+**`impl/init/06` 与 `07` 的 §6 / §6.1 保持逐 SHA 记录，不当作「设计要求」读。**
+
+**Step 13 要做的事（独立审查）**：用 `code-reviewer` 从 **M6 起点（`080379c^`）** 审到 HEAD，重点：
+
+1. `attach.lua` 的状态机与**六个清理出口**（`clear_layers` / `refresh_cancel` / `unobserve` / `settle` /
+   `keymap.detach` / `blame.detach`）有没有漏 —— Step 14 的 `VimLeavePre` 零句柄断言靠它。
+2. 适配器与 `exec` 的错误 / `stdin` 契约（**补丁必须自带结尾 `\n`**；`string[]` 形式的 stdin 会逐元素补换行）。
+3. 有没有引入 D46 明令禁止的东西：async 框架、新依赖、在 Vim 主循环之外回调（D19）。
+4. 公共 API（`setup` / `refresh` / `attach` / `detach` / `toggle` / `get_hunks`）、`cli.subcommands` 与
+   `doc/vcssign.txt` 是否仍然一致（`doc_spec` 只钉名字出现，不钉语义）。
+
+审查结论要么就地修（`fix(scope): …` 单独提交，按 §6.2 的「不是本步问题」规则），要么写进 §6.3 / §10 的
+backlog。随后 Step 14 终验：全量两遍幂等、stderr 合同（断言「0 或 1 行」或主动捕获 retry 告警）、
+`git diff --check` 干净、并按 §6.2 的 `git stash push -u -- <文件>` 流程逐 SHA 复跑。
 
 
 ## §7 验收标准（用户可点）
