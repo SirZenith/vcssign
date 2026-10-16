@@ -9,6 +9,12 @@
 --- `BufEnter` storms; `attach.attach` answers a second call for a buffer it
 --- already holds with a table lookup instead, which does not delay the very
 --- first attach after opening a file — the one the user is waiting for.
+---
+--- `setup()` also attaches the buffers that are already on screen.  A plugin
+--- loaded on a `BufEnter` trigger (lazy.nvim, `:packadd`) starts *after* that
+--- event fired for the file the user opened, and no further event is coming
+--- for it: without the sweep the sign column would stay empty until the user
+--- leaves and re-enters the buffer.
 --- See impl/init/07-signs-in-signcolumn.md §6.
 local attach = require('vcssign.attach')
 local config = require('vcssign.config')
@@ -65,7 +71,8 @@ function M.refresh_buffers()
   attach.refresh_all()
 end
 
---- Create the `vcssign` augroup and wire the lifecycle events.
+--- Create the `vcssign` augroup, wire the lifecycle events, and attach the
+--- buffers that are already on screen.
 function M.setup()
   M.disable()
   local group = vim.api.nvim_create_augroup(M.group_name, { clear = true })
@@ -157,6 +164,25 @@ function M.setup()
       fire_config_hook('on_detach', repo)
     end),
   }
+
+  -- Attach what is already on screen.  A plugin loaded on a `BufEnter`
+  -- trigger (lazy.nvim, `:packadd`) starts *after* that event fired for the
+  -- file the user opened, and no second event is coming for it.  gitsigns
+  -- sweeps every loaded buffer here ("Attach to all open buffers",
+  -- `gitsigns.lua`); the windows are the narrower version of that: what is
+  -- visible is what has an empty sign column to fill, and a hidden buffer
+  -- gets its own `BufEnter` when it is shown again.  `M.attach_buffer` holds
+  -- every eligibility test and answers a buffer it already holds from its
+  -- state table, so a sweep costs table lookups, not new `git`/`svn`
+  -- detection.
+  local seen = {}
+  for _, winid in ipairs(vim.api.nvim_list_wins()) do
+    local bufnr = vim.api.nvim_win_get_buf(winid)
+    if not seen[bufnr] then
+      seen[bufnr] = true
+      M.attach_buffer(bufnr)
+    end
+  end
 end
 
 --- Remove every autocmd and hook this module installed.  Idempotent; `setup()`

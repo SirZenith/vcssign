@@ -142,6 +142,12 @@ setup({cfg})                                                *vcssign.setup()*
     Configure the plugin and start the lifecycle autocommands (automatic
     attach and refresh).
 
+    The buffers that a window shows are attached right away, so loading
+    the plugin late (a lazy trigger on |BufEnter|, |:packadd|) still puts
+    signs on the file in front of you: the event that would have noticed
+    it has already fired. A buffer no window shows waits for its own
+    |BufEnter|.
+
     Each call starts from the defaults and merges the table given to it
     (calls do not stack). Returns the module table.
 

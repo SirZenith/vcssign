@@ -64,7 +64,7 @@ git 与 svn 同时交付（基线 git=index、svn=BASE），能力差异用 `Vcs
 
 ---
 
-## §2 关键决策（D38–D47）
+## §2 关键决策（D38–D48）
 
 | 决策 | 内容 | 理由（为什么） |
 |---|---|---|
@@ -78,6 +78,7 @@ git 与 svn 同时交付（基线 git=index、svn=BASE），能力差异用 `Vcs
 | **D45** | reset 类动作保护未保存改动：`vim.bo.modified` 为真时**拒绝并提示**（「有未保存修改，先 `:w` 或 `:e!`」），不做内存内 patch 应用 | gitsigns 用 text edit 同步改缓冲区，我们初版不做（列为 backlog）；拒绝比静默丢改动安全 |
 | **D46** | 不引入 async 框架（沿用回调链 + 错误优先 `cb(err, ...)`）、不动 D19「回调在主循环」契约、不新增依赖 | 与 M1–M5 的架构契约一致 |
 | **D47** | `signs.culhl` 用 Neovim 原生的 extmark 选项 `cursorline_hl_group`（与 gitsigns 同款），不建 `CursorMoved` 刷新链路，也不把它写进 `place` 的早退条件 | 原生机制只作用于带 `'cursorline'` 的光标行上的 sign 格，而 `signcolumn = false` 时没有 sign 文本也就没有那个格，自建刷新链只会白跑；gitsigns 的 guard 同样不含 `culhl` |
+| **D48** | `setup()` 结束前扫一次**窗口里的缓冲区**（`nvim_list_wins` 去重 → `attach.attach`），资格判断仍全部在 `attach.attach` 内 | 懒加载触发挂在 `BufEnter` 上时，插件是在该事件**之后**才配置的，当前文件不会再收到任何事件；只扫可见的窗口而不是全部已加载缓冲区（gitsigns 做的是后者：`"Attach to all open buffers"`），免得为会话里的历史缓冲区白挂仓库；隐藏缓冲区靠自己的 `BufEnter` 补上，不会漏 |
 
 ---
 
