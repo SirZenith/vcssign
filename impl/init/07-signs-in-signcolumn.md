@@ -250,15 +250,15 @@ commit = { message_input = 'input' },
   - **stdin 不可用**：`svn patch -` / `svn patch --strip 0 -` / `--strip 1 -` 全 code 1：`svn.EXE: invalid option: `。
     svn 1.14.5 CLI **不支持**从 stdin 读补丁 → 必须写临时文件。
   - **临时文件可行**：`svn patch --strip 0 <patchfile>` → `U         f.txt`（code 0，已应用）。
-    ~~git-style（`--- a/`/`+++ b/`）、裸 unidiff、svn-style（带/不带 `Index:`）在 `--strip 0` 下均可应用；`--strip 1` 反而冲突~~
-    **实测更正**：`--strip 0` 下 **git 风格头不成立**——`diff --git a/x b/x` / `--- a/x` / `+++ b/x`
-    会让 svn 保留 `a/`、`b/` 前缀去找文件，结果 stdout 打 `C         x` + `>         rejected hunk …`，
-    工作树不变（而 svn 仍 exit 0）。git 风格头只在 `--strip 1` 生效；`--strip 2` 报
+    **实测（Step 9 重做：`temp/probe_svn2` 里全新 `svnadmin` 仓库 + WC，svn 1.14.5）**：`--strip 0` 下
+    **git 风格头照常应用** —— `diff --git a/x b/x` / `--- a/x` / `+++ b/x` 得到 `U         x`（exit 0）；
+    裸头（`--- rel`）同样应用；嵌套路径（`sub/inner.txt`）也照此。两种头都有活用例：
+    `test/vcs_svn_spec.lua` 的 `BARE_PATCH`、`actions_spec` 的 svn `reset_hunk`（走 `hunk.build_patch`
+    的 git 风格头 + `--reverse-diff`）。**旧文写「git 风格头在 `--strip 0` 下不成立」是把一次
+    `svn add` 过但**未提交**（BASE 里还没有）的文件的实验结果当成了头风格问题** —— 那种文件无论
+    哪种头都只会得到 `C` + `rejected hunk`。`--strip 1` 才会冲突（`C .`），`--strip 2` 报
     `svn: E195018: Cannot strip 2 components from 'f.txt'`。
-    **照抄：`svn patch --strip 0 <tempfile>`，且补丁必须是裸头（`--- rel` / `+++ rel`）或 svn 风格
-    （`Index: rel` 可选）。这是调用方约束：任何走 `--strip 0` 的补丁构造都不得写 `a/`、`b/` 前缀。**
-    仓库已按此实现：`lua/vcssign/hunk.lua` 的 `build_patch` 产出裸头，`test/vcs_svn_spec.lua` 的 `BARE_PATCH`
-    与对应用例把这条件钉住了。
+    所以 `lua/vcssign/hunk.lua` 的 `build_patch` 只产一种头（git 风格）就够，svn 侧不需要切换风格。
   - **反向**：`svn patch --reverse-diff <file>` 可用；**把 `+`/`-` 互换的 unidiff** 也可用于丢弃一个 hunk（svn-style 与 git-style+`--strip 0` 都验证成功）。
   - **冲突不报错（反直觉）**：hunk 无法应用时 `svn patch` 仍 **退出码 0**，stdout 打 `C         f.txt` + `>         rejected hunk …`，
     并写 `<file>.svnpatch.rej`，工作树保持不变。**不能用退出码判成败**，必须解析 stdout 的 `U `/`C ` 或检查 `.rej`。
@@ -650,8 +650,9 @@ window is not run twice` 只在全量里红（`repo_spec` 单跑 20/20）。原�
 
 1. **`on_reload` 与 `:e!` 的差异**：仅在 Windows/nvim 0.12.4 组合实测 `:e!`→`on_detach`；不同平台/版本可能不同，
    实现里两种都兜底（`on_detach` + `BufReadPost`）。
-2. **`svn patch --strip` 语义**：`--strip 0` 只接受裸头/svn 风格头，git 风格头必须 `--strip 1`
-   （实测更正，见 §5.3）；「补丁路径前缀 × WC 相对路径」的组合仍未穷举。
+2. **`svn patch --strip` 语义（Step 9 已实测，见 §5.3 / §6.3）**：`--strip 0` 下 git 风格头与裸头
+   都能正常应用；`--strip 1` 冲突、`--strip 2` 报 `E195018`；冲突时退出码仍是 0（必须解析 stdout）。
+   「补丁路径前缀 × WC 相对路径」的其余组合仍未穷举（当前只用 `--strip 0`）。
 3. **`git blame` 行号对齐在「hunk 含多行（`num_lines > 1`）」时未专门验证**，只验证了每组 1 行。
 4. **`yes:2` 下「两个 sign + 开启 number」时第二个 sign 的显示未稳定复现**（负优先级 sign 是否显示未定论）。
 5. **`svn blame` 大文件（> 1k 行）耗时未测**（本次只有 200 行数据）。

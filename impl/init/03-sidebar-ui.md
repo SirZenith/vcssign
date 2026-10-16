@@ -1,5 +1,10 @@
 # 03 · 侧边栏 UI：窗口管理、渲染、高亮、按键（P2）
 
+> **⚠ 已退役（M6 Step 1，`080379c`）**：用户把方向改成 gitsigns 式**行级 sign**，侧边栏
+> （`lua/vcssign/sidebar/` + `status_type.lua` + 三个 sidebar spec）已全部删除。本文保留为 M3 的
+> 设计与验收记录；当前实现见 `07-signs-in-signcolumn.md` —— sign 画在文件自己的 `signcolumn` 上，
+> 导航 / hunk 动作 / 预览 / 词级 diff / blame / rev diff 都在那里。
+
 > 数据通路（01/02）就绪后，UI 只是「把 StatusEntry[] 画出来 + 响应按键」。
 > 渲染策略大量参考 oil-vcs-status 的 extmark sign 位方案，但它是往
 > oil 缓冲区画 sign，我们是**独立的侧边栏窗口 + 专属缓冲区**，窗口管理
