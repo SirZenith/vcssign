@@ -24,8 +24,8 @@
 | `test/helpers.lua` | fixture 路径 / 断言 / 异步阻塞等待 / 通知捕获 / 屏幕单元格读取 | ✅ |
 | `test/status_type_spec.lua`、`config_spec.lua` | 枚举与配置不变量 | ✅ |
 | `test/vcs_git_spec.lua`、`vcs_svn_spec.lua`、`vcs_registry_spec.lua` | 01 的验收 spec | ✅（42 用例全绿） |
-| `test/repo_spec.lua` | 02 的验收 spec（运行时） | ✅（21 用例全绿） |
-| `test/exec_spec.lua` | `exec.run` 契约（**回调上下文**/错误结构/超时/spawn 失败） | ✅（7 用例全绿） |
+| `test/repo_spec.lua` | 02 的验收 spec（元数据会话：监听/去抖/存活探测/句柄清场） | ✅（20 用例全绿，M6 Step 2 版） |
+| `test/exec_spec.lua` | `exec.run` 契约（**回调上下文**/错误结构/超时/spawn 失败/**stdin**） | ✅（13 用例全绿，M6 Step 2 加 4 个 stdin 用例） |
 | `test/renderer_spec.lua` | 03 的行模型 spec（纯函数，无仓库/无二进制） | ✅（15 用例全绿） |
 | `test/sidebar_spec.lua` | 03 的窗口/按键 spec（真实仓库 + 真实屏幕） | ✅（18 用例全绿） |
 | `test/actions_spec.lua` | 04 的动作 spec（真实仓库 + VCS 自身核对 + 桩 `vim.ui.input`） | ✅（24 用例全绿） |
@@ -179,16 +179,18 @@ Summary of conflicts:
   - ✅ `vcs_registry_spec`：01 §7.4 嵌套切换、命令优先于 marker、
         **无 marker 时逐系统探测的回落链（用 stub 模块真正走到 step 循环）**、最后错误透传、
         确定性否定不被 marker 复活、config.systems 顺序
-  - ✅ `repo_spec`（21 用例）：02 §5.1–5.5 + §4 + §7 二轮回归 —— 缓存首刷、watcher 发现编辑（含子目录/撤销收敛/≤1s 延迟）、
-        10 次快写收敛到 ≤2 轮 `git status`（stub `exec.run` 计数）、同窗口多个 refresh cb、
-        `git add` → index 域翻转（普通仓库**与 linked worktree**）、marker 消失 → dispose + `uv_count` 前后相等、
-        失败保留缓存 + 单次 warn + 指数退避 + 重试自动恢复（含 `on_error`）、
+  - ✅ `repo_spec`（20 用例，M6 Step 2 版）：02 §5.1–5.5 + §4 + 二轮回归 —— 「一次元数据事件只广播一次」、
+        事件风暴/同窗口多次请求只探测一轮、防抖窗口内手动刷新不双跑、
+        `git add`（含 linked worktree）→ 广播、marker 消失 → dispose + `uv_count` 前后相等、
+        探测失败不回退 + 单次 warn + 指数退避 + 重试自动恢复（含 `on_error`）、明确否定 → `on_delete`、
         引用计数/共享对象、attach↔detach 竞态不泄漏、dispose 后晚到结果无副作用、
         排队 waiter 不挂起、Windows 大小写折叠、`active()`、
-        根目录自身映射回仓库、dispose_all 取消在飞 attach、防抖窗口内手动刷新不双跑
-  - ✅ `exec_spec`（7 用例）：**回调必须在主循环**（`in_fast_event()==false` 且回调里可 `nvim_buf_set_lines`）、
+        根目录自身映射回仓库、dispose_all 取消在飞 attach。
+        （M6 Step 1 前那批断言缓存的旧用例——`entries()`/`get_status()`/状态矩阵——已随 D38 删除。）
+  - ✅ `exec_spec`（13 用例）：**回调必须在主循环**（`in_fast_event()==false` 且回调里可 `nvim_buf_set_lines`）、
         非零退出→`exit N: <首行 stderr>` 且保留 res、命令不存在→`spawn failed` 不抛异常、
-        超时→杀死且回调恰好一次、`timeout=0` 表示不超时、config 默认值、`split_nul/split_lines/first_line`
+        超时→杀死且回调恰好一次、`timeout=0` 表示不超时、config 默认值、`split_nul/split_lines/first_line`、
+        **`stdin` 四例**（字符串原样写入不补尾换行 / `string[]` 逐元素补 `\n` / ≥256 KiB 不截断 / 带 stdin 超时不留 timer 句柄）。
   - ⬜ `vcs_svn_spec` 的 `<1.9` 降级用例（当前用真实 svn 1.14 只覆盖了 `--show-item` 可用路径）
   - ⬜ git `unstage` 的旧版回退分支（需 git < 2.23，本机无法制造；仅对错误文案做了实测确认）
   - ⬜ `Repo` 的 `refresh_now` 在 fast-event 上下文中被调用时的 `vim.schedule` 分支
@@ -302,6 +304,31 @@ Summary of conflicts:
 - 工具版本：stylua 2.3.1、luacheck 1.2.0（PUC-Rio Lua 5.4 / LuaFileSystem 1.8.0）。
 - 本机原先没有 `make`，用 `scoop install make` 装了 4.4.1 才验证到 Makefile 真能跑（属环境准备，不进仓库）。
 - `make test` 与 `sh scripts/run_tests.sh` 是同一件事：前者多跑 `fixtures`（幂等）与 `tools`（幂等）。
+
+### M6 Step 2 之后的实况（128 用例）
+
+| spec | 用例数 | 需要的外部命令 |
+|------|--------|----------------|
+| config / doc | 7 + 6 | 无 |
+| exec / repo | **13 + 20** | git（svn 部分用 svn） |
+| vcs_git / vcs_svn / vcs_registry | 17 + 18 + 9 | git / svn / 两者 |
+| autocmds | 10 | git |
+| actions / cli | 19 + 11 | git, svn, svnadmin |
+
+- 本步后的 spec 清单以**本表**为准（Step 1 删掉侧边栏后，上面 M3/M4/M5 各表里的
+  `status_type` / `renderer` / `sidebar` / `actions` / `cli` 计数已过时——统一回写留给 Step 12）。
+- 工程门：`make test` = `128 tests, 0 failed`；`make format-check` / `make lint` 干净。
+- **stderr 合同（已重测）**：仍然**恰好 1 行**，由 `repo_spec` 用例
+  「the backoff retry recovers without any user input」（临时仓库 `temp/_spec/runtime-retry-real`）产生。
+  存活探测不再跑 `git status`，所以命令串变了。**逐字原文**（nvim 0.12.4 / git 2.55.0.windows.2）：
+
+  ```
+  vcssign: D:/Developer/nvim-plugins/vcssign/temp/_spec/runtime-retry-real: timeout after 1ms: git --no-pager --no-optional-locks --literal-pathspecs -c core.quotepath=off -c gc.auto=0 rev-parse --show-toplevel
+  ```
+
+  （旧值是以 `status --porcelain=v1 -z --untracked-files=all` 结尾、路径为 `runtime-retry` 的那条；
+  断言时不要硬编码旧串。）（其余用例的告警都被主动吞掉：`repo_spec` 的失败用例把 `vim.notify` 打桩、
+  `actions`/`cli` 的通知类断言走 `helpers.capture_notify`。）
 
 ## 7. M5 实测与踩坑
 

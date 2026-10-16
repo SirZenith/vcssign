@@ -1,21 +1,22 @@
 # 02 · 仓库运行时：进程执行、Repo 对象、缓存、FS 监听、刷新管线（P1）
 
-> 承接 01 的数据通路，把它变成「活」的：状态有缓存、变更自动发现、
-> 并发收敛到一条防抖刷新管线。本层完成后，UI 层只管消费事件。
+> 承接 01 的数据通路，把它变成「活」的：元数据变更自动发现、
+> 并发收敛到一条防抖刷新管线、仓库存活探测。本层完成后，UI 层只管消费事件。
 >
-> **状态：✅ 已完成**（M2）。验收 02 §5.1–5.5 全部有自动用例，66/66 spec 全绿。
+> **状态：✅ 已完成**（M2）；**M6 Step 2 起降级为「仓库会话」**（D38）：不再缓存/查询文件状态，
+> 只负责元数据监听 + 存活探测 + 事件广播。验收 02 §5.1–5.5 的**等效用例**见 §5（M6 版）。
 > 与初版计划的偏差见 §6（全部为实测驱动）。
 
 ## 1. 交付物
 
 | 文件 | 职责 | 状态 |
 |------|------|------|
-| `lua/vcssign/exec.lua` | `vim.system` 封装：参数经验（gitsigns `git/cmd.lua`）+ 统一错误结构 | ✅ M1 提前落地 |
+| `lua/vcssign/exec.lua` | `vim.system` 封装：参数经验（gitsigns `git/cmd.lua`）+ 统一错误结构 + `stdin`（M6 Step 2） | ✅ M1 提前落地 |
 | `lua/vcssign/config.lua` | 加 `watch` / `update_debounce_ms` / `retry_delay_ms` / `retry_max_ms` / `log_level` | ✅ |
 | `lua/vcssign/log.lua` | 分级日志：debug/info/warn/error，全部经 `vim.schedule` → `vim.notify` | ✅ 新增 |
 | `lua/vcssign/util.lua` | `is_dir` / `subscribe` / `emit`（隔离监听器异常） | ✅ 新增 |
 | `lua/vcssign/debounce.lua` | 移植 gitsigns `debounce_trailing`（MIT 注明）+ `cancel` 返回值（见 §3.3） | ✅ |
-| `lua/vcssign/repo.lua` | `Repo` 对象：状态缓存 + FS 监听（句柄池化）+ 刷新管线 + 退避重试 + `dispose` | ✅ |
+| `lua/vcssign/repo.lua` | `Repo` 对象：元数据监听（句柄池化）+ 存活探测 + 刷新管线 + 退避重试 + `dispose`（**无状态缓存**，D38） | ✅ |
 | `lua/vcssign/repo_manager.lua` | `root → Repo` 映射、attach/detach 引用计数、全局事件分发 | ✅ |
 
 ## 2. exec.lua（进程执行封装）
@@ -50,14 +51,13 @@ M.run(cmd, opts, cb)
 ---@field system vcssign.VcsSystem
 ---@field root string
 ---@field marker_path string                    # root/.git 或 root/.svn
----@field status vcssign.StatusEntry[]          # 最近一次**成功**的列表
----@field status_map table<string, vcssign.StatusEntry>  # 绝对路径 → entry
+---@field metadata_path string                 # 实际监听的元数据目录（见 §3.2）
 ---@field refs table<string, true>              # 持有它的引用令牌
 ---@field is_dirty boolean                      # 有变更待刷新
----@field is_updating boolean                   # 刷新中（防重入）
----@field has_pending boolean                   # 刷新期间又来了一次请求 → 跑完补跑
+---@field is_updating boolean                   # 探测中（防重入）
+---@field has_pending boolean                   # 探测期间又来了一次请求 → 跑完补跑
 ---@field is_deleted boolean                    # 仓库消失 / 已 dispose
----@field has_loaded boolean                    # 至少成功跑过一次（剪裁用）
+---@field has_loaded boolean                    # 至少成功探测过一次（存活检查）
 ---@field error_count integer                   # 连续失败次数（退避指数）
 ---@field last_error string?
 ---@field fs_handles table<string, uv.uv_fs_event_t>   # 监听路径 → 句柄
@@ -65,41 +65,44 @@ M.run(cmd, opts, cb)
 M.new(system, root) → Repo
 ```
 
+> ⚠ **M6 Step 2（D38）**：`status` / `status_map` 两个字段与 `entries()` / `get_entry()` /
+> `get_status()` 三个方法已删除 —— Repo 不再缓存或查询任何文件状态。需要状态的调用方
+> （`actions.lua`、`:Vcssign debug`）自己按需即时跑一把 `system.status`。
+
 > ⚠ 与初版计划的两处差异：**没有** `fs_timers` / `fs_timer_pool`
 > （去抖只做一层，见 §3.3）；字段用 `root` 而非 `root_dir`（与 01 的适配器术语一致）。
 
 ### 3.1 状态 API（回调链，供 UI 消费）
 
 ```lua
-Repo:refresh(cb?)      # 走防抖窗口；cb(err, entries) 在本轮结束时调用一次
+Repo:refresh(cb?)      # 走防抖窗口；cb(err) 在本轮结束时调用一次
 Repo:refresh_now(cb?)  # 跳过防抖（attach 首刷、动作后强制刷新）；并重置退避计数
 Repo:mark_dirty()      # 只置脏 + 排队（FS 事件/autocmd 用）
-Repo:entries()         # 缓存列表（**不排序**，见下）
-Repo:get_entry(path)   # 绝对且已归一化的路径 → entry（渲染热路径，免 normalize）
-Repo:get_status(path)  # 同上，只取 FileStatus（无变更 → nil）
-Repo:on_update(fn)     # 一轮刷新「成功且有变化」→ fn(repo)；返回 unsubscribe
-Repo:on_error(fn)      # 一轮刷新失败 → fn(err, repo)
-Repo:on_delete(fn)     # 仓库被判定消失 → fn(repo)
+Repo:on_update(fn)     # 一次存活探测成功 → fn(repo)；返回 unsubscribe
+Repo:on_error(fn)      # 一次存活探测失败（超时/权限/EBUSY…）→ fn(err, repo)
+Repo:on_delete(fn)     # 明确否定（marker 消失 / 适配器判定「不是仓库」）→ fn(repo)
 Repo:dispose()         # 停监听/定时器/订阅，终态
 Repo:start()           # 开始监听（manager 建仓时调用）
 ```
 
-> ⚠ **偏差**：初版说 `entries()` 返回「已按 03 的排序规则排好」。
-> 实际**不排序**：排序与分组依赖 git 三域 / svn 单域的自适应规则，属于 03 渲染层，
-> 放这里会变成两份实现。渲染层拿到的是「解析顺序 + 稳定的相对路径」。
+> ⚠ **M6 Step 2（D38）**：`refresh*` 的回调现在只收到 `err`（不再有 `entries`）。
+> `entries()` / `get_entry()` / `get_status()` 已删除：状态查询改成调用方即时跑一次 `system.status`
+> （`actions.fetch_status`；测试用 `helpers.status_entries`）。
 >
 > ⚠ `refresh*` 的回调由 `pcall` 隔离（见 §3.3），
 > 因此**回调里不要写断言**：测试要记录结果、在用例体内断言（spec 里已按此写）。
 
 ### 3.2 FS 监听（自动发现变更）
 
-监听集（`_init_watch`）：
+监听集（`_init_watch`，M6 Step 2 起只此一项）：
 
 | 路径 | 递归 | 为什么 |
 |------|------|--------|
-| `root` | 否 | root 层的文件增删/改名 |
-| `root` 的**直接子目录** | 否 | ⚠ 偏差：不监听就无法发现子目录里的编辑（最常见的情况）；只展开一层，不做 oil-vcs-status 式全量递归 |
-| `root/.git`（或 `.svn`） | 是（非 Linux） | index / wc 元数据变化 —— 状态域翻转的主信号 |
+| `metadata_path` | 是（非 Linux） | index / wc 元数据变化 —— 这是 Repo 唯一需要的信号（D38） |
+
+> ⚠ **M6 Step 2（D38）**：`root` 与 `root` 的直接子目录**不再监听**。
+> 工作树文件的内容变化由「每次渲染前按需跑一次 `system.status`」覆盖（M7+），
+> 不再需要「文件一变就全仓刷新」。旧的 `_sync_watch_set`（root 层目录增删同步）随之删除。
 
 > **实际监听的是 `metadata_path`**，不一定是 `<root>/<keyfile>`：git worktree / submodule 的
 > `.git` 是**文件**，真正的 index 在 `<main>/.git/worktrees/<name>/index`（在仓库之外）。
@@ -108,7 +111,8 @@ Repo:start()           # 开始监听（manager 建仓时调用）
 
 - libuv 在 Linux 上不支持递归 fs_event（inotify 无此模式），那里 `.git` 退化为非递归；
   `.git/index` 是 `.git` 的**直接子项**，所以关键的暂存域信号仍然能拿到（已实测）。
-- `_sync_watch_set`：root 层出现新目录 → 补监听；被监听目录消失 → 释放句柄。
+- `_sync_watch_set`（**M6 Step 2 已删除**）：root 层出现新目录 → 补监听；被监听目录消失 → 释放句柄。
+  现在监听集固定为 `metadata_path` 一项，不再随目录增删变化。
 - 回调里**只做两件事**：`is_dirty = true` + 重置去抖 timer（实现上就是 `mark_dirty`）。
   绝不直接跑命令。
 - 监听目录消失 → `_mark_deleted()`（`is_deleted`、停监听、通知 manager detach）。
@@ -133,24 +137,26 @@ Repo:start()           # 开始监听（manager 建仓时调用）
 FS 事件 / autocmd / 手动 refresh
         │
         ▼
- mark_dirty() → is_dirty = true → debounce_trailing(update_debounce_ms=300)
+ mark_dirty() → is_dirty = true → debounce_trailing(update_debounce_ms=200)
         │                              （vimschedule 后调用）
         ▼
  _do_refresh()
    ├─ is_updating → has_pending = true，返回（跑完立即补跑 → 收敛）
    ├─ is_updating = true  ← **先置位，再发命令**
-   ├─ system.status(root, cb)
-   │     成功 → deep_equal 剪裁 → 存 status/status_map → is_dirty=false
-   │            → error_count=0 → 清退避 → 变化了才 emit(on_update)
-   │     失败 → 保留旧缓存 → error_count++ → 同一失败串只 warn 一次
-   │            → 指数退避重试（1000 × 2^(n-1)，封顶 30000，成功后取消）
+   ├─ system.get_root_async(root, cb)          ← 存活探测（D38，不再跑 status）
+   │     成功（拿到 root）→ is_dirty=false → error_count=0 → 清退避
+   │                        → has_loaded=true → emit(on_update)
+   │     明确否定（registry.is_definitive_negative）→ _mark_deleted()（不再重试）
+   │     其它失败 → 保留 has_loaded → error_count++ → 同一失败串只 warn 一次
+   │                → 指数退避重试（1000 × 2^(n-1)，封顶 30000，成功后取消）
    └─ flush waiters → has_pending ? 再跑一轮 : 结束
 ```
 
 - 「防重入 + 补跑」= gitsigns `throttle_async(schedule=true)` 语义，用回调实现（D9）。
 - **先置 `is_updating` 再调命令**：`system.status` 通常是异步的，但能力不支持 / 参数校验失败是
   **同步**回调，先调后置会被同步回调清掉标志，然后真正的异步回调再跑一轮 → 并发刷新。
-- **剪裁**用 `vim.deep_equal(旧, 新)`；但**首轮永远通知**（否则干净仓库 `{} == {}` 会让侧边栏永远空白）。
+- **剪裁**（M6 Step 2 起不再适用）：Repo 已无状态缓存；`_on_alive` 一律广播 `on_update`。
+  「变化了才通知」的语义（如果有）归渲染层。
 - ⚠ **偏差（去抖只做一层）**：初版计划在 FS 事件上再套一层「按路径的去抖 timer 池」
   （oil-vcs-status 模式），管线本身又有 300ms 防抖 → 600ms 串联延迟且两套定时器。
   实际只保留管线这一层：FS 回调直接 `mark_dirty()`，去抖由 `debounce_trailing` 完成。
@@ -165,15 +171,15 @@ FS 事件 / autocmd / 手动 refresh
   整个完成路径，同步回调 + 随后抛异常的场景也只算一次。
 - **仓库在命令飞行中被 dispose**：完成回调先查 `is_deleted`，直接返回 —— 否则会在已终结的
   对象上 `uv.new_timer()`（破坏 §5.4 的「句柄为零」不变量）。
-- **剪裁用 `status_map` 对比而不是数组**：`vim.deep_equal(旧map, 新map)` 与入口打印顺序无关，
-  避免 svn 输出顺序波动引起无意义重渲染。
-- **路径键在 Windows 上大小写折叠**（`base.path_key`）：`status_map` / `_by_root` / `_by_ref`
-  的键统一折叠，否则 `D:/Repo` 与 `d:/repo` 会被当成两个仓库（两个缓存 + 两个监听）。
+- **剪裁用 `status_map` 对比而不是数组**（M6 Step 2 起删除）：随缓存一起移除。
+- **路径键在 Windows 上大小写折叠**（`base.path_key`）：`_by_root` / `_by_ref`
+  的键统一折叠，否则 `D:/Repo` 与 `d:/repo` 会被当成两个仓库（两个监听 + 两个引用计数）。
+  （`status_map` 已随缓存删除。）
 
 ## 4. repo_manager.lua（生命周期编排）
 
 ```lua
-M.attach(ref, path, cb)   # ref 是不透明令牌（"buf:3" / "sidebar" / "cmd"）
+M.attach(ref, path, cb)   # ref 是不透明令牌（"buf:3" / "cmd"）
                           # → detect(01) → 找/建 Repo → start 监听 → 首刷 → cb(err, repo)
 M.detach(ref)             # 释放一个引用；最后一个引用才 dispose
 M.dispose_all()           # VimLeavePre：全部释放，句柄清零
@@ -190,31 +196,39 @@ M.on_repo_attached(fn) / M.on_repo_detached(fn)
 - 仓库消失（§3.2）→ `repo:on_delete` → manager 移除 + `dispose()` + 广播 detached。
 - 所有清理路径都汇到 `Repo:dispose()`：停 fs_event 句柄、关去抖/退避 timer、清订阅与 waiters。
 
-## 5. 验收标准（全部有自动用例，见 `test/repo_spec.lua`）
+## 5. 验收标准（M6 Step 2 版，见 `test/repo_spec.lua`，20 用例）
 | # | 场景 | 用例 |
 |---|------|------|
-| 5.1 | 改文件 → ≤1s 内缓存出现该文件；撤销 → 收敛消失 | 「a worktree edit reaches the cache through the filesystem watcher」（还断言 on_update 恰好 1 次/2 次） |
-| 5.1b | 子目录里的编辑也能发现 | 「an edit in a direct subdirectory is discovered too」 |
-| 5.2 | 连续 10 次快速写 → **至多 2 轮**真实 `git status` | 「ten rapid writes collapse into at most two status runs」（`exec.run` 计数，实测 1 轮） |
-| 5.2b | 同一窗口内的多个 `refresh(cb)` 只跑一轮且每个 cb 都被调用 | 「refresh requests inside one window are served by a single run」 |
-| 5.3 | `git add` → `.git/index` 变化 → index 域翻转 | 「staging flips the index domain through the .git watch」（断言 `index=modified, worktree=nil`） |
-| 5.4 | 删/移 `.svn`（及 `.git`）→ dispose，句柄与 timer 归零 | 「a vanished .git disposes …」「deleting an svn working copy cancels its watcher too」（`vim.uv.walk` 计数前后相等） |
-| 5.5 | 命令失败 → 保留旧缓存 + 只 warn 一次 + 退避重试，不抛异常 | 「a failing status keeps the cache, warns once and backs off」+「the backoff retry recovers without any user input」（后者验证重试**真的**自动恢复） |
+| 5.1 | 元数据事件到达订阅者**恰好一次** | 「a metadata change is announced exactly once」（`git add` 后 `on_update` 增量 == 1） |
+| 5.2 | 事件风暴 / 同窗口多次请求 → **只探测一轮** | 「a burst of changes collapses into a single probe」「refresh requests inside one window share a single probe」「a manual refresh inside the debounce window is not run twice」 |
+| 5.3 | `git add` → `.git/index` 变化 → 广播（linked worktree 也走 gitdir） | 「staging inside a linked worktree is watched through the gitdir target」 |
+| 5.4 | 删/移 `.svn`（及 `.git`）→ dispose，句柄与 timer 归零 | 「a vanished .git disposes the repository and frees every handle」「deleting an svn working copy cancels its watcher too」（`helpers.uv_count` 前后相等） |
+| 5.5 | 探测失败 → 不回退已加载状态 + 只 warn 一次 + 指数退避，重试自动恢复，不抛异常 | 「a failing probe warns once, backs off, and the retry recovers」+「the backoff retry recovers without any user input」（后者是套件唯一 stderr 行的来源） |
+| 5.5b | 明确否定（「不是仓库」）→ 直接 `on_delete`，不重试 | 「a definitive negative deletes the repository instead of retrying」 |
 | §4 | 引用计数：第二个引用复用同一对象且不起进程；最后一个释放才 dispose | 「references share one repo and the last release disposes it」 |
 | §4 | `dispose_all()` 后无残留句柄 | 「dispose_all leaves nothing behind」 |
 | §4 | `active()` 按当前 buffer 解析 | 「active() resolves the repository of the current buffer」 |
-| 附加 | **排队中的 `refresh(cb)` 不会因仓库消失而永远挂起** | 「a queued refresh callback is released when the repository goes away」（先探针确认旧实现会静默丢弃，再修；现已改为确定性用例 + 后续 `refresh`/`refresh_now` 立即报错） |
-| 附加 | **attach 与 detach 竞态不会泄漏引用**（检测是异步的） | 「a detach that races an in-flight attach does not leak a reference」—— 修前：已释放的 ref 会被晚到的回调重新绑定，仓库与其监听永久存活 |
-| 附加 | **命令飞行中被 dispose，晚到的结果不产生任何副作用** | 「a status run that reports after dispose changes nothing」（stub 适配器 + `vim.defer_fn`，完全确定性） |
-| 附加 | **linked worktree 里的 `git add` 能被发现**（`.git` 是文件，index 在仓库外） | 「staging inside a linked worktree is picked up」—— 修前该用例会超时 |
-| 附加 | Windows 路径大小写不敏感 | 「path lookups are case-insensitive on Windows」（`D:`/`d:` 翻转后 `get`/`get_status` 仍命中） |
-| 附加 | §5.1 的 **≤1s 延迟预算** | 用例 2 里用 `vim.uv.hrtime()` 实测断言（此前只验证了收敛） |
-| 附加（二轮） | **仓库根目录本身解析回该仓库**（`cd repo && nvim` 时 `active()`） | 「the repository root itself maps back to the repository」— 修前 `relpath(root, root) == nil`（前缀比根长一字符，探针实证） |
-| 附加（二轮） | **`dispose_all` 之后不再诞生仓库**（检测在飞时会话退出） | 「dispose_all cancels an attach that is still detecting」— 修前世代号只覆盖 `detach` 路径，晚到回调会在销毁后再建 Repo |
-| 附加（二轮） | **防抖窗口内的手动刷新不跑两遍** | 「a manual refresh inside the debounce window is not run twice」— 修前 `refresh_now` 不取消已武装的防抖 |
-| 附加 | `on_error` 订阅真会被调用 | 失败用例新增 `eq(errors, 1)`, `eq(errors, 2)` |
+| 附加 | 排队中的 `refresh(cb)` 不因仓库消失而挂起；dispose 后 `refresh`/`refresh_now` 立即报错 | 「a queued refresh callback is released when the repository goes away」 |
+| 附加 | attach 与 detach 竞态不泄漏引用（检测是异步的） | 「a detach that races an in-flight attach does not leak a reference」 |
+| 附加 | 探测飞行中被 dispose，晚到结果不产生任何副作用 | 「a probe that reports after dispose changes nothing」（stub 适配器 + `vim.defer_fn`，完全确定性） |
+| 附加 | **linked worktree** 的元数据解析（`.git` 是文件，index 在仓库外） | 「staging inside a linked worktree is watched through the gitdir target」 |
+| 附加 | Windows 路径大小写不敏感 | 「path lookups are case-insensitive on Windows」 |
+| 附加（二轮） | 仓库根目录本身解析回该仓库（`cd repo && nvim` 时 `active()`） | 「the repository root itself maps back to the repository」 |
+| 附加（二轮） | `dispose_all` 之后不再诞生仓库（检测在飞时会话退出） | 「dispose_all cancels an attach that is still detecting」 |
+| 附加（二轮） | 防抖窗口内的手动刷新不跑两遍 | 「a manual refresh inside the debounce window is not run twice」 |
+| 附加 | 首刷（attach）成功后 `has_loaded`/`is_dirty`/`error_count` 正确 | 「the first probe marks the repository loaded, with no status cache」 |
+| 附加 | `on_error` 订阅真会被调用 | 失败用例里 `eq(errors, 1)`, `eq(errors, 2)` |
 
 ## 6. 实测与偏差记录（回写）
+
+0. **M6 Step 2（D38）· Repo 降级为「仓库会话」**：删除 `status`/`status_map`/`entries()`/
+   `get_entry()`/`get_status()`/`_apply_status()`，以及 `_do_refresh` 里的 `system.status(...)`；
+   刷新改成**存活探测** `system.get_root_async(root, cb)`（复用适配器既有接口，不新增 API）：
+   拿到 root ⇒ 存活 ⇒ 广播 `on_update`；`registry.is_definitive_negative(err)` ⇒ `_mark_deleted()`；
+   其它错误 ⇒ 退避重试。监听集只剩 `metadata_path`（root 与直接子目录、`_sync_watch_set` 一并删除）。
+   连带改动（调用方即时查询）：`actions.resolve` 不再 `get_entry`，改用 `actions.fetch_status`（`t.status` 可用则同步，否则即时 `system.status`）；
+   `cli.debug_report` 去掉 `entries=%d`。`exec.run` 增加 `stdin`（字符串原样写入、不补尾换行；`string[]` 逐元素补 `\n`；`text=true` 只解码 stdout）。
+   实测（探针 A/B4）：零上下文补丁必须以 `\n` 结尾，否则 `git apply --cached --unidiff-zero` 报 `error: corrupt patch at <stdin>:5`。
 
 1. **去抖只做一层**（§3.3）：去掉「FS 路径 timer 池」，管线防抖兼任。
 2. **监听集为 root + 直接子目录 + marker**（§3.2）：初版只写 root + marker，

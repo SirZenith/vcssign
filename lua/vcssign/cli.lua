@@ -119,10 +119,9 @@ local function debug_report()
       flags[#flags + 1] = 'dirty'
     end
     lines[#lines + 1] = string.format(
-      '  %s %s  entries=%d refs=%d watchers=%d loaded=%s %s%s',
+      '  %s %s  refs=%d watchers=%d loaded=%s %s%s',
       repo.system.name,
       repo.root,
-      #repo.status,
       vim.tbl_count(repo.refs),
       vim.tbl_count(repo.fs_handles),
       tostring(repo.has_loaded),

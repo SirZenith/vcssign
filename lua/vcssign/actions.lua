@@ -46,8 +46,8 @@ end
 ---@field repo vcssign.Repo
 ---@field path string      absolute
 ---@field rel_path string  relative to the repository root
----@field entry vcssign.StatusEntry?  what the VCS last said about the file
----@field status vcssign.FileStatus?
+---@field status vcssign.FileStatus?  known only when the target *was* a status entry;
+---                                   a bare path is looked up when it is needed
 
 --- Default target: the current buffer's file, else the cwd (a `:Vcssign
 --- refresh` from an empty scratch buffer).
@@ -95,7 +95,6 @@ local function resolve(target)
       repo = repo,
       path = target.path,
       rel_path = target.rel_path,
-      entry = target,
       status = target.status,
     }
   end
@@ -108,14 +107,37 @@ local function resolve(target)
   if rel == nil then
     return nil, string.format('%s is outside %s', path, repo.root)
   end
-  local entry = repo:get_entry(path)
+  -- No entry is attached: the repository no longer caches status (D38), so the
+  -- one action that needs it asks the VCS through `fetch_status`.
   return {
     repo = repo,
     path = path,
     rel_path = rel,
-    entry = entry,
-    status = entry and entry.status or nil,
   }
+end
+
+--- Ask the VCS what it currently thinks of a target's file, then hand the
+--- `vcssign.FileStatus?` to `cb`.  A target that came from a status entry
+--- already knows, so it answers synchronously; a bare path costs one status
+--- command.  A failing status command is not a failing *action*: report "no
+--- changes" and let the action's own command speak.
+---@param t vcssign.Target
+---@param cb fun(status: vcssign.FileStatus?)
+local function fetch_status(t, cb)
+  if t.status ~= nil then
+    return cb(t.status)
+  end
+  t.repo.system.status(t.repo.root, function(err, entries)
+    if err then
+      return cb(nil)
+    end
+    for _, entry in ipairs(entries or {}) do
+      if base.path_key(entry.path) == base.path_key(t.path) then
+        return cb(entry.status)
+      end
+    end
+    cb(nil)
+  end)
 end
 
 -- ▏ diff ─────────────────────────────────────────────────────────────────────
@@ -197,18 +219,15 @@ end
 --- worktree changes diffs against the index/HEAD, which is what "what have I
 --- changed since" means for an unstaged change.
 ---@param t vcssign.Target
+---@param status vcssign.FileStatus?
 ---@return boolean
-local function cached_diff(t)
-  local status = t.status
+local function cached_diff(status)
   if status == nil then
     return false
   end
   return status.index ~= nil and status.worktree == nil
 end
 
----@param target vcssign.StatusEntry|string|nil
----@param opts? { cached?: boolean }  force one side (used by the specs and by
----        any future "show me the staged version" entry point)
 function M.diff(target, opts)
   local t, err = resolve(target)
   if not t then
@@ -217,20 +236,31 @@ function M.diff(target, opts)
   if not t.repo.system.capabilities.diff then
     return refuse('%s: diff is not supported', t.repo.system.name)
   end
-  local cached = opts and opts.cached
-  if cached == nil then
-    cached = cached_diff(t)
+
+  ---@param cached boolean
+  local function show(cached)
+    t.repo.system.diff(t.repo.root, t.rel_path, { cached = cached }, function(diff_err, text)
+      if diff_err then
+        return fail(diff_err)
+      end
+      if text == nil or vim.trim(text) == '' then
+        -- "No diff" is an answer, not a failure: svn prints nothing for a
+        -- property-only change, and git prints nothing for an unmodified file.
+        return info('%s: no changes to show', t.rel_path)
+      end
+      show_diff(t, text)
+    end)
   end
-  t.repo.system.diff(t.repo.root, t.rel_path, { cached = cached }, function(diff_err, text)
-    if diff_err then
-      return fail(diff_err)
-    end
-    if text == nil or vim.trim(text) == '' then
-      -- "No diff" is an answer, not a failure: svn prints nothing for a
-      -- property-only change, and git prints nothing for an unmodified file.
-      return info('%s: no changes to show', t.rel_path)
-    end
-    show_diff(t, text)
+
+  local cached = opts and opts.cached
+  if cached ~= nil then
+    return show(cached)
+  end
+  -- A file whose change is *only* in the index needs `--cached`; a file with
+  -- worktree changes diffs against the index/HEAD.  Which one it is comes from
+  -- the VCS, because this layer no longer has a status cache to read.
+  fetch_status(t, function(status)
+    show(cached_diff(status))
   end)
 end
 
@@ -319,13 +349,6 @@ function M.commit(target, opts)
     -- friendlier than committing more than the row the user pointed at.
     return info('%s is not a file: commit its files one by one', t.rel_path)
   end
-  local status = t.status
-  if status == nil then
-    return info('%s has no changes to commit', t.rel_path)
-  end
-  if repo.system.capabilities.stage and status.index == nil then
-    return info('%s is not staged yet (press s)', t.rel_path)
-  end
 
   local function commit(msg)
     repo.system.commit(repo.root, { t.rel_path }, msg, function(cmd_err, summary)
@@ -341,11 +364,19 @@ function M.commit(target, opts)
     end)
   end
 
-  if opts.message then
-    commit(opts.message)
-  else
-    ask_message(commit)
-  end
+  fetch_status(t, function(status)
+    if status == nil then
+      return info('%s has no changes to commit', t.rel_path)
+    end
+    if repo.system.capabilities.stage and status.index == nil then
+      return info('%s is not staged yet (press s)', t.rel_path)
+    end
+    if opts.message then
+      commit(opts.message)
+    else
+      ask_message(commit)
+    end
+  end)
 end
 
 -- ▏ refresh ──────────────────────────────────────────────────────────────────

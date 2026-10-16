@@ -154,7 +154,7 @@ return {
     end),
   },
   {
-    name = 'debug reports the repositories, their caches and the watch handles',
+    name = 'debug reports the repositories and the watch handles',
     fn = guarded(function()
       reset()
       local dir = repo_dir('cli-debug')
@@ -171,7 +171,6 @@ return {
       eq(seen[1].level, vim.log.levels.INFO)
       ok(report:find('repositories', 1, true), report)
       ok(report:find(dir, 1, true), report)
-      ok(report:find('entries=', 1, true), report)
       ok(report:find('refs=', 1, true), report)
       ok(report:find('watchers=', 1, true), report)
       ok(report:find('fs_event handles', 1, true), report)
@@ -227,7 +226,7 @@ return {
       helpers.write(dir .. '/api.txt', 'untracked\n')
       vcssign.refresh(dir .. '/base.txt')
       helpers.wait_for(function()
-        return helpers.entry(repo:entries(), 'api.txt') ~= nil
+        return helpers.entry(helpers.status_entries(repo), 'api.txt') ~= nil
       end, 'the refresh to land')
     end),
   },
