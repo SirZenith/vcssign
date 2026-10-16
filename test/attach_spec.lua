@@ -1,10 +1,11 @@
---- M6 Step 5–6: the per-buffer attach pipeline, end to end on real repositories.
+--- M6 Step 5–7: the per-buffer attach pipeline, end to end on real repositories.
 ---
 --- `signs_spec` pins the placement rules with no repository; this spec pins the
 --- pipeline around them: detection through `repo_manager`, the baseline shown
 --- from the index, the debounced re-render, the guards (too long / unnamed /
---- gone from disk), the per-buffer on/off switch (Step 6) and the release of the
---- repository reference on detach.
+--- gone from disk), the per-buffer on/off switch (Step 6), the second (staged)
+--- layer git gets (Step 7) and the release of the repository reference on
+--- detach.
 local api = vim.api
 
 local attach = require('vcssign.attach')
@@ -73,6 +74,19 @@ local function rows(bufnr)
   local out = {}
   for _, mark in
     ipairs(api.nvim_buf_get_extmarks(bufnr, signs.namespace(false), 0, -1, { details = true }))
+  do
+    out[mark[2]] = mark[4]
+  end
+  return out
+end
+
+--- 0-based row -> extmark details of the staged (index) layer.
+---@param bufnr integer
+---@return table<integer, table>
+local function staged_rows(bufnr)
+  local out = {}
+  for _, mark in
+    ipairs(api.nvim_buf_get_extmarks(bufnr, signs.namespace(true), 0, -1, { details = true }))
   do
     out[mark[2]] = mark[4]
   end
@@ -365,6 +379,90 @@ return {
         return signs.sign_count(bufnr) > 0
       end, 'the signs to come back')
       eq(attach.hunks(bufnr)[1].added.count, 2, 'and they come from a fresh baseline')
+    end),
+  },
+  {
+    name = 'a staged change draws in the staged layer and leaves the worktree layer empty',
+    fn = guarded(function()
+      local dir = helpers.git_repo('attach-staged')
+      helpers.write(dir .. '/base.txt', 'base\nnew\n')
+      helpers.sh({ 'git', '-C', dir, 'add', 'base.txt' })
+      local bufnr = open(dir .. '/base.txt')
+
+      local st = attach_now(bufnr)
+      eq(#st.hunks, 0, 'nothing is left to stage')
+      eq(#st.hunks_staged, 1, 'the index holds the change')
+      eq(st.hunks_staged[1].added.start, 2)
+      eq(signs.sign_count(bufnr), 0, 'the worktree layer is empty')
+      eq(signs.sign_count(bufnr, true), 1)
+
+      local staged = staged_rows(bufnr)[1]
+      eq(staged.sign_hl_group, 'VcssignAddStaged')
+      ok(staged.sign_hl_group ~= 'VcssignAdd', 'and it is not the worktree colour')
+      eq(vim.trim(staged.sign_text or ''), '▎')
+    end),
+  },
+  {
+    name = 'a staged line that is edited again becomes an unstaged sign, not both',
+    fn = guarded(function()
+      local dir = helpers.git_repo('attach-staged-edited')
+      helpers.write(dir .. '/base.txt', 'base\none\n')
+      helpers.sh({ 'git', '-C', dir, 'add', 'base.txt' })
+      helpers.write(dir .. '/base.txt', 'base\ntwo\n')
+      local bufnr = open(dir .. '/base.txt')
+
+      local st = attach_now(bufnr)
+      -- The unstaged layer is index -> buffer, so the line reads `change` there...
+      eq(#st.hunks, 1)
+      eq(st.hunks[1].type, 'change')
+      eq(st.hunks[1].added.start, 2)
+      -- ...and `filter_common` drops it from HEAD -> buffer, because the two
+      -- layers would otherwise paint the same line twice (D40).
+      eq(#st.hunks_staged, 0, 'the line is never in both layers')
+      eq(signs.sign_count(bufnr), 1)
+      eq(signs.sign_count(bufnr, true), 0)
+      eq(rows(bufnr)[1].sign_hl_group, 'VcssignChange')
+    end),
+  },
+  {
+    name = 'a staged hunk and an unstaged hunk elsewhere keep to their own layers',
+    fn = guarded(function()
+      local dir = helpers.git_repo('attach-staged-both')
+      helpers.write(dir .. '/base.txt', 'a\nb\nc\n')
+      helpers.sh({ 'git', '-C', dir, 'commit', '-qm', 'three lines', 'base.txt' })
+      helpers.write(dir .. '/base.txt', 'A\nb\nC\n')
+      helpers.sh({ 'git', '-C', dir, 'add', 'base.txt' })
+      -- Line 1 is edited again on top of the staged change; line 3 stays staged.
+      helpers.write(dir .. '/base.txt', 'A2\nb\nC\n')
+      local bufnr = open(dir .. '/base.txt')
+
+      local st = attach_now(bufnr)
+      eq(#st.hunks, 1, 'only line 1 is left to stage')
+      eq(st.hunks[1].added.start, 1)
+      eq(#st.hunks_staged, 1, 'line 3 is still staged')
+      eq(st.hunks_staged[1].added.start, 3)
+      eq(st.hunks_staged[1].type, 'change')
+
+      eq(signs.sign_count(bufnr), 1)
+      eq(signs.sign_count(bufnr, true), 1)
+      eq(rows(bufnr)[0].sign_hl_group, 'VcssignChange')
+      eq(staged_rows(bufnr)[2].sign_hl_group, 'VcssignChangeStaged')
+      eq(staged_rows(bufnr)[0], nil, 'line 1 is drawn by one layer only')
+    end),
+  },
+  {
+    name = 'svn has no staging area, so it only ever gets the worktree layer',
+    fn = guarded(function()
+      local dir = helpers.svn_checkout('attach-staged-svn')
+      helpers.write(dir .. '/base.txt', 'mod\n')
+      local bufnr = open(dir .. '/base.txt')
+
+      local st = attach_now(bufnr)
+      eq(st.system.name, 'svn')
+      eq(st.system.capabilities.staged_signs, false)
+      eq(#st.hunks, 1, 'the change itself is still drawn')
+      eq(#st.hunks_staged, 0, 'no staged baseline was read at all')
+      eq(signs.sign_count(bufnr, true), 0)
     end),
   },
   {

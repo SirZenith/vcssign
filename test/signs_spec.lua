@@ -1,4 +1,4 @@
---- M6 Step 5: the sign layer's placement rules and highlight groups.
+--- M6 Step 5–7: the sign layer's placement rules and highlight groups.
 --- See impl/init/07-signs-in-signcolumn.md §3.2 / §4 (D40).
 ---
 --- No repository and no VCS binary: `signs.lua` maps `vcssign.Hunk[]` onto
@@ -8,6 +8,13 @@ local api = vim.api
 
 local config = require('vcssign.config')
 local signs = require('vcssign.signs')
+
+--- The attributes a group resolves to, following links.
+---@param name string
+---@return table
+local function resolved(name)
+  return api.nvim_get_hl(0, { name = name, link = false })
+end
 
 --- Run a case, then reset the config it may have changed, even when it failed.
 local function guarded(fn)
@@ -91,15 +98,52 @@ return {
       eq(link('VcssignChangeDelete'), 'VcssignChange')
       eq(link('VcssignUntracked'), 'VcssignAdd')
 
-      -- The staged layer is the suffix form, not gitsigns' prefix form.
+      -- The staged layer is the suffix form, not gitsigns' prefix form, and —
+      -- since Step 7 — the worktree colour faded toward the background rather
+      -- than a second name for the same colour.
       eq(link('VcssignAddNr'), 'VcssignAdd')
       eq(link('VcssignAddLn'), 'DiffAdd')
       eq(link('VcssignAddCul'), 'VcssignAdd')
-      eq(link('VcssignAddStaged'), 'VcssignAdd')
       eq(link('VcssignAddStagedNr'), 'VcssignAddStaged')
+      ok(link('VcssignAddStaged') == nil, 'the staged group is a colour of its own')
+      local staged = resolved('VcssignAddStaged')
+      ok(staged.fg ~= nil, 'and it has a foreground')
+      ok(staged.fg ~= resolved('VcssignAdd').fg, 'that is dimmer than the worktree one')
       -- `delete` anchors on a line that is *not* removed: no whole-line group.
       eq(link('VcssignDeleteLn'), nil)
       eq(link('VcssignTopDeleteLn'), nil)
+    end),
+  },
+  {
+    name = 'the staged layer falls back to a link when the colours cannot be blended',
+    fn = guarded(function()
+      -- A `cterm`-only theme leaves `Normal` without a background, and a
+      -- guessed "dimmer" would be worse than the worktree colour.  The groups
+      -- are cleared with `:highlight clear` first: they were defined with
+      -- `default = true`, and a group that `nvim_set_hl` has merely been reset
+      -- to `{}` still counts as defined, so `default = true` would not fill it
+      -- (measured on 0.12.4).
+      local types = { 'add', 'change', 'delete', 'topdelete', 'changedelete', 'untracked' }
+      local function clear_staged()
+        for _, ty in ipairs(types) do
+          vim.cmd('highlight clear ' .. signs.hl_name(ty, true))
+        end
+      end
+      local saved_normal = api.nvim_get_hl(0, { name = 'Normal' })
+      local passed, err = pcall(function()
+        api.nvim_set_hl(0, 'Normal', {})
+        clear_staged()
+        signs.define_highlights()
+        eq(api.nvim_get_hl(0, { name = 'VcssignAddStaged', link = true }).link, 'VcssignAdd')
+      end)
+      -- Put the theme and the fade back for the specs that run after this one.
+      api.nvim_set_hl(0, 'Normal', saved_normal)
+      clear_staged()
+      signs.define_highlights()
+      if not passed then
+        error(err, 0)
+      end
+      ok(resolved('VcssignAddStaged').fg ~= nil, 'the fade is back afterwards')
     end),
   },
   {

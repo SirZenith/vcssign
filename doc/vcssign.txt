@@ -246,9 +246,20 @@ vcssign 把 Git / Subversion 仓库里的改动直接反映到窗口的 `'signco
 ==============================================================================
 6. 高亮组                                                *vcssign-highlights*
 
-sign 的高亮组由 `signs` 里每个 hunk 的名字派生（`VcssignSignAdd` 等），
-`numhl` / `linehl` / `culhl` 可逐项覆盖；都用 `default = true` 定义，配色
-方案或用户都能覆盖，`setup()` 不会覆盖已有定义。
+sign 的高亮组按 hunk 类型派生：`VcssignAdd`、`VcssignChange`、`VcssignDelete`、
+`VcssignTopDelete`、`VcssignChangeDelete`、`VcssignUntracked`（依次链接到
+`DiffAdd` / `DiffChange` / `DiffDelete` / `DiffDelete` / `VcssignChange` /
+`VcssignAdd`）。加后缀 `Nr` / `Ln` / `Cul` 的组分别是 `signs.numhl` /
+`signs.linehl` / `signs.culhl` 用的行号 / 整行 / 光标行高亮；`delete` 与
+`topdelete` 没有 `Ln`——它们的 sign 挂在**没有被删掉**的那一行上。
+
+已暂存的 sign 用同名再加 `Staged` 后缀的组（`VcssignAddStaged`、
+`VcssignAddStagedNr` …）：它们由对应工作区组的前景色与 `Normal` 的背景按
+1:1 混合而来，所以比工作区那层暗一档，同一行上的两层不会看起来一样；读不到
+颜色时（例如只有 `cterm` 属性的配色方案）退回链接到对应的工作区组。
+
+这些组都用 `default = true` 定义，配色方案或用户都能覆盖，`setup()` 不会覆盖
+已有定义。
 
 ==============================================================================
 7. 架构                                                       *vcssign-arch*

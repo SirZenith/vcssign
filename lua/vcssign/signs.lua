@@ -104,6 +104,52 @@ local LN_LINK = {
 --- The order groups are created in, so every `link` target already exists.
 local ORDER = { 'add', 'change', 'delete', 'topdelete', 'changedelete', 'untracked' }
 
+--- The staged layer is the *worktree* colour faded toward the background: an
+--- already-indexed line should read as "done" instead of competing with the
+--- change still sitting in the buffer (07 §4: Staged 用更暗的链接).  Halfway
+--- stays legible on both dark and light themes and needs no config key.
+local STAGED_FADE = 0.5
+
+--- The attributes a group resolves to, following links.
+---@param name string
+---@return table
+local function resolved(name)
+  local ok, hl = pcall(api.nvim_get_hl, 0, { name = name, link = false })
+  return ok and hl or {}
+end
+
+--- `fg` blended toward `bg`; `factor` 1 keeps `fg`, 0 returns `bg`.
+---@param fg integer
+---@param bg integer
+---@param factor number
+---@return integer
+local function fade(fg, bg, factor)
+  local function chan(c, shift)
+    return math.floor(c / 2 ^ shift) % 256
+  end
+  local function mix(shift)
+    return math.floor(chan(fg, shift) * factor + chan(bg, shift) * (1 - factor) + 0.5)
+  end
+  return mix(16) * 65536 + mix(8) * 256 + mix(0)
+end
+
+--- Define the staged counterpart of one worktree group.
+---
+--- Falls back to a plain link when the colours cannot be read (a `cterm`-only
+--- theme, or a group with no foreground at all): a *guessed* "dimmer" would be
+--- worse than the same colour.
+---@param ty string
+local function link_staged(ty)
+  local name = M.hl_name(ty, true)
+  local base = resolved(M.hl_name(ty))
+  local normal = resolved('Normal')
+  if base.fg and normal.bg then
+    api.nvim_set_hl(0, name, { fg = fade(base.fg, normal.bg, STAGED_FADE), default = true })
+  else
+    api.nvim_set_hl(0, name, { link = M.hl_name(ty), default = true })
+  end
+end
+
 --- Define every group with `default = true` so a user theme can override, and
 --- so calling it twice (or after a colorscheme reload) is harmless.
 function M.define_highlights()
@@ -123,10 +169,11 @@ function M.define_highlights()
     link(M.hl_name(ty, nil, 'Cul'), M.hl_name(ty))
   end
 
-  -- The staged layer.  "Dimmer" is Step 7's job (it owns the staging layer);
-  -- for now each staged group links to its unstaged counterpart (07 §4).
+  -- The staged layer: the same shapes as the worktree layer, one shade closer
+  -- to the background (07 §4).  Defined after the plain groups because each
+  -- one is derived from its worktree counterpart's resolved colour.
   for _, ty in ipairs(ORDER) do
-    link(M.hl_name(ty, true), M.hl_name(ty))
+    link_staged(ty)
   end
   for _, ty in ipairs(ORDER) do
     link(M.hl_name(ty, true, 'Nr'), M.hl_name(ty, true))
