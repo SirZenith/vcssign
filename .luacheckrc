@@ -10,7 +10,7 @@ std = 'luajit'
 globals = { 'vim', 'ok', 'eq', 'check' }
 
 -- 计划文档（非 Lua）与下载下来的工具不参与 lint。
-exclude_files = { 'impl/**', 'deps/**', 'temp/**' }
+exclude_files = { 'loop/**', 'deps/**', 'temp/**' }
 
 -- 行长：代码本身由 stylua 管到 100 列（stylua.toml），这里放宽到 120 只是为了
 -- 那些**格式化器换不了行**的东西——`---@field` 类型注解与用户可见的长消息字符串。
