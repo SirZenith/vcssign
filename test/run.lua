@@ -63,6 +63,7 @@ local DEFAULT_SPECS = {
   'vcs_registry_spec',
   'repo_spec',
   'renderer_spec',
+  'doc_spec',
   'sidebar_spec',
   'autocmds_spec',
   'actions_spec',
