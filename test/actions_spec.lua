@@ -402,7 +402,10 @@ return {
       reset()
       local dir, bufnr = two_hunk_repo('actions-keymap-hs')
       put_cursor(bufnr, 2)
-      keymap.dispatch('stage_hunk', { bufnr = bufnr })
+      local seen = collect_until_answered(function()
+        keymap.dispatch('stage_hunk', { bufnr = bufnr })
+      end)
+      eq(seen[1].message, 'vcssign: staged base.txt (line 2)')
       helpers.wait_for(function()
         return git_diff(dir, { '--cached' }) ~= ''
       end, 'the index to change')
@@ -930,7 +933,7 @@ return {
       -- Drop the last line and save: `reset_hunk` refuses an unsaved buffer
       -- (D45), and the hunk's removed side now ends at EOF without a newline.
       vim.api.nvim_buf_set_lines(bufnr, 1, 2, false, {})
-      vim.cmd('write')
+      vim.cmd('silent write')
       helpers.wait_for(function()
         return #attach.hunks(bufnr) == 1
       end, 'the deletion to be seen')

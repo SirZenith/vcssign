@@ -255,8 +255,14 @@ return {
       local bufnr2, win2 = open(dir2 .. '/base.txt')
       vim.wo[win2].signcolumn = 'no'
 
-      attach_now(bufnr2)
-      eq(vim.wo[win2].signcolumn, 'no')
+      -- `false` 且全局是 `no` / `number` 时插件会提示一次（07 §8）——这条告警本身
+      -- 也在断言里，否则它只是 stderr 上的噪音（终验的 stderr 合同）。
+      local seen = helpers.capture_notify(function()
+        attach_now(bufnr2)
+      end)
+      eq(vim.wo[win2].signcolumn, 'no', '`false` leaves the window option alone')
+      eq(seen[1] and seen[1].message, 'vcssign: `signcolumn` is no, so no signs will show')
+      eq(seen[1] and seen[1].level, vim.log.levels.WARN, 'and it told the user why')
     end),
   },
   {
@@ -552,6 +558,10 @@ return {
       ok(now ~= st, 'a fresh state, not the cached no-repository answer')
       eq(now.attached, true)
       eq(attach.count(), 1, 'and the repository is held again')
+      -- Wipe the buffer *before* the directory: a modified buffer whose file is
+      -- gone makes Vim complain (`E211: File ... no longer available`) at the
+      -- next buffer change, and the runner shows that on stderr.
+      api.nvim_buf_delete(bufnr, { force = true })
       vim.fn.delete(dir, 'rf')
     end),
   },
