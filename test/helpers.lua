@@ -107,6 +107,30 @@ function M.entry(entries, rel_path)
   return nil
 end
 
+--- A live snapshot of what the VCS says about a repository.
+---
+--- `Repo` stopped caching status in M6 (D38), so a spec that needs to *see* the
+--- status asks the adapter itself.  `vim.wait` pumps the event loop while the
+--- async command runs, which keeps every call site synchronous.
+---@param repo vcssign.Repo
+---@return vcssign.StatusEntry[]
+function M.status_entries(repo)
+  local done, result = false, nil
+  local ok = pcall(repo.system.status, repo.root, function(err, entries)
+    result = (not err and entries) or {}
+    done = true
+  end)
+  if not ok then
+    return {}
+  end
+  if not done then
+    vim.wait(5000, function()
+      return done
+    end, 10)
+  end
+  return result or {}
+end
+
 -- ▏ scratch fixtures ──────────────────────────────────────────────────────────
 ---
 --- Specs that need a *mutable* repository (`git add`, file writes, a deleted

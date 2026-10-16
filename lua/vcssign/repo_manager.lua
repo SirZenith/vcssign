@@ -1,9 +1,9 @@
 --- Repository lifecycle: `root -> Repo` plus reference counting.
 ---
---- References are opaque tokens chosen by the caller (`"buf:3"`, `"sidebar"`,
---- `"cmd"`).  A repository lives as long as at least one reference holds it, so
---- several buffers inside the same repository share one cache and one watcher,
---- and only the last release disposes it.
+--- References are opaque tokens chosen by the caller (`"buf:3"`, `"cmd"`).
+--- A repository lives as long as at least one reference holds it, so several
+--- buffers inside the same repository share one runtime and one watcher, and
+--- only the last release disposes it.
 --- See impl/init/02-repo-runtime.md §4.
 local log = require('vcssign.log')
 local util = require('vcssign.util')
@@ -234,10 +234,12 @@ end
 
 --- Hold a reference to a repository that is already tracked.
 ---
---- For consumers that outlive whatever attached the repository: the sidebar's
---- buffer survives its window (`bufhidden = hide`), so the user may have closed
---- the last file of the repository while still looking at its list.  D18 names
---- `sidebar` as a reference holder for exactly this reason.
+--- For consumers that outlive whatever attached the repository: a buffer that
+--- keeps a repository attached but no longer has a window of its own (a sign
+--- buffer left open, `bufhidden = hide`), so the user may have closed the last
+--- file of the repository while the buffer that attached it is still alive.
+--- D18 names the buffer reference (`"buf:<bufnr>"`) as a reference holder for
+--- exactly this reason.
 ---
 --- No detection and no command: the caller already has the repository.
 ---@param ref string
@@ -294,8 +296,8 @@ function M.ensure(path, cb)
     repo = M.get_by_path(abs)
   end
   if repo then
-    -- Already tracked (by a buffer, a sidebar, or an earlier command).  The
-    -- reference is taken anyway: D29 promises an explicit command uses this
+    -- Already tracked (by a buffer `"buf:<bufnr>"`, or an earlier command).
+    -- The reference is taken anyway: D29 promises an explicit command uses this
     -- repository for the rest of the session, and it keeps the repository
     -- alive if the buffer that attached it goes away right afterwards.
     M.hold(cmd_ref(repo.root), repo)

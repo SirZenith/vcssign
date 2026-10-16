@@ -21,6 +21,17 @@ M.is_windows = vim.uv.os_uname().sysname == 'Windows_NT'
 ---@field cwd string                 working directory of the child process
 ---@field env? table<string,string>  extra env vars (merged over the defaults)
 ---@field timeout? integer           ms; defaults to `config.exec_timeout_ms`
+---@field stdin? string|string[]     bytes piped to the child's stdin
+
+-- Measured constraints for `stdin` (probe A):
+--
+-- * a **string** is written verbatim — no trailing newline is added, so a
+--   patch fed to `git apply` must carry its own final `\n` (the missing byte
+--   is exactly what makes git answer `error: corrupt patch at <stdin>:5`);
+-- * a **string[]** gets one `\n` appended per element (`{'a','b'}` becomes
+--   `"a\nb\n"`), which is convenient for line-oriented helpers;
+-- * `text = true` only decodes *stdout* (CRLF -> LF).  It never touches the
+--   stdin bytes, so callers must not rely on it to normalise the input.
 
 --- First line of a (possibly multi-line, possibly CRLF) string.
 ---@param s string?
@@ -180,7 +191,7 @@ function M.run(cmd, opts, cb)
   local ok, started = pcall(
     vim.system,
     cmd,
-    { cwd = opts.cwd, text = true, env = env },
+    { cwd = opts.cwd, text = true, env = env, stdin = opts.stdin },
     function(res)
       ---@type vcssign.ExecResult
       local result = {

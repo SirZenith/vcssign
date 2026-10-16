@@ -1,16 +1,20 @@
---- One repository's live runtime: status cache, filesystem watching and the
+--- One repository's live runtime: metadata watching, a liveness probe and the
 --- debounced, serialised refresh pipeline.
 ---
 --- The split matters: filesystem events and autocmds only ever *mark* the repo
---- dirty, and VCS commands are spawned in exactly one place (`_do_refresh`).
---- That is what makes "10 rapid writes produce at most 2 `git status` runs"
---- hold, and what keeps concurrent refreshes impossible.
+--- dirty, and VCS is spawned in exactly one place (`_do_refresh`), where the
+--- only question asked is "does this repository still exist?".  The per-file
+--- status view is *not* cached here any more: the sign layer asks the VCS for
+--- what it needs, when it needs it (D38).  That is what makes "10 rapid writes
+--- produce at most 2 probes" hold, and what keeps concurrent refreshes
+--- impossible.
 --- See impl/init/02-repo-runtime.md §3.
 local config = require('vcssign.config')
 local debounce = require('vcssign.debounce')
 local log = require('vcssign.log')
 local util = require('vcssign.util')
 local base = require('vcssign.vcs.base')
+local registry = require('vcssign.vcs')
 
 local uv = vim.uv
 
@@ -32,14 +36,12 @@ M.__index = M
 ---@field metadata_path string  the *watched* metadata directory: `marker_path`, or
 ---                             the `gitdir:` target for a worktree/submodule.
 ---                             Set by `start()`.
----@field status vcssign.StatusEntry[]  last *successful* status list
----@field status_map table<string, vcssign.StatusEntry>  absolute path -> entry
 ---@field refs table<string, true>  reference tokens currently holding this repo
 ---@field is_dirty boolean
 ---@field is_updating boolean
 ---@field has_pending boolean   a refresh was requested while one was running
 ---@field is_deleted boolean    the repository vanished / was disposed
----@field has_loaded boolean    at least one successful status run happened
+---@field has_loaded boolean    at least one successful liveness probe happened
 ---@field error_count integer   consecutive failures (backoff exponent)
 ---@field last_error string?
 ---@field fs_handles table<string, uv.uv_fs_event_t>
@@ -65,8 +67,6 @@ function M.new(system, root)
   self.system = system
   self.root = base.normalize(root)
   self.marker_path = vim.fs.normalize(vim.fs.joinpath(self.root, system.keyfile))
-  self.status = {}
-  self.status_map = {}
   self.refs = {}
   self.is_dirty = true -- the first refresh is always wanted
   self.is_updating = false
@@ -92,30 +92,7 @@ function M.new(system, root)
   return self
 end
 
--- ▏ status cache ──────────────────────────────────────────────────────────────
-
---- The cached status list.  Not a copy: the list is replaced wholesale on every
---- successful run, so holding on to it is safe and cheap.
----@return vcssign.StatusEntry[]
-function M:entries()
-  return self.status
-end
-
---- Cached entry for an *already normalised, absolute* path (the paths in
---- `self.status` are exactly that, so the renderer pays no normalisation cost).
----@param path string
----@return vcssign.StatusEntry?
-function M:get_entry(path)
-  return self.status_map[base.path_key(path)]
-end
-
---- Status of one file, or nil when the VCS reports nothing for it.
----@param path string
----@return vcssign.FileStatus?
-function M:get_status(path)
-  local entry = self.status_map[base.path_key(base.normalize(path))]
-  return entry and entry.status or nil
-end
+-- ▏ subscriptions ────────────────────────────────────────────────────────────
 
 ---@param fn fun(repo: vcssign.Repo)
 ---@return fun() unsubscribe
@@ -146,17 +123,16 @@ function M:mark_dirty()
   self._refresh_debounced()
 end
 
---- Debounced refresh.  `cb(err, entries)` fires once the run this request
+--- Debounced liveness probe.  `cb(err)` fires once the run this request
 --- belongs to has finished; requests inside the same window share one run.
 ---
 --- A callback registered while a run is already in flight is served by that
---- run: its snapshot may predate the request, so treat `entries` as "at
---- least this fresh" — `on_update` fires again when the follow-up run lands.
----@param cb? fun(err: string?, entries: vcssign.StatusEntry[]?)
+--- run; `on_update` fires again when the follow-up run lands.
+---@param cb? fun(err: string?)
 function M:refresh(cb)
   if self.is_deleted then
     if cb then
-      cb('repository deleted: ' .. self.root, self.status)
+      cb('repository deleted: ' .. self.root)
     end
     return
   end
@@ -174,11 +150,11 @@ end
 --- clear `last_error`: that field doubles as the "this streak was already
 --- reported" marker, so a manual retry of a known-broken repository does not
 --- repeat the warning (the caller's own `cb` gets the error).
----@param cb? fun(err: string?, entries: vcssign.StatusEntry[]?)
+---@param cb? fun(err: string?)
 function M:refresh_now(cb)
   if self.is_deleted then
     if cb then
-      cb('repository deleted: ' .. self.root, self.status)
+      cb('repository deleted: ' .. self.root)
     end
     return
   end
@@ -207,11 +183,8 @@ function M:_do_refresh()
     self.has_pending = true
     return
   end
-  -- Set *before* the command runs.  `system.status` is normally asynchronous,
-  -- but an unsupported capability or a rejected file list calls back
-  -- synchronously (see impl/init/01-vcs-adapter.md §3), and a flag set
-  -- afterwards would be cleared by that synchronous callback and then re-set by
-  -- the real one — two overlapping refreshes.
+  -- Set *before* the probe runs: a callback that fires synchronously would
+  -- otherwise clear a flag set afterwards and two probes would overlap.
   -- This run supersedes a debounce that is still armed: without this, a
   -- `refresh_now` landing inside the window would be answered twice (once
   -- here, once when the window closes).  Safe to call from the debounced
@@ -221,14 +194,14 @@ function M:_do_refresh()
   self.is_updating = true
   local done = false
   ---@param err string?
-  ---@param entries vcssign.StatusEntry[]?
-  local function finish(err, entries)
+  ---@param root string?
+  local function finish(err, root)
     if done then
       return
     end
     done = true
     self.is_updating = false
-    -- The repository may have been disposed while the command was running
+    -- The repository may have been disposed while the probe was running
     -- (its marker vanished).  Its waiters were already released by
     -- `_mark_deleted`, and arming a retry timer now would put a live handle on
     -- a terminal object.
@@ -236,9 +209,18 @@ function M:_do_refresh()
       return
     end
     if err then
+      -- "Outside a working copy" is the VCS answering *no*, not a transient
+      -- failure: the repositories it names cannot come back without a new
+      -- attach, so tell the manager now instead of retrying forever.
+      if registry.is_definitive_negative(err) then
+        log.debug('%s: repository gone: %s', self.root, err)
+        --`_mark_deleted` releases the waiters with the terminal message.
+        self:_mark_deleted()
+        return
+      end
       self:_on_refresh_error(err)
     else
-      self:_apply_status(entries or {})
+      self:_on_alive(root)
     end
     self:_flush_waiters(err)
     if self.has_pending then
@@ -250,40 +232,22 @@ function M:_do_refresh()
   -- calling back would otherwise leave `is_updating` set forever and wedge the
   -- pipeline.  `finish` is idempotent, so a synchronous callback followed by a
   -- throw is still handled exactly once.
-  local ok, thrown = pcall(self.system.status, self.root, finish)
+  local ok, thrown = pcall(self.system.get_root_async, self.root, finish)
   if not ok then
-    finish(string.format('status command failed: %s', tostring(thrown)))
+    finish(string.format('root probe failed: %s', tostring(thrown)))
   end
 end
 
 ---@private
----@param entries vcssign.StatusEntry[]
-function M:_apply_status(entries)
-  local new_map = {}
-  for _, entry in ipairs(entries) do
-    new_map[base.path_key(entry.path)] = entry
-  end
-
-  -- Compare before storing, so an unchanged status does not wake the renderer.
-  -- Comparing the *maps* rather than the arrays keeps this insensitive to the
-  -- order the VCS happened to print the entries in.
-  --
-  -- The first successful run always notifies, otherwise a *clean* repository
-  -- would never be drawn (`{} == {}` and the sidebar would stay empty).
-  local changed = not self.has_loaded or not vim.deep_equal(self.status_map, new_map)
-
-  self.status = entries
-  self.status_map = new_map
+---@param _root string?  the root the probe resolved (unused: any answer is alive)
+function M:_on_alive(_root)
   self.is_dirty = false
   self.error_count = 0
   self.last_error = nil
   self:_cancel_retry()
   self.has_loaded = true
-
-  if changed then
-    log.debug('%s: %d status entries', self.root, #entries)
-    util.emit(self._on_update, self)
-  end
+  log.debug('%s: alive', self.root)
+  util.emit(self._on_update, self)
 end
 
 ---@private
@@ -358,10 +322,10 @@ end
 --- The isolation also means an assertion raised inside a callback is logged
 --- instead of propagated, so tests must record their result and assert in the
 --- case body rather than inside the callback.
----@param cb fun(err: string?, entries: vcssign.StatusEntry[]?)
+---@param cb fun(err: string?)
 ---@param err string?
 function M:_call_waiter(cb, err)
-  local ok, cb_err = pcall(cb, err, self.status)
+  local ok, cb_err = pcall(cb, err)
   if not ok then
     log.error('refresh callback failed: %s', tostring(cb_err))
   end
@@ -399,20 +363,10 @@ function M:_init_watch()
   -- target is where the index actually lives.
   local metadata = self.system.metadata_dir and self.system.metadata_dir(self.root) or nil
   self.metadata_path = metadata or self.marker_path
-  -- Metadata first: the child-directory loop below would otherwise claim the
-  -- marker with a non-recursive watch and the index would still be seen (it is
-  -- a direct child) but nothing deeper would be.
+  -- Metadata only (D38): the work tree is not watched.  A hunk is computed
+  -- when a buffer is signed, from the index/HEAD the VCS exposes, so no
+  -- directory under the root needs a handle of its own any more.
   self:_watch(self.metadata_path, RECURSIVE_FS_EVENT)
-  self:_watch(self.root, false)
-  -- Depth 1 only.  Watching every directory of a large repository costs one
-  -- handle each (and on Linux there is no recursive mode to do it for us), but
-  -- *not* watching a directory one level down would mean most real edits —
-  -- anything below the root — go unnoticed.
-  for name, kind in vim.fs.dir(self.root) do
-    if kind == 'directory' then
-      self:_watch(vim.fs.joinpath(self.root, name), false)
-    end
-  end
 end
 
 ---@private
@@ -509,15 +463,14 @@ function M:_on_fs_event(watch_path, err, filename, events)
     log.debug('repository gone: %s', self.root)
     return self:_mark_deleted()
   end
-  self:_sync_watch_set(watch_path, filename, events)
-  -- A status run can rewrite `.git/index`; an event caused by our own command
-  -- must not queue another run.  (`--no-optional-locks` already prevents the
-  -- rewrite in practice — this is the belt to that pair of braces.)
-  -- Not dropped outright though: a `git add` that lands entirely inside the
-  -- status run would be lost forever.  Note it as pending instead — the run
-  -- in flight picks it up with exactly one more pass, and the debounce stays
-  -- unarmed, so a VCS that *did* rewrite its metadata on every status
-  -- command cannot feed itself a loop.
+  -- A probe can spawn a VCS command that rewrites `.git/index`; an event caused
+  -- by our own command must not queue another probe.  (`--no-optional-locks`
+  -- already prevents the rewrite in practice — this is the belt to that pair of
+  -- braces.)  Not dropped outright though: a `git add` that lands entirely
+  -- inside the probe would be lost forever.  Note it as pending instead — the
+  -- run in flight picks it up with exactly one more pass, and the debounce
+  -- stays unarmed, so a VCS that *did* rewrite its metadata on every command
+  -- cannot feed itself a loop.
   if self.is_updating and watch_path == self.metadata_path then
     log.debug('metadata event during an update noted: %s', watch_path)
     self.is_dirty = true
@@ -525,28 +478,6 @@ function M:_on_fs_event(watch_path, err, filename, events)
     return
   end
   self:mark_dirty()
-end
-
----@private
---- Keep the watch set in step with the tree: a directory that appears directly
---- under the root gets its own watch, a deleted one is dropped.
----@param watch_path string
----@param filename string?
----@param events { change: boolean?, rename: boolean? }?
-function M:_sync_watch_set(watch_path, filename, events)
-  if watch_path ~= self.root or not events or not events.rename or not filename then
-    return
-  end
-  -- `filename` uses the platform separator on Windows (`sub\deep`).
-  local child = vim.fs.normalize(vim.fs.joinpath(watch_path, filename))
-  if child == self.root then
-    return
-  end
-  if is_dir(child) then
-    self:_watch(child, false)
-  elseif self.watch_paths[child] then
-    self:_unwatch(child)
-  end
 end
 
 -- ▏ teardown ──────────────────────────────────────────────────────────────────

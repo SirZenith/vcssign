@@ -199,7 +199,7 @@ return {
       -- delivered the way the editor would deliver it.
       vim.api.nvim_exec_autocmds('FocusGained', {})
       helpers.wait_for(function()
-        return helpers.entry(repo:entries(), 'external.txt') ~= nil
+        return helpers.entry(helpers.status_entries(repo), 'external.txt') ~= nil
       end, 'the external change to be picked up')
     end),
   },

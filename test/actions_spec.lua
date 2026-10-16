@@ -56,11 +56,14 @@ local function attach_ready(ref, path)
 end
 
 --- The status entry the VCS reported for `rel`, or nil.
+---
+--- Asked live: `Repo` stopped caching status (D38), and asserting against the
+--- VCS itself is the stronger claim anyway (see the file header).
 ---@param repo vcssign.Repo
 ---@param rel string
 ---@return vcssign.StatusEntry?
 local function entry_of(repo, rel)
-  return helpers.entry(repo:entries(), rel)
+  return helpers.entry(helpers.status_entries(repo), rel)
 end
 
 ---@param repo vcssign.Repo
@@ -74,7 +77,7 @@ local function entry(repo, rel)
   return found
 end
 
---- Wait until the cached status of `rel` reports `want` in `domain`.
+--- Wait until the live status of `rel` reports `want` in `domain`.
 ---@param repo vcssign.Repo
 ---@param rel string
 ---@param domain "index"|"worktree"
@@ -280,7 +283,7 @@ return {
       ok(seen[1].message:find('committed base.txt', 1, true), seen[1].message)
       -- The index is clean again, so the status empties out.
       helpers.wait_for(function()
-        return #repo:entries() == 0
+        return #helpers.status_entries(repo) == 0
       end, 'the status to become clean')
     end),
   },
@@ -356,7 +359,7 @@ return {
       ok(seen[1].message:find('committed base.txt', 1, true), seen[1].message)
       ok(seen[1].message:find('Committed revision', 1, true), seen[1].message)
       helpers.wait_for(function()
-        return #repo:entries() == 0
+        return #helpers.status_entries(repo) == 0
       end, 'the working copy to become clean')
     end),
   },
@@ -468,12 +471,11 @@ return {
       reset()
       local repo, dir = modified_repo('actions-refresh')
       helpers.write(dir .. '/new.txt', 'untracked\n')
-      eq(entry_of(repo, 'new.txt'), nil, 'not in the cache yet')
 
-      -- The *mechanism* is what is asserted: `refresh_now` starts the run
+      -- The *mechanism* is what is asserted: `refresh_now` starts the probe
       -- immediately, so `is_updating` has already flipped when it returns, while
       -- the debounced path would leave the request waiting for its timer.  A
-      -- wall clock would be flaky here — one `git status` can take longer than
+      -- wall clock would be flaky here — one probe can take longer than
       -- the debounce window, which is exactly what that window is for.
       actions.refresh(entry(repo, 'base.txt'))
       eq(repo.is_updating, true, 'the run starts without waiting for the debounce window')

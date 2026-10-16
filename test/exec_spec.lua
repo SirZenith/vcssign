@@ -183,6 +183,80 @@ return {
     end,
   },
   {
+    name = 'a string stdin is written verbatim, with no trailing newline added',
+    fn = function()
+      -- Measured (probe A): a `string` is handed to the pipe byte for byte;
+      -- `vim.system` does not append a newline for you.  A unified patch must
+      -- therefore carry its own final `\n` (probe B4: without it, `git apply`
+      -- answers `error: corrupt patch`).
+      local res
+      local err = helpers.wait(function(cb)
+        exec.run({ 'cat' }, { cwd = helpers.plugin_root, stdin = 'a\nb' }, function(e, r)
+          res = r
+          cb(e)
+        end)
+      end)
+      eq(err, nil)
+      eq(res.stdout, 'a\nb', 'the bytes must arrive exactly as given')
+    end,
+  },
+  {
+    name = 'a string[] stdin gets a newline appended to each element',
+    fn = function()
+      -- The array form is line-oriented: each element becomes one line, so the
+      -- caller does not have to spell the separators (probe A).
+      local res
+      local err = helpers.wait(function(cb)
+        exec.run({ 'cat' }, { cwd = helpers.plugin_root, stdin = { 'a', 'b' } }, function(e, r)
+          res = r
+          cb(e)
+        end)
+      end)
+      eq(err, nil)
+      eq(res.stdout, 'a\nb\n', 'each element is its own line')
+    end,
+  },
+  {
+    name = 'a large stdin round-trips through the pipe untruncated',
+    fn = function()
+      -- Past every OS pipe buffer, so this only holds if writing stdin is
+      -- coupled to reading stdout rather than racing the process.
+      local line = string.rep('x', 79)
+      local lines = {}
+      for _ = 1, 3400 do
+        lines[#lines + 1] = line
+      end
+      local payload = table.concat(lines, '\n') .. '\n'
+      ok(#payload >= 256 * 1024, 'the payload must be at least 256 KiB')
+
+      local res
+      local err = helpers.wait(function(cb)
+        exec.run({ 'cat' }, { cwd = helpers.plugin_root, stdin = payload }, function(e, r)
+          res = r
+          cb(e)
+        end)
+      end)
+      eq(err, nil)
+      eq(#res.stdout, #payload, 'the whole payload must come back')
+      eq(res.stdout, payload)
+    end,
+  },
+  {
+    name = 'a timed-out run with stdin leaves no timer handle',
+    fn = function()
+      -- The stdin write must not keep the timeout timer alive after the kill:
+      -- a live `uv_timer_t` is the leak shape the rest of this file pins.
+      local before = helpers.uv_count('timer')
+      local sleep_cmd = exec.is_windows and { 'cmd', '/c', 'ping -n 5 127.0.0.1 >NUL' }
+        or { 'sh', '-c', 'sleep 2' }
+      local err = helpers.wait(function(cb)
+        exec.run(sleep_cmd, { cwd = helpers.plugin_root, timeout = 1, stdin = 'payload\n' }, cb)
+      end)
+      ok(err ~= nil and err:match('^timeout after 1ms') ~= nil, 'got: ' .. tostring(err))
+      eq(helpers.uv_count('timer'), before, 'no timeout timer may survive the kill')
+    end,
+  },
+  {
     name = 'split_nul / split_lines / first_line',
     fn = function()
       eq(exec.split_nul('a\0b\0c\0'), { 'a', 'b', 'c' })
