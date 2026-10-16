@@ -5,8 +5,10 @@
 --- `BufEnter` attach a buffer, `BufWritePost` and `FocusGained` refresh it,
 --- `BufDelete` / `BufWipeout` and `nvim_buf_attach`'s own `on_detach` detach
 --- it, `VimLeavePre` forgets everything.  It also adds the per-buffer on/off
---- switch (`M.toggle`, `:Vcssign toggle`).  What this module owns is the
---- per-buffer invariant set:
+--- switch (`M.toggle`, `:Vcssign toggle`).  Step 7 adds the second layer: for
+--- git the staged changes (`HEAD`..*index*) are rendered into
+--- `vcssign_signs_staged` from a second baseline, filtered so no line is
+--- painted twice (D40).  What this module owns is the per-buffer invariant set:
 ---
 ---   * one attach per buffer, idempotent, keyed by the buffer's path;
 ---   * every VCS command is spawned through the repository manager and its
@@ -20,6 +22,7 @@ local config = require('vcssign.config')
 local base = require('vcssign.vcs.base')
 local debounce = require('vcssign.debounce')
 local diff = require('vcssign.diff')
+local hunk = require('vcssign.hunk')
 local log = require('vcssign.log')
 local manager = require('vcssign.repo_manager')
 local signs = require('vcssign.signs')
@@ -38,8 +41,10 @@ local M = {}
 ---@field repo vcssign.Repo?
 ---@field rev string
 ---@field base_text string?      nil = "no baseline is known" (render nothing)
+---@field head_text string?      `HEAD` for the staged layer; nil = no staged layer
 ---@field buf_text string?
----@field hunks vcssign.Hunk[]
+---@field hunks vcssign.Hunk[]             worktree layer (index -> buffer)
+---@field hunks_staged vcssign.Hunk[]      staged layer (HEAD -> buffer), git only
 ---@field tracked boolean?
 ---@field untracked boolean
 ---@field attached boolean
@@ -75,6 +80,42 @@ local function deactivate(st)
   unobserve(st)
 end
 
+--- Whether this buffer gets a staged layer at all: only git has a staging
+--- area, and only when the buffer is compared against it — with any other
+--- `rev` the two baselines would produce the same picture on the same lines.
+---@param st vcssign.AttachState
+---@return boolean
+local function wants_staged(st)
+  return st.rev == 'index' and st.system.capabilities.staged_signs == true
+end
+
+--- Read `HEAD` into `st.head_text` — the staged layer's baseline — then call
+--- `done()`.
+---
+--- No `HEAD` yet (a repository born in this session, with a staged file) is
+--- not a failure: the staged layer's baseline is the empty file, exactly like
+--- an untracked file's, and every line reads as staged-added.
+---@param st vcssign.AttachState
+---@param done fun()
+local function load_head(st, done)
+  if not wants_staged(st) then
+    st.head_text = nil
+    return done()
+  end
+  st.system.show(st.root, 'HEAD', st.rel, function(err, text)
+    if M._bufs[st.bufnr] ~= st then
+      return
+    end
+    if err then
+      st.head_text = ''
+      log.debug('buffer %d: no HEAD for %s: %s', st.bufnr, st.rel, err)
+    else
+      st.head_text = text
+    end
+    done()
+  end)
+end
+
 --- Read the baseline text into `st`, then call `done()`.
 ---
 --- Failure chain: an error from `is_tracked` is "no signs" (and no warning —
@@ -83,6 +124,10 @@ end
 ---@param st vcssign.AttachState
 ---@param done fun()
 local function load_base(st, done)
+  -- Both baselines are re-read together (they have to describe the same
+  -- moment), so a refresh cannot leave an older `head_text` behind: every
+  -- branch below either sets it or leaves it nil.
+  st.head_text = nil
   st.system.is_tracked(st.root, st.rel, function(terr, tracked)
     if M._bufs[st.bufnr] ~= st then
       return
@@ -110,7 +155,7 @@ local function load_base(st, done)
         end
         if not err then
           st.base_text = text
-          return done()
+          return load_head(st, done)
         end
         if retry then
           return show_with('HEAD', false)
@@ -129,9 +174,9 @@ end
 function M._render(st)
   local buf_lines = api.nvim_buf_get_lines(st.bufnr, 0, -1, false)
   st.buf_text = diff.join(buf_lines)
+  st.hunks, st.hunks_staged = {}, {}
   if st.base_text == nil then
     signs.clear(st.bufnr)
-    st.hunks = {}
     return
   end
   if st.untracked then
@@ -146,9 +191,20 @@ function M._render(st)
   else
     -- `diff.run` reads its defaults from `config.diff`; no opts needed here.
     st.hunks = diff.run(diff.normalize(st.base_text), st.buf_text)
+    if st.head_text ~= nil then
+      -- The staged layer (D40): what `HEAD`..buffer adds on top of what the
+      -- worktree layer already paints.  `filter_common` drops the regions the
+      -- two layers would both claim, so a line is never painted twice — a hunk
+      -- holding unstaged changes is not staged anymore.
+      st.hunks_staged = hunk.filter_common(
+        diff.run(diff.normalize(st.head_text), st.buf_text),
+        st.hunks
+      ) or {}
+    end
   end
   if st.shown then
     signs.place(st.bufnr, st.hunks)
+    signs.place(st.bufnr, st.hunks_staged, { staged = true })
   else
     -- The switch is off: keep `st.hunks` (the accessors must stay truthful)
     -- but leave the column empty.
