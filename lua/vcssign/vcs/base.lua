@@ -15,16 +15,41 @@ local NORMALIZE_OPTS = { expand_env = false }
 
 --- What a system can actually do; actions check this before calling into it.
 ---@class vcssign.VcsCaps
----@field stage boolean    can move changes into the index (git only)
----@field unstage boolean  can take changes back out of the index (git only)
+---@field stage boolean         can move changes into the index (git only)
+---@field staged_signs boolean  has the HEAD/index/worktree trio, so `staged` signs are meaningful (git only)
+---@field revert_hunk boolean   can drop a single hunk (a reverse `apply_patch`)
+---@field blame boolean         can attribute lines to the revision that last touched them
+---@field show_rev boolean      can read a file as of a revision (`show`)
 ---@field commit boolean
----@field diff boolean
 
---- One file, as reported by a VCS adapter.
----@class vcssign.StatusEntry
----@field path string      absolute, normalised (`D:/a/b.txt`)
----@field rel_path string  relative to the repo root, '/'-separated (`a/b.txt`)
----@field status vcssign.FileStatus
+--- A `-L from,to` window for `blame`.  svn has no line window and ignores it;
+--- the whole file comes back either way, so `lines` is a sparse map keyed by
+--- final line number instead of a dense array.
+---@class vcssign.BlameOpts
+---@field from integer?  1-based first line, inclusive
+---@field to integer?    1-based last line, inclusive
+
+--- Where one final line came from.  `rev` is whatever `show` accepts for that
+--- line: a 40-hex object id for git, a revision number as text for svn.
+---@class vcssign.BlameLine
+---@field rev string       git: the 40-hex object id; svn: the revision number as text ('-' = locally modified)
+---@field author string
+---@field time integer?    Unix seconds, when the VCS reports one
+---@field summary string?  git: the commit summary line
+
+--- Result of `blame`: `lines[n]` attributes final line `n`, holes are lines
+--- outside a `-L` window (or lines the VCS skipped).  `max_lineno` is the
+--- highest final line number seen, `0` when nothing was reported.
+---@class vcssign.BlameResult
+---@field lines table<integer, vcssign.BlameLine>
+---@field max_lineno integer
+
+---@alias vcssign.BlameCb fun(err: string?, result: vcssign.BlameResult?)
+
+--- How `apply_patch` should apply its patch.
+---@class vcssign.PatchOpts
+---@field cached boolean?   apply to the index instead of the worktree (git only)
+---@field reverse boolean?  apply the patch backwards, i.e. drop the hunk
 
 --- Every callback in this interface is error-first: `cb(err, ...)`.
 ---@class vcssign.VcsSystem
@@ -44,7 +69,19 @@ local NORMALIZE_OPTS = { expand_env = false }
 ---@field metadata_dir? fun(root: string): string?
 --- Authoritative root lookup through the VCS itself.
 ---@field get_root_async fun(path: string, cb: fun(err: string?, root: string?))
----@field status fun(root: string, cb: fun(err: string?, entries: vcssign.StatusEntry[]?))
+--- Baseline text of `rel` as of `rev`; `rev == 'index'` means the staging
+--- baseline (git's index, svn's BASE — D42).
+---@field show fun(root: string, rev: string, rel: string, cb: fun(err: string?, text: string?))
+--- Whether `rel` is under version control.  Untracked is `false`, not an error.
+---@field is_tracked fun(root: string, rel: string, cb: fun(err: string?, tracked: boolean?))
+--- Per-line attribution.  svn ignores `opts` (no line window).
+---@field blame fun(root: string, rel: string, opts: vcssign.BlameOpts, cb: vcssign.BlameCb)
+--- Apply a unified diff to the worktree or the index.  A patch that does not
+--- apply cleanly is an error, and svn is detected through its stdout because it
+--- still exits `0` on a conflict.
+---@field apply_patch fun(root: string, patch: string, opts: vcssign.PatchOpts, cb: fun(err: string?))
+--- Throw away the worktree change to `rel` (back to the index/BASE text).
+---@field revert fun(root: string, rel: string, cb: fun(err: string?))
 ---@field stage fun(root: string, files: string[], cb: fun(err: string?))
 ---@field unstage fun(root: string, files: string[], cb: fun(err: string?))
 ---@field commit fun(root: string, files: string[], msg: string, cb: fun(err: string?, info: string?))
@@ -83,8 +120,8 @@ end
 --- Absolute path of `rel` inside `root`.
 ---
 --- `root` must already be absolute (adapters always hand out roots that went
---- through `M.normalize`), so this stays a pure-Lua call: it runs once per
---- status entry, and `fnamemodify(':p')` per entry is measurable on large
+--- through `M.normalize`), so this stays a pure-Lua call: it runs per file on
+--- every sign refresh, and `fnamemodify(':p')` there is measurable in large
 --- repositories.
 ---@param root string
 ---@param rel string
@@ -146,19 +183,6 @@ function M.find_root_upwards(path, matcher)
     dir = parent
   end
   return nil
-end
-
---- Build a `StatusEntry`.
----@param root string
----@param rel_path string
----@param status vcssign.FileStatus
----@return vcssign.StatusEntry
-function M.make_entry(root, rel_path, status)
-  return {
-    path = M.abspath(root, rel_path),
-    rel_path = rel_path,
-    status = status,
-  }
 end
 
 --- Stub for a capability an adapter does not implement.  The last argument of

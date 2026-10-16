@@ -5,6 +5,10 @@
 --- --cached`, `git log`, `svn log`) and not only against the plugin's own
 --- cache — a cache that agrees with a command which did nothing is the failure
 --- mode worth catching.
+---
+--- `Repo` stopped caching status in M6 (D38), so "the plugin saw the change"
+--- is asserted through the VCS (the helpers below) or through the refresh
+--- mechanism (`helpers.count_refreshes`), never through a status list.
 --- See impl/init/04-commands-actions.md §2, §6.
 local actions = require('vcssign.actions')
 local autocmds = require('vcssign.autocmds')
@@ -55,52 +59,56 @@ local function attach_ready(ref, path)
   return repo
 end
 
---- The status entry the VCS reported for `rel`, or nil.
+--- The absolute path a target needs: actions are path-based in M6.
+---@param repo vcssign.Repo
+---@param rel string
+---@return string
+local function file(repo, rel)
+  return repo.root .. '/' .. rel
+end
+
+--- What `git diff <args>` reports, one path per line (`''` when clean).
 ---
---- Asked live: `Repo` stopped caching status (D38), and asserting against the
---- VCS itself is the stronger claim anyway (see the file header).
----@param repo vcssign.Repo
----@param rel string
----@return vcssign.StatusEntry?
-local function entry_of(repo, rel)
-  return helpers.entry(helpers.status_entries(repo), rel)
+--- `--name-only` reduces the answer to "which files differ", which is all these
+--- cases need; the string is trimmed because even a shell-free `vim.system`
+--- hands back a trailing newline.
+---@param dir string
+---@param args? string[]
+---@return string
+local function git_diff(dir, args)
+  local cmd = { 'git', '-C', dir, 'diff' }
+  vim.list_extend(cmd, args or {})
+  cmd[#cmd + 1] = '--name-only'
+  return (helpers.sh(cmd):gsub('%s+$', ''))
 end
 
----@param repo vcssign.Repo
----@param rel string
----@return vcssign.StatusEntry
-local function entry(repo, rel)
-  local found = entry_of(repo, rel)
-  if not found then
-    error('no status entry for ' .. rel, 2)
-  end
-  return found
-end
-
---- Wait until the live status of `rel` reports `want` in `domain`.
----@param repo vcssign.Repo
----@param rel string
----@param domain "index"|"worktree"
----@param want vcssign.StatusType
-local function wait_for_domain(repo, rel, domain, want)
-  helpers.wait_for(function()
-    local found = entry_of(repo, rel)
-    return found ~= nil and found.status[domain] == want
-  end, string.format('%s to report %s = %s', rel, domain, want))
+--- svn's status line for one path (`''` when clean).  The first column is the
+--- documented thing this suite reads, exactly as a user would read it.
+---@param path string
+---@return string
+local function svn_status(path)
+  return (helpers.sh({ 'svn', 'status', '--', path }):gsub('%s+$', ''))
 end
 
 -- `helpers.capture_notify` with the optional wait predicate: the VCS answers
 -- asynchronously, so a case has to wait for its notification while the stub
 -- is still in place.
 local collect = helpers.capture_notify
---- Run `fn` with notifications swallowed.
+
+--- Stage `rel` and wait for the plugin to say so.
 ---
---- The *setup* of a case (staging a file before testing a commit, say) produces
---- the same messages a user would see; the suite keeps stderr clean so that a
---- real warning stands out from the expected ones.
----@param fn function
-local function quiet(fn)
-  collect(fn)
+--- The answer is only emitted once the VCS command has succeeded, so it doubles
+--- as the rendezvous: no case has to sleep on a wall clock to know that the
+--- index really changed.
+---@param dir string
+---@param rel string
+---@return vcssign.CapturedNotify[]
+local function stage_quietly(dir, rel)
+  return collect(function()
+    actions.stage(dir .. '/' .. rel)
+  end, function(s)
+    return #s > 0
+  end)
 end
 
 --- How many diff views exist: the claim "pressing `d` twice reuses the buffer"
@@ -118,14 +126,22 @@ local function diff_buffers()
 end
 
 --- Run `fn` with `vim.ui.input` answering `value` (nil = cancelled).
+---
+--- `fn` gets a getter for how many times the prompt was actually shown, so a
+--- case can wait for the VCS round trips in front of the prompt instead of
+--- hoping that a fixed drain window covered them.
 ---@param value string?
----@param fn function
+---@param fn fun(asked: fun(): integer)
 local function with_input(value, fn)
   local real = vim.ui.input
+  local asked = 0
   vim.ui.input = function(_, on_confirm)
+    asked = asked + 1
     on_confirm(value)
   end
-  local ok, err = pcall(fn)
+  local ok, err = pcall(fn, function()
+    return asked
+  end)
   vim.ui.input = real
   if not ok then
     error(err, 0)
@@ -150,8 +166,10 @@ end
 local function modified_repo(name)
   local dir = helpers.git_repo(name)
   helpers.write(dir .. '/base.txt', 'changed\n')
+  -- The fixture is only useful if it really is modified, and this is the
+  -- strongest available way to say so.
+  eq(git_diff(dir), 'base.txt', 'the fixture starts with one worktree change')
   local repo = attach_ready('spec:' .. name, dir)
-  wait_for_domain(repo, 'base.txt', 'worktree', 'modified')
   return repo, dir
 end
 
@@ -183,21 +201,15 @@ return {
     name = 'stage moves a change into the index, and says so',
     fn = guarded(function()
       reset()
-      local repo, dir = modified_repo('actions-stage')
+      local _, dir = modified_repo('actions-stage')
 
-      local seen = collect(function()
-        actions.stage(entry(repo, 'base.txt'))
-        wait_for_domain(repo, 'base.txt', 'index', 'modified')
-      end)
+      local seen = stage_quietly(dir, 'base.txt')
       eq(seen[1].message, 'vcssign: staged base.txt')
       eq(seen[1].level, vim.log.levels.INFO)
       -- The VCS agrees, and the worktree side is gone (staged *and* modified
       -- would mean the file was touched again after staging).
-      eq(
-        helpers.sh({ 'git', '-C', dir, 'diff', '--cached', '--name-only' }):gsub('%s+$', ''),
-        'base.txt'
-      )
-      eq(entry_of(repo, 'base.txt').status.worktree, nil)
+      eq(git_diff(dir, { '--cached' }), 'base.txt')
+      eq(git_diff(dir), '', 'the worktree matches the index again')
     end),
   },
   {
@@ -205,17 +217,16 @@ return {
     fn = guarded(function()
       reset()
       local repo, dir = modified_repo('actions-unstage')
-      quiet(function()
-        actions.stage(entry(repo, 'base.txt'))
-        wait_for_domain(repo, 'base.txt', 'index', 'modified')
-      end)
+      stage_quietly(dir, 'base.txt')
 
       local seen = collect(function()
-        actions.unstage(entry(repo, 'base.txt'))
-        wait_for_domain(repo, 'base.txt', 'worktree', 'modified')
+        actions.unstage(file(repo, 'base.txt'))
+      end, function(s)
+        return #s > 0
       end)
       eq(seen[1].message, 'vcssign: unstaged base.txt')
-      eq(helpers.sh({ 'git', '-C', dir, 'diff', '--cached', '--name-only' }), '')
+      eq(git_diff(dir, { '--cached' }), '')
+      eq(git_diff(dir), 'base.txt', 'the change is back in the worktree')
     end),
   },
   {
@@ -225,11 +236,11 @@ return {
       local dir = helpers.svn_checkout('actions-svn-stage')
       helpers.write(dir .. '/base.txt', 'changed\n')
       local repo = attach_ready('spec:actions-svn-stage', dir)
-      wait_for_domain(repo, 'base.txt', 'worktree', 'modified')
+      eq(svn_status(file(repo, 'base.txt')):sub(1, 1), 'M', 'the fixture starts modified')
 
       local seen = collect(function()
-        actions.stage(entry(repo, 'base.txt'))
-        actions.unstage(entry(repo, 'base.txt'))
+        actions.stage(file(repo, 'base.txt'))
+        actions.unstage(file(repo, 'base.txt'))
       end)
       -- System-scoped phrasing, no `vcssign:` prefix: the same sentence the
       -- capability gate uses.
@@ -237,7 +248,7 @@ return {
       eq(seen[2].message, 'svn: no staging area')
       eq(seen[1].level, vim.log.levels.INFO, 'a missing capability is not an error')
       -- And nothing ran: the file is still just modified.
-      eq(entry_of(repo, 'base.txt').status.worktree, 'modified')
+      eq(svn_status(file(repo, 'base.txt')):sub(1, 1), 'M')
     end),
   },
   {
@@ -249,7 +260,7 @@ return {
       -- platform and still says something diagnostic.
       helpers.write(dir .. '/.git/index.lock', '')
       local seen = collect(function()
-        actions.stage(entry(repo, 'base.txt'))
+        actions.stage(file(repo, 'base.txt'))
       end, function(s)
         return #s > 0
       end)
@@ -263,15 +274,12 @@ return {
     fn = guarded(function()
       reset()
       local repo, dir = modified_repo('actions-commit')
-      quiet(function()
-        actions.stage(entry(repo, 'base.txt'))
-        wait_for_domain(repo, 'base.txt', 'index', 'modified')
-      end)
+      stage_quietly(dir, 'base.txt')
 
       local seen
       with_input('feat: change base', function()
         seen = collect(function()
-          actions.commit(entry(repo, 'base.txt'))
+          actions.commit(file(repo, 'base.txt'))
         end, function(s)
           return #s > 0
         end)
@@ -281,10 +289,10 @@ return {
         'feat: change base'
       )
       ok(seen[1].message:find('committed base.txt', 1, true), seen[1].message)
-      -- The index is clean again, so the status empties out.
-      helpers.wait_for(function()
-        return #helpers.status_entries(repo) == 0
-      end, 'the status to become clean')
+      -- Nothing is left over: the index matches the new HEAD, and so does the
+      -- worktree.
+      eq(git_diff(dir, { '--cached' }), '', 'the index is clean again')
+      eq(git_diff(dir), '', 'and so is the worktree')
     end),
   },
   {
@@ -297,7 +305,9 @@ return {
       local seen
       with_input('nope', function()
         seen = collect(function()
-          actions.commit(entry(repo, 'base.txt'))
+          actions.commit(file(repo, 'base.txt'))
+        end, function(s)
+          return #s > 0
         end)
       end)
       ok(seen[1].message:find('not staged yet', 1, true), seen[1].message)
@@ -308,25 +318,31 @@ return {
     name = 'commit is dropped when the message prompt is cancelled or empty',
     fn = guarded(function()
       reset()
-      local repo = modified_repo('actions-commit-cancel')
-      quiet(function()
-        actions.stage(entry(repo, 'base.txt'))
-        wait_for_domain(repo, 'base.txt', 'index', 'modified')
-      end)
+      local repo, dir = modified_repo('actions-commit-cancel')
+      stage_quietly(dir, 'base.txt')
       local before = head(repo)
 
+      -- Cancelling reaches the prompt last, after the baseline reads in front
+      -- of it; the getter says when that happened without guessing at a
+      -- duration.
       local cancelled
-      with_input(nil, function()
+      with_input(nil, function(asked)
         cancelled = collect(function()
-          actions.commit(entry(repo, 'base.txt'))
+          actions.commit(file(repo, 'base.txt'))
+          helpers.wait_for(function()
+            return asked() > 0
+          end, 'the commit prompt')
         end)
       end)
       eq(#cancelled, 0, 'cancelling says nothing at all')
 
       local empty
-      with_input('   ', function()
+      with_input('   ', function(asked)
         empty = collect(function()
-          actions.commit(entry(repo, 'base.txt'))
+          actions.commit(file(repo, 'base.txt'))
+          helpers.wait_for(function()
+            return asked() > 0
+          end, 'the commit prompt')
         end)
       end)
       ok(empty[1].message:find('empty commit message', 1, true), empty[1].message)
@@ -340,12 +356,12 @@ return {
       local dir, url = helpers.svn_repo('actions-svn-commit')
       helpers.write(dir .. '/base.txt', 'committed from svn\n')
       local repo = attach_ready('spec:actions-svn-commit', dir)
-      wait_for_domain(repo, 'base.txt', 'worktree', 'modified')
+      eq(svn_status(file(repo, 'base.txt')):sub(1, 1), 'M', 'the fixture starts modified')
 
       local seen
       with_input('svn: edit base', function()
         seen = collect(function()
-          actions.commit(entry(repo, 'base.txt'))
+          actions.commit(file(repo, 'base.txt'))
         end, function(s)
           return #s > 0
         end)
@@ -358,20 +374,20 @@ return {
       -- The revision svn prints is part of the answer, not just "ok".
       ok(seen[1].message:find('committed base.txt', 1, true), seen[1].message)
       ok(seen[1].message:find('Committed revision', 1, true), seen[1].message)
-      helpers.wait_for(function()
-        return #helpers.status_entries(repo) == 0
-      end, 'the working copy to become clean')
+      eq(svn_status(file(repo, 'base.txt')), '', 'and the working copy is clean')
     end),
   },
   {
-    name = 'diff shows a unified diff of the unstaged change',
+    name = 'diff shows a unified diff of the worktree change',
     fn = guarded(function()
       reset()
       local repo = modified_repo('actions-diff')
 
       local before = vim.api.nvim_get_current_win()
       local seen = collect(function()
-        actions.diff(entry(repo, 'base.txt'))
+        -- The default baseline is the index (`config.rev`), which holds nothing
+        -- here; the worktree side is the one to ask for explicitly.
+        actions.diff(file(repo, 'base.txt'), { cached = false })
         helpers.wait_for(function()
           return vim.api.nvim_get_current_win() ~= before
         end, 'the diff window')
@@ -393,7 +409,7 @@ return {
       -- of one file, and stacking copies of it helps nobody.
       local first = bufnr
       local windows = #vim.api.nvim_tabpage_list_wins(0)
-      actions.diff(entry(repo, 'base.txt'))
+      actions.diff(file(repo, 'base.txt'), { cached = false })
       eq(vim.api.nvim_get_current_win(), win, 'focus came back to the same window')
       eq(#vim.api.nvim_tabpage_list_wins(0), windows, 'no second window')
       eq(diff_buffers(), 1)
@@ -401,26 +417,18 @@ return {
     end),
   },
   {
-    name = 'diff of a staged file compares against the index',
+    name = 'diff uses the configured baseline: the index by default',
     fn = guarded(function()
       reset()
-      local repo = modified_repo('actions-diff-cached')
+      local repo, dir = modified_repo('actions-diff-cached')
       local before = vim.api.nvim_get_current_win()
-      quiet(function()
-        actions.stage(entry(repo, 'base.txt'))
-        wait_for_domain(repo, 'base.txt', 'index', 'modified')
-      end)
-      -- Touch the file again: it now has staged *and* worktree changes.  The
-      -- row the user is on is the staged one, so the index is the side to
-      -- compare against, and the newer edit must not appear.
+      stage_quietly(dir, 'base.txt')
+      -- Touch the file again: it now has staged *and* worktree changes.  With
+      -- no `opts` the diff follows `config.rev`, which is 'index' by default,
+      -- so the newer edit must not appear.
       helpers.write(repo.root .. '/base.txt', 'changed again\n')
-      repo:refresh_now()
-      helpers.wait_for(function()
-        local found = entry_of(repo, 'base.txt')
-        return found ~= nil and found.status.index ~= nil and found.status.worktree ~= nil
-      end, 'both domains to be set')
 
-      actions.diff(entry(repo, 'base.txt'), { cached = true })
+      actions.diff(file(repo, 'base.txt'))
       helpers.wait_for(function()
         return vim.api.nvim_get_current_win() ~= before
       end, 'the diff window')
@@ -437,7 +445,7 @@ return {
       local repo = modified_repo('actions-diff-split')
       with_config({ diff = { mode = 'split' } }, function()
         local before = vim.api.nvim_get_current_win()
-        actions.diff(entry(repo, 'base.txt'))
+        actions.diff(file(repo, 'base.txt'), { cached = false })
         helpers.wait_for(function()
           return vim.api.nvim_get_current_win() ~= before
         end, 'the diff window')
@@ -453,8 +461,8 @@ return {
     fn = guarded(function()
       reset()
       local repo = modified_repo('actions-diff-empty')
-      -- A path target, so no status is involved: `git diff` on a clean file
-      -- prints nothing at all.
+      -- A path target, so nothing but the adapter is involved: the file is
+      -- clean, and a diff against the index prints nothing at all.
       local windows = #vim.api.nvim_tabpage_list_wins(0)
       local seen = collect(function()
         actions.diff(repo.root .. '/sub/nested.txt')
@@ -469,19 +477,22 @@ return {
     name = 'refresh re-reads the repository without waiting for the debounce',
     fn = guarded(function()
       reset()
-      local repo, dir = modified_repo('actions-refresh')
-      helpers.write(dir .. '/new.txt', 'untracked\n')
+      local repo = modified_repo('actions-refresh')
 
       -- The *mechanism* is what is asserted: `refresh_now` starts the probe
       -- immediately, so `is_updating` has already flipped when it returns, while
       -- the debounced path would leave the request waiting for its timer.  A
       -- wall clock would be flaky here — one probe can take longer than
       -- the debounce window, which is exactly what that window is for.
-      actions.refresh(entry(repo, 'base.txt'))
+      local passes = helpers.count_refreshes(repo)
+      actions.refresh(file(repo, 'base.txt'))
       eq(repo.is_updating, true, 'the run starts without waiting for the debounce window')
       helpers.wait_for(function()
-        return entry_of(repo, 'new.txt') ~= nil
-      end, 'the new file to appear')
+        return passes() > 0
+      end, 'the refresh to land')
+      helpers.wait_for(function()
+        return not repo.is_updating
+      end, 'the refresh to finish')
     end),
   },
   {
@@ -497,42 +508,35 @@ return {
       vim.fn.mkdir(elsewhere, 'p')
       vim.cmd('cd ' .. vim.fn.fnameescape(elsewhere))
 
-      helpers.write(repo.root .. '/only.txt', 'untracked\n')
+      local passes = helpers.count_refreshes(repo)
       actions.refresh()
       helpers.wait_for(function()
-        return entry_of(repo, 'only.txt') ~= nil
+        return passes() > 0
       end, 'the only repository to be refreshed')
       vim.fn.delete(elsewhere, 'rf')
     end),
   },
   {
-    name = 'an entry is acted on in the repository that listed it',
+    name = 'a path is acted on in the deepest repository containing it',
     fn = guarded(function()
       reset()
       -- A repository inside a repository (submodule, vendored checkout, or
-      -- simply a test repository — which is how this was found).  The outer
-      -- `git status -uall` lists the inner checkout as one directory row.
+      -- simply a test repository — which is how this was found).  Both are
+      -- attached, and a path inside the inner one belongs to the inner one:
+      -- resolving it against the outer repository would name a file that does
+      -- not exist there.
       local outer = helpers.git_repo('actions-nested-outer')
       local inner = helpers.git_repo('actions-nested-outer/inner')
       local outer_repo = attach_ready('spec:actions-outer', outer)
       local inner_repo = attach_ready('spec:actions-inner', inner .. '/base.txt')
-      helpers.wait_for(function()
-        return entry_of(outer_repo, 'inner/') ~= nil
-      end, 'the outer repository to list the nested checkout')
 
-      -- The row belongs to the outer repository: its `rel_path` is relative to
-      -- the outer root, and handing that to the inner repository (which is what
-      -- "deepest attached repository containing the path" does) would act on a
-      -- file that does not exist there.
-      local row = entry(outer_repo, 'inner/')
-      helpers.write(outer .. '/brand-new.txt', 'untracked\n')
-      actions.refresh(row)
+      local outer_passes = helpers.count_refreshes(outer_repo)
+      local inner_passes = helpers.count_refreshes(inner_repo)
+      actions.refresh(inner .. '/base.txt')
       helpers.wait_for(function()
-        return entry_of(outer_repo, 'brand-new.txt') ~= nil
-      end, 'the outer repository to be refreshed')
-      eq(entry_of(outer_repo, 'inner/') ~= nil, true, 'and the row is still there')
-      -- The inner repository was not refreshed by that action.
-      eq(entry_of(inner_repo, 'brand-new.txt'), nil)
+        return inner_passes() > 0
+      end, 'the nested repository to be refreshed')
+      eq(outer_passes(), 0, 'the outer repository was left alone')
     end),
   },
   {
@@ -543,13 +547,11 @@ return {
       -- An unversioned file: svn lists it as `?`, and `svn diff` on it fails.
       helpers.write(dir .. '/loose.txt', 'loose\n')
       local repo = attach_ready('spec:actions-diff-error', dir)
-      helpers.wait_for(function()
-        return entry_of(repo, 'loose.txt') ~= nil
-      end, 'the unversioned file to be listed')
+      eq(svn_status(file(repo, 'loose.txt')):sub(1, 1), '?', 'the fixture is unversioned')
 
       local windows = #vim.api.nvim_tabpage_list_wins(0)
       local seen = collect(function()
-        actions.diff(entry(repo, 'loose.txt'))
+        actions.diff(file(repo, 'loose.txt'))
       end, function(s)
         return #s > 0
       end)
@@ -570,14 +572,12 @@ return {
       -- the file, measured).
       helpers.sh({ 'svn', 'mkdir', '--parents', '-q', dir .. '/newdir' })
       local repo = attach_ready('spec:actions-commit-dir', dir)
-      helpers.wait_for(function()
-        return entry_of(repo, 'newdir') ~= nil
-      end, 'the directory row to be listed')
+      eq(svn_status(file(repo, 'newdir')):sub(1, 1), 'A', 'svn schedules the new directory')
 
       local seen
       with_input('should not happen', function()
         seen = collect(function()
-          actions.commit(entry(repo, 'newdir'))
+          actions.commit(file(repo, 'newdir'))
         end)
       end)
       ok(seen[1].message:find('is not a file', 1, true), seen[1].message)
@@ -590,17 +590,14 @@ return {
     fn = guarded(function()
       reset()
       local repo, dir = modified_repo('actions-commit-buffer-input')
-      quiet(function()
-        actions.stage(entry(repo, 'base.txt'))
-        wait_for_domain(repo, 'base.txt', 'index', 'modified')
-      end)
+      stage_quietly(dir, 'base.txt')
       with_config({ commit = { message_input = 'buffer' } }, function()
         local seen
         with_input('fallback still works', function()
           -- Wait for the *commit* answer, not for the first notification: the
           -- unimplemented-mode warning arrives before it.
           seen = collect(function()
-            actions.commit(entry(repo, 'base.txt'))
+            actions.commit(file(repo, 'base.txt'))
           end, function(s)
             for _, notification in ipairs(s) do
               if notification.message:find('committed', 1, true) then

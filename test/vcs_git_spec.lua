@@ -1,35 +1,43 @@
 --- M1 acceptance: git adapter.
---- Covers impl/init/01-vcs-adapter.md §7.1 (status matrix, `-z` parsing) and
---- §7.3 (linked worktree root detection).
+--- Covers impl/init/01-vcs-adapter.md §7.3 (linked worktree root detection) and
+--- the M6 sign primitives of impl/init/07-signs-in-signcolumn.md §3.1 /
+--- §5.2 (baseline text, trackedness, blame, hunk patches, revert).
 local helpers = require('helpers')
 
 local git = require('vcssign.vcs.git')
 
 local repo = helpers.fixture('git-repo')
-local conflict_repo = helpers.fixture('git-repo-conflict')
 local worktree = helpers.fixture('git-worktree')
 
---- `temp/git-repo` as prepared by scripts/make_test_repos.sh.
-local EXPECTED_REPO = {
-  'base.txt:-/modified',
-  'new.txt:-/untracked',
-  'old.txt:-/deleted',
-  'renamed.txt:renamed/-',
-  'staged-add.txt:added/-',
-  'staged-mod.txt:added/modified',
-  'sub/x.txt:added/-',
-  'untracked 名 .txt:-/untracked',
-}
+--- Scratch repositories, built once per name.
+---
+--- The shared `temp/git-repo` fixture stays frozen for the root-detection
+--- cases; the primitive cases need a repository they can mutate, and
+--- `helpers.scratch_dir` wipes a directory the first time it is asked for it.
+---@type table<string, string>
+local scratch_repos = {}
 
---- Status of the whole fixture (blocking).
----@return vcssign.StatusEntry[]
-local function fixture_status()
-  local err, entries = helpers.wait(function(cb)
-    git.status(repo, cb)
-  end)
-  eq(err, nil)
-  return entries
+---@param name string
+---@return string dir
+local function repo_named(name)
+  scratch_repos[name] = scratch_repos[name] or helpers.git_repo(name)
+  return scratch_repos[name]
 end
+
+--- A repository that has never been committed to: the index exists, HEAD does
+--- not (so `<rev>:<rel>` cannot resolve, but `:<rel>` can).
+---@param name string
+---@return string dir
+local function unborn_repo(name)
+  local dir = helpers.scratch_dir(name)
+  helpers.sh({ 'git', 'init', '-q', '-b', 'main', dir })
+  helpers.sh({ 'git', '-C', dir, 'config', 'user.email', 't@t' })
+  helpers.sh({ 'git', '-C', dir, 'config', 'user.name', 't' })
+  return dir
+end
+
+--- A zero-context patch swapping `base` for `patched` in `base.txt`.
+local PATCH = '--- a/base.txt\n+++ b/base.txt\n@@ -1 +1 @@\n-base\n+patched\n'
 
 return {
   {
@@ -105,110 +113,187 @@ return {
     end,
   },
   {
-    name = 'status reports the whole fixture matrix',
+    name = 'show reads the index baseline, not the worktree',
     fn = function()
-      eq(helpers.status_set(fixture_status()), EXPECTED_REPO)
+      local dir = repo_named('vcs-git-show')
+      helpers.write(dir .. '/base.txt', 'staged\n')
+      helpers.sh({ 'git', '-C', dir, 'add', 'base.txt' })
+      helpers.write(dir .. '/base.txt', 'worktree\n')
+
+      local err, text = helpers.wait(function(cb)
+        git.show(dir, 'index', 'base.txt', cb)
+      end)
+      eq(err, nil)
+      eq(text, 'staged\n', 'the baseline is what was staged, not what is on disk')
+
+      local herr, head = helpers.wait(function(cb)
+        git.show(dir, 'HEAD', 'base.txt', cb)
+      end)
+      eq(herr, nil)
+      eq(head, 'base\n', 'an explicit revision reads its committed blob')
+
+      -- `temp/_spec/vcs-git-unborn` has an index but no commits: `:<rel>` is
+      -- readable, `<rev>:<rel>` is not.
+      local fresh = unborn_repo('vcs-git-unborn')
+      helpers.write(fresh .. '/c.txt', 'first\n')
+      helpers.sh({ 'git', '-C', fresh, 'add', 'c.txt' })
+      local ierr, itext = helpers.wait(function(cb)
+        git.show(fresh, 'index', 'c.txt', cb)
+      end)
+      eq(ierr, nil)
+      eq(itext, 'first\n')
+      local uerr, utext = helpers.wait(function(cb)
+        git.show(fresh, 'HEAD', 'c.txt', cb)
+      end)
+      eq(utext, nil, 'HEAD does not resolve before the first commit')
+      ok(uerr and uerr:find('invalid object name', 1, true), uerr)
     end,
   },
   {
-    name = 'status reports absolute, root-anchored paths',
+    name = 'is_tracked answers false instead of erroring, and show says why',
     fn = function()
-      for _, entry in ipairs(fixture_status()) do
-        eq(entry.path, vim.fs.joinpath(repo, entry.rel_path), 'path of ' .. entry.rel_path)
-        ok(
-          not entry.rel_path:match('^[/\\]') and not entry.rel_path:match('^%a:[/\\]'),
-          'rel_path must be relative to the root: ' .. entry.rel_path
-        )
+      local dir = repo_named('vcs-git-tracked')
+      helpers.write(dir .. '/u.txt', 'u\n')
+
+      local terr, tracked = helpers.wait(function(cb)
+        git.is_tracked(dir, 'base.txt', cb)
+      end)
+      eq(terr, nil)
+      eq(tracked, true)
+
+      -- `git ls-files --error-unmatch` exits 1 for an untracked path; that is an
+      -- answer, not a failure.
+      local ferr, untracked = helpers.wait(function(cb)
+        git.is_tracked(dir, 'u.txt', cb)
+      end)
+      eq(ferr, nil)
+      eq(untracked, false)
+
+      local serr, text = helpers.wait(function(cb)
+        git.show(dir, 'index', 'u.txt', cb)
+      end)
+      eq(text, nil, 'there is no index blob to read')
+      ok(serr and serr:find('exists on disk, but not in the index', 1, true), serr)
+    end,
+  },
+  {
+    name = 'blame attributes each line and honours a -L window',
+    fn = function()
+      local dir = repo_named('vcs-git-blame')
+      helpers.write(dir .. '/f.txt', 'l1\nl2\nl3\nl4\nl5\nl6\n')
+      helpers.sh({ 'git', '-C', dir, 'add', 'f.txt' })
+      helpers.sh({ 'git', '-C', dir, 'commit', '-qm', 'five' })
+      helpers.write(dir .. '/f.txt', 'l1\nl2\nl3\nFOUR\nl5\nl6\n')
+      helpers.sh({ 'git', '-C', dir, 'add', 'f.txt' })
+      helpers.sh({ 'git', '-C', dir, 'commit', '-qm', 'four' })
+      -- Line 6 is left uncommitted on purpose.
+      helpers.write(dir .. '/f.txt', 'l1\nl2\nl3\nFOUR\nl5\nSIX\n')
+
+      local function rev(spec)
+        return (helpers.sh({ 'git', '-C', dir, 'rev-parse', spec })):gsub('%s+$', '')
       end
-    end,
-  },
-  {
-    name = 'status keeps the rename source in orig_path',
-    fn = function()
-      local renamed = helpers.entry(fixture_status(), 'renamed.txt')
-      ok(renamed, 'renamed.txt must be reported')
-      eq(renamed.status.orig_path, '文件 名.txt')
-    end,
-  },
-  {
-    name = 'status reports conflicts as conflicted on both domains',
-    fn = function()
-      local err, entries = helpers.wait(function(cb)
-        git.status(conflict_repo, cb)
+      local five, four = rev('HEAD~1'), rev('HEAD')
+
+      local err, result = helpers.wait(function(cb)
+        git.blame(dir, 'f.txt', {}, cb)
       end)
       eq(err, nil)
-      eq(helpers.status_set(entries), { 'conflict.txt:conflicted/conflicted' })
+      eq(result.max_lineno, 6, 'every line of the window is attributed')
+      eq(result.lines[1].rev, five)
+      eq(result.lines[1].author, 't')
+      eq(result.lines[1].summary, 'five')
+      eq(type(result.lines[1].time), 'number', 'author-time is unix seconds')
+      -- Lines 1-3 are one group; porcelain writes the group size on line 1's
+      -- header (four fields) and a three-field header on the lines after it.
+      eq(result.lines[2].rev, five)
+      eq(result.lines[3].rev, five)
+      eq(result.lines[4].rev, four)
+      eq(result.lines[4].summary, 'four')
+      eq(result.lines[5].rev, five)
+      eq(result.lines[6].rev, string.rep('0', 40), 'an uncommitted line has no commit')
+      eq(result.lines[6].author, 'Not Committed Yet')
+
+      -- `-L` returns only the requested window; the map stays sparse and the
+      -- keys are still the file's own line numbers (what Step 11 keys on).
+      local werr, window = helpers.wait(function(cb)
+        git.blame(dir, 'f.txt', { from = 3, to = 5 }, cb)
+      end)
+      eq(werr, nil)
+      eq(window.max_lineno, 5)
+      eq(window.lines[1], nil)
+      eq(window.lines[2], nil)
+      eq(window.lines[3].rev, five)
+      eq(window.lines[4].rev, four)
+      eq(window.lines[5].rev, five)
+      eq(window.lines[6], nil)
     end,
   },
   {
-    name = 'status works inside a linked worktree',
+    name = 'apply_patch --cached writes the index, and reverse takes it back',
     fn = function()
-      local err, entries = helpers.wait(function(cb)
-        git.status(worktree, cb)
+      local dir = repo_named('vcs-git-patch-index')
+
+      local err = helpers.wait(function(cb)
+        git.apply_patch(dir, PATCH, { cached = true }, cb)
       end)
       eq(err, nil)
-      eq(helpers.status_set(entries), {}, 'a fresh worktree is clean')
+      eq(helpers.sh({ 'git', '-C', dir, 'show', ':base.txt' }), 'patched\n')
+      eq(vim.fn.readfile(dir .. '/base.txt'), { 'base' }, 'the worktree is untouched')
+
+      local rerr = helpers.wait(function(cb)
+        git.apply_patch(dir, PATCH, { cached = true, reverse = true }, cb)
+      end)
+      eq(rerr, nil)
+      eq(helpers.sh({ 'git', '-C', dir, 'show', ':base.txt' }), 'base\n')
     end,
   },
   {
-    name = 'parse_status consumes the two records of a rename entry',
+    name = 'apply_patch changes the worktree, and reverse restores it',
     fn = function()
-      -- Exactly the byte stream `git status --porcelain=v1 -z` produced for the
-      -- fixture: NUL separated, rename = new path then original path.
-      local payload = table.concat({
-        ' M base.txt',
-        'R  renamed.txt',
-        '文件 名.txt',
-        '?? untracked 名 .txt',
-        '',
-      }, '\0')
-      local entries = git.parse_status(payload, repo)
-      eq(helpers.status_set(entries), {
-        'base.txt:-/modified',
-        'renamed.txt:renamed/-',
-        'untracked 名 .txt:-/untracked',
-      })
-      eq(helpers.entry(entries, 'renamed.txt').status.orig_path, '文件 名.txt')
+      local dir = repo_named('vcs-git-patch-worktree')
+
+      local err = helpers.wait(function(cb)
+        git.apply_patch(dir, PATCH, {}, cb)
+      end)
+      eq(err, nil)
+      eq(vim.fn.readfile(dir .. '/base.txt'), { 'patched' })
+      eq(helpers.sh({ 'git', '-C', dir, 'show', ':base.txt' }), 'base\n', 'the index is untouched')
+
+      local rerr = helpers.wait(function(cb)
+        git.apply_patch(dir, PATCH, { reverse = true }, cb)
+      end)
+      eq(rerr, nil)
+      eq(vim.fn.readfile(dir .. '/base.txt'), { 'base' })
     end,
   },
   {
-    name = 'parse_status tolerates a rename record with a missing source',
+    name = 'apply_patch refuses a patch that does not end in a newline',
     fn = function()
-      local entries = git.parse_status('R  only.txt', repo)
-      eq(#entries, 1)
-      eq(entries[1].status.orig_path, nil)
+      local dir = repo_named('vcs-git-patch-eol')
+      -- The patch arrives on stdin as one string; git needs the final `\n` to
+      -- tell the last line from a truncated stream (B4 in 07 §8).
+      local err = helpers.wait(function(cb)
+        git.apply_patch(dir, PATCH:sub(1, -2), {}, cb)
+      end)
+      ok(err, 'a truncated patch must not be applied silently')
+      ok(err:find('corrupt patch', 1, true), 'git says why: ' .. err)
+      eq(vim.fn.readfile(dir .. '/base.txt'), { 'base' }, 'nothing was applied')
     end,
   },
   {
-    name = 'parse_status maps unstaged, staged and unmerged columns',
+    name = 'revert restores the worktree from the index',
     fn = function()
-      local payload = table.concat({
-        ' M worktree-only.txt',
-        'M  index-only.txt',
-        'MM both.txt',
-        'UU unmerged.txt',
-        'AA both-added.txt',
-        'T  typechange.txt',
-        '!! ignored.txt',
-        '',
-      }, '\0')
-      eq(helpers.status_set(git.parse_status(payload, repo)), {
-        'both-added.txt:conflicted/conflicted',
-        'both.txt:modified/modified',
-        'ignored.txt:-/ignored',
-        'index-only.txt:modified/-',
-        'typechange.txt:typechange/-',
-        'unmerged.txt:conflicted/conflicted',
-        'worktree-only.txt:-/modified',
-      })
-    end,
-  },
-  {
-    name = 'status enters a subdirectory path without doubling the root',
-    fn = function()
-      local entry = helpers.entry(fixture_status(), 'sub/x.txt')
-      ok(entry, 'sub/x.txt must be reported')
-      eq(entry.path, repo .. '/sub/x.txt')
+      local dir = repo_named('vcs-git-revert')
+      helpers.write(dir .. '/base.txt', 'changed\n')
+      helpers.sh({ 'git', '-C', dir, 'add', 'base.txt' })
+      helpers.write(dir .. '/base.txt', 'changed again\n')
+
+      local err = helpers.wait(function(cb)
+        git.revert(dir, 'base.txt', cb)
+      end)
+      eq(err, nil)
+      -- The index holds `changed`, HEAD holds `base`: revert is the index.
+      eq(vim.fn.readfile(dir .. '/base.txt'), { 'changed' })
     end,
   },
 }

@@ -38,7 +38,7 @@ local M = {}
 ---@field use_external boolean      shell out to the VCS instead of the internal diff
 ---@field algorithm "myers"|"minimal"|"patience"|"histogram"  `vim.text.diff` algorithm
 ---@field indent_heuristic boolean  shift a diff to line up with indentation
----@field linematch boolean         refine the intra-line diff inside a hunk
+---@field linematch boolean|integer  refine the intra-line diff inside a hunk (integer = hunk-size cap)
 ---@field ignore_cr_at_eol boolean  treat a trailing CR as part of the line ending
 
 --- One sign type: the character drawn in the sign column plus optional
@@ -140,7 +140,13 @@ M.defaults = {
     use_external = false,
     algorithm = 'myers',
     indent_heuristic = true,
-    linematch = true,
+    -- OFF by default because `linematch` is quadratic in the size of a hunk,
+    -- and `true` means "every hunk, however large".  Measured on an
+    -- all-changed buffer: 500 lines 1.1s, 2000 lines 69s, 5000 lines OOM.
+    -- The value is also a *threshold*: an integer applies linematch only to
+    -- hunks up to that many lines, which is the bounded way to turn it on
+    -- (`true` is what hangs the editor on a large file).
+    linematch = false,
     ignore_cr_at_eol = true,
   },
   commit = {

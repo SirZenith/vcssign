@@ -3,12 +3,15 @@
 --- Everything above it (the `:Vcssign` commands, the hunk keymaps to come)
 --- asks for a *file* and an *intent*; everything below it (the adapters) runs
 --- one command.  So this file is where the interesting policy lives: which file
---- an action applies to, which capability it needs, which command variant a
---- status implies (index vs worktree diff, "staged or not" for a commit), and
---- what the user is told when the answer is no.
+--- an action applies to, which capability it needs, which command variant the
+--- configured baseline implies (`rev == 'index'` means the staging baseline),
+--- whether a commit has anything staged to record, and what the user is told
+--- when the answer is no.
 ---
---- Every action takes the same target — a `StatusEntry`, a path from a command,
---- or nothing at all (then: the file of the current buffer).
+--- Every action takes the same target — a path, or nothing at all (then: the
+--- file of the current buffer).  Status entries are gone with the sidebar (M5)
+--- and the repository no longer caches a file list (D38), so a target is always
+--- resolved from the path itself.
 --- See impl/init/04-commands-actions.md §2.
 local config = require('vcssign.config')
 local log = require('vcssign.log')
@@ -46,8 +49,6 @@ end
 ---@field repo vcssign.Repo
 ---@field path string      absolute
 ---@field rel_path string  relative to the repository root
----@field status vcssign.FileStatus?  known only when the target *was* a status entry;
----                                   a bare path is looked up when it is needed
 
 --- Default target: the current buffer's file, else the cwd (a `:Vcssign
 --- refresh` from an empty scratch buffer).
@@ -60,46 +61,19 @@ local function default_target()
   return uv.cwd() or '.'
 end
 
---- The repository a status entry came from.
----
---- Identity, not "deepest": `entry.rel_path` is relative to the root that
---- listed the row, so when a repository is nested inside another *attached*
---- one, the deepest repository containing `entry.path` is often not the one
---- that produced the entry (an outer listing shows a nested checkout as a
---- single `?? inner/` row).  Handing a path relative to the outer root to the
---- inner repository would stage or diff the wrong tree — or nothing at all.
----@param entry vcssign.StatusEntry
+--- The repository that owns a path: the deepest attached one containing it.
+---@param path string
 ---@return vcssign.Repo?
-local function repo_of(entry)
-  for _, repo in ipairs(manager.all()) do
-    if base.path_key(base.abspath(repo.root, entry.rel_path)) == base.path_key(entry.path) then
-      return repo
-    end
-  end
-  return nil
+local function repo_of(path)
+  return manager.get_by_path(path)
 end
 
 --- Resolve a target into the repository that owns it plus the file's path.
----@param target vcssign.StatusEntry|string|nil
+---@param target string|nil
 ---@return vcssign.Target?, string? err
 local function resolve(target)
-  target = target or default_target()
-  if type(target) == 'table' then
-    -- A status entry: it already carries the paths, and the entry itself is
-    -- what the user pointed at (so its status is the one to reason about).
-    local repo = repo_of(target)
-    if not repo then
-      return nil, string.format('no repository for %s', target.rel_path)
-    end
-    return {
-      repo = repo,
-      path = target.path,
-      rel_path = target.rel_path,
-      status = target.status,
-    }
-  end
-  local path = base.normalize(target)
-  local repo = manager.get_by_path(path)
+  local path = base.normalize(target or default_target())
+  local repo = repo_of(path)
   if not repo then
     return nil, string.format('no repository for %s', path)
   end
@@ -107,37 +81,11 @@ local function resolve(target)
   if rel == nil then
     return nil, string.format('%s is outside %s', path, repo.root)
   end
-  -- No entry is attached: the repository no longer caches status (D38), so the
-  -- one action that needs it asks the VCS through `fetch_status`.
   return {
     repo = repo,
     path = path,
     rel_path = rel,
   }
-end
-
---- Ask the VCS what it currently thinks of a target's file, then hand the
---- `vcssign.FileStatus?` to `cb`.  A target that came from a status entry
---- already knows, so it answers synchronously; a bare path costs one status
---- command.  A failing status command is not a failing *action*: report "no
---- changes" and let the action's own command speak.
----@param t vcssign.Target
----@param cb fun(status: vcssign.FileStatus?)
-local function fetch_status(t, cb)
-  if t.status ~= nil then
-    return cb(t.status)
-  end
-  t.repo.system.status(t.repo.root, function(err, entries)
-    if err then
-      return cb(nil)
-    end
-    for _, entry in ipairs(entries or {}) do
-      if base.path_key(entry.path) == base.path_key(t.path) then
-        return cb(entry.status)
-      end
-    end
-    cb(nil)
-  end)
 end
 
 -- ▏ diff ─────────────────────────────────────────────────────────────────────
@@ -212,20 +160,16 @@ local function show_diff(t, text)
   vim.api.nvim_win_set_cursor(win, { 1, 0 })
 end
 
---- Which side of the working copy to diff against.
+--- Which baseline to diff against.
 ---
---- A file whose change is *only* in the index diffs the index — `git diff
---- --cached` is the only way to see what a commit would record.  A file with
---- worktree changes diffs against the index/HEAD, which is what "what have I
---- changed since" means for an unstaged change.
----@param t vcssign.Target
----@param status vcssign.FileStatus?
+--- The repository no longer caches status (D38), so this comes straight from
+--- the configured baseline (D42): `rev == 'index'` is the staging baseline and
+--- asks the adapter for the staged view.  Anything else is a revision, which
+--- the adapter reads through the (git-only) `HEAD`-style diff.  svn ignores the
+--- flag either way and always diffs the working copy.
 ---@return boolean
-local function cached_diff(status)
-  if status == nil then
-    return false
-  end
-  return status.index ~= nil and status.worktree == nil
+local function cached_diff()
+  return config.get().rev == 'index'
 end
 
 function M.diff(target, opts)
@@ -233,10 +177,12 @@ function M.diff(target, opts)
   if not t then
     return fail(err)
   end
-  if not t.repo.system.capabilities.diff then
+  -- `diff` no longer has a capability key of its own (D38), but reading the
+  -- baseline is exactly what a diff needs, and keeping the check keeps the
+  -- ":Vcssign diff" answer in doc/vcssign.txt §3 honest.
+  if not t.repo.system.capabilities.show_rev then
     return refuse('%s: diff is not supported', t.repo.system.name)
   end
-
   ---@param cached boolean
   local function show(cached)
     t.repo.system.diff(t.repo.root, t.rel_path, { cached = cached }, function(diff_err, text)
@@ -253,20 +199,15 @@ function M.diff(target, opts)
   end
 
   local cached = opts and opts.cached
-  if cached ~= nil then
-    return show(cached)
+  if cached == nil then
+    cached = cached_diff()
   end
-  -- A file whose change is *only* in the index needs `--cached`; a file with
-  -- worktree changes diffs against the index/HEAD.  Which one it is comes from
-  -- the VCS, because this layer no longer has a status cache to read.
-  fetch_status(t, function(status)
-    show(cached_diff(status))
-  end)
+  show(cached)
 end
 
 -- ▏ stage / unstage ──────────────────────────────────────────────────────────
 
----@param target vcssign.StatusEntry|string|nil
+---@param target string|nil
 ---@param action "stage"|"unstage"
 local function stage_like(target, action)
   local t, err = resolve(target)
@@ -274,7 +215,9 @@ local function stage_like(target, action)
     return fail(err)
   end
   local repo = t.repo
-  if not repo.system.capabilities[action] then
+  -- One capability covers both directions: staging *is* the index, and taking
+  -- a change back out of it needs the same index (svn has neither).
+  if not repo.system.capabilities.stage then
     return refuse('%s: no staging area', repo.system.name)
   end
   repo.system[action](repo.root, { t.rel_path }, function(cmd_err)
@@ -289,13 +232,13 @@ local function stage_like(target, action)
 end
 
 --- Move a file's changes into the index (git).
----@param target vcssign.StatusEntry|string|nil
+---@param target string|nil
 function M.stage(target)
   stage_like(target, 'stage')
 end
 
 --- Take a file's changes back out of the index (git).
----@param target vcssign.StatusEntry|string|nil
+---@param target string|nil
 function M.unstage(target)
   stage_like(target, 'unstage')
 end
@@ -324,13 +267,36 @@ local function ask_message(cb)
   end)
 end
 
+--- Whether the index holds a change a commit would record.
+---
+--- `show` is the whole vocabulary now (D42): a staged change is exactly "the
+--- index blob differs from HEAD's".  A missing index blob means the file is
+--- untracked (nothing to commit), and an unborn HEAD means everything the index
+--- holds is new (all of it worth committing).
+---@param t vcssign.Target
+---@param cb fun(staged: boolean)
+local function has_staged_change(t, cb)
+  local root, rel = t.repo.root, t.rel_path
+  t.repo.system.show(root, 'index', rel, function(index_err, index_text)
+    if index_err then
+      return cb(false)
+    end
+    t.repo.system.show(root, 'HEAD', rel, function(head_err, head_text)
+      if head_err then
+        return cb(true)
+      end
+      cb(index_text ~= head_text)
+    end)
+  end)
+end
+
 --- Commit one file.
 ---
---- git records what is in the *index*, so a file that is not staged is refused
+--- git records what is in the *index*, so a file with nothing staged is refused
 --- with a pointer at the key that fixes it (the plan deliberately rules out
 --- "commit the worktree as well" — 04 §2.2).  svn has no index: its working
 --- copy is the thing being committed.
----@param target vcssign.StatusEntry|string|nil
+---@param target string|nil
 ---@param opts? { message?: string }  skips the prompt (used by the specs)
 function M.commit(target, opts)
   opts = opts or {}
@@ -364,19 +330,28 @@ function M.commit(target, opts)
     end)
   end
 
-  fetch_status(t, function(status)
-    if status == nil then
-      return info('%s has no changes to commit', t.rel_path)
-    end
-    if repo.system.capabilities.stage and status.index == nil then
-      return info('%s is not staged yet (press s)', t.rel_path)
+  ---@param staged boolean
+  local function ask_or_commit(staged)
+    if not staged then
+      if repo.system.capabilities.stage then
+        -- git: the change is in the worktree, not in the index.
+        return info('%s is not staged yet (press s)', t.rel_path)
+      end
+      -- svn: no staging area to point at, so let svn itself report that there
+      -- is nothing to send.
     end
     if opts.message then
       commit(opts.message)
     else
       ask_message(commit)
     end
-  end)
+  end
+
+  if repo.system.capabilities.stage then
+    has_staged_change(t, ask_or_commit)
+  else
+    ask_or_commit(true)
+  end
 end
 
 -- ▏ refresh ──────────────────────────────────────────────────────────────────
@@ -386,7 +361,7 @@ end
 --- `refresh` is the one action whose argument is a *repository*, not a file, so
 --- it works without a current file too — `:Vcssign refresh` from a scratch
 --- buffer in a session with exactly one repository means that repository.
----@param target vcssign.StatusEntry|string|nil
+---@param target string|nil
 function M.refresh(target)
   local t, err = resolve(target)
   if t then

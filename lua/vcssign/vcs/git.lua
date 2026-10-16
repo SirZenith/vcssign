@@ -4,10 +4,21 @@
 --- vcs-helper.nvim reference implementation on purpose:
 ---   1. root detection asks git itself (worktrees and submodules, where `.git`
 ---      is a *file*, cannot be found by a pure marker scan);
----   2. status is read through `--porcelain=v1 -z`, so paths containing spaces,
----      quotes or non-ASCII bytes need no quoting/escaping handling at all;
+---   2. the staging baseline is read as a blob (`show :<rel>`), so paths
+---      containing spaces, quotes or non-ASCII bytes need no quoting/escaping
+---      handling at all;
 ---   3. every path the adapter reports is anchored at the repo root, never at
 ---      the editor's cwd.
+---
+--- Baseline (§5.2, measured against git 2.55):
+---   * untracked file -> exit 128
+---     `fatal: path 'u.txt' exists on disk, but not in the index`
+---   * conflicted file -> exit 128
+---     `fatal: path 'c.txt' is in the index, but not at stage 0`, plus a hint
+---     suggesting `:1:c.txt`
+---   * unborn HEAD -> exit 128 `fatal: invalid object name 'HEAD'.` for
+---     `HEAD:<rel>`, while `:<rel>` still answers — so the `index` baseline is
+---     the only one a fresh repository can serve.
 local exec = require('vcssign.exec')
 local base = require('vcssign.vcs.base')
 
@@ -17,9 +28,11 @@ M.name = 'git'
 M.keyfile = '.git'
 M.capabilities = {
   stage = true,
-  unstage = true,
+  staged_signs = true,
+  revert_hunk = true,
+  blame = true,
+  show_rev = true,
   commit = true,
-  diff = true,
 }
 
 --- Global options shared by every invocation: no pager, no background index
@@ -138,93 +151,131 @@ function M.get_root_async(path, cb)
   )
 end
 
--- ▏ status ───────────────────────────────────────────────────────────────────
+-- ▏ the sign primitives ─────────────────────────────────────────────────────
 
---- Porcelain status characters that exist in either column.
-local STATUS_MAP = {
-  M = 'modified',
-  A = 'added',
-  D = 'deleted',
-  R = 'renamed',
-  -- Copies are only reported when copy detection is enabled; the enum has no
-  -- separate `copied` state, and for display purposes a copy is a rename.
-  C = 'renamed',
-  T = 'typechange',
-  U = 'conflicted',
-  ['?'] = 'untracked',
-  ['!'] = 'ignored',
-}
-
---- X is the index column, Y the worktree column.
----@param x string
----@param y string
----@return vcssign.FileStatus?
-local function parse_xy(x, y)
-  if x == '?' and y == '?' then
-    return { worktree = 'untracked' }
-  end
-  if x == '!' and y == '!' then
-    -- `!!` only appears with `--ignored`, which the status command does not
-    -- pass today; kept so ignored files can be enabled later without a
-    -- parser change.
-    return { worktree = 'ignored' }
-  end
-  -- Unmerged combinations: UU AU UD UA DU, plus the two "both sides" cases.
-  if x == 'U' or y == 'U' or (x == 'A' and y == 'A') or (x == 'D' and y == 'D') then
-    return { index = 'conflicted', worktree = 'conflicted' }
-  end
-  local index, worktree = STATUS_MAP[x], STATUS_MAP[y]
-  if not index and not worktree then
-    return nil
-  end
-  return { index = index, worktree = worktree }
-end
-
---- Parse `--porcelain=v1 -z` output.
----
---- Records are NUL separated.  A rename/copy record is *two* records in a row:
---- the new path, then the original path (the "->" form only appears in the
---- non-`-z` output, which we never use).
----@param stdout string
+--- Baseline text of `rel` as of `rev`; `rev == 'index'` reads the staged blob
+--- (`:<rel>`), which is what the sign column diffs against (D42).  A missing
+--- blob is an error, not an empty string — the caller decides whether an
+--- untracked file means "empty baseline" and asks `is_tracked` first.
 ---@param root string
----@return vcssign.StatusEntry[]
-function M.parse_status(stdout, root)
-  local records = exec.split_nul(stdout)
-  local entries = {}
-  local i = 1
-  while i <= #records do
-    local record = records[i]
-    local x, y = record:sub(1, 1), record:sub(2, 2)
-    local rel = record:sub(4)
-    local status = parse_xy(x, y)
-    if status and rel ~= '' then
-      -- Only the index column can carry R/C in porcelain v1; the worktree
-      -- column never does, and consuming an extra record on a stray match
-      -- would swallow the next real entry.
-      if x == 'R' or x == 'C' then
-        status.orig_path = records[i + 1]
-        i = i + 1
-      end
-      entries[#entries + 1] = base.make_entry(root, rel, status)
-    end
-    i = i + 1
-  end
-  return entries
-end
-
----@param root string
----@param cb fun(err: string?, entries: vcssign.StatusEntry[]?)
-function M.status(root, cb)
-  local cmd = build({ 'status', '--porcelain=v1', '-z', '--untracked-files=all' })
-  exec.run(cmd, { cwd = root }, function(err, res)
+---@param rev string  a revision name, or 'index' for the staging baseline
+---@param rel string  path relative to `root`
+---@param cb fun(err: string?, text: string?)
+function M.show(root, rev, rel, cb)
+  local spec = rev == 'index' and (':' .. rel) or (rev .. ':' .. rel)
+  exec.run(build({ 'show', spec }), { cwd = root }, function(err, res)
     if err then
       return cb(err)
     end
-    local ok, entries = pcall(M.parse_status, res.stdout, root)
-    if not ok then
-      return cb('git: failed to parse status output: ' .. tostring(entries))
+    cb(nil, res.stdout)
+  end)
+end
+
+--- Whether `rel` is under version control.
+---
+--- `git ls-files --error-unmatch` exits 1 with `error: pathspec '<rel>' did not
+--- match any file(s) known to git` for an untracked path.  That exit code *is*
+--- the answer (§5.2), not a failure, so it must not be reported as one; only a
+--- higher code (or a signal) is a real error.
+---@param root string
+---@param rel string
+---@param cb fun(err: string?, tracked: boolean?)
+function M.is_tracked(root, rel, cb)
+  exec.run(
+    build({ 'ls-files', '--error-unmatch', '--' }, { rel }),
+    { cwd = root },
+    function(err, res)
+      if err then
+        if res and res.code == 1 then
+          return cb(nil, false)
+        end
+        return cb(err)
+      end
+      cb(nil, true)
     end
-    cb(nil, entries)
+  )
+end
+
+--- Parse `git blame --line-porcelain` output into `{[lineno] = vcssign.BlameLine}`.
+---
+--- The header is `<40hex sha> <orig_lineno> <final> <num_lines>`, where the
+--- **third** field is the final line number and the fourth is only present on
+--- the *first* line of a group (git omits it once it has announced the group
+--- size).  Metadata lines (`author`, `author-time`, `summary`, ...) are repeated
+--- for every line, and the source text follows on a line starting with a TAB.
+--- We keep only the attribution, so the TAB line just terminates the record.
+---@param stdout string
+---@return vcssign.BlameResult
+function M.parse_blame(stdout)
+  local lines = {}
+  local max_lineno = 0
+  local pending ---@type { sha: string, final: integer }?
+  local meta = {}
+  for _, line in ipairs(exec.split_lines(stdout)) do
+    if line:sub(1, 1) == '\t' then
+      if pending then
+        local n = pending.final
+        lines[n] = {
+          rev = pending.sha,
+          author = meta.author or '',
+          time = meta.time,
+          summary = meta.summary,
+        }
+        if n > max_lineno then
+          max_lineno = n
+        end
+      end
+      pending, meta = nil, {}
+    else
+      -- The first line of a group carries a 4th field (the group size); the rest
+      -- of the group carries only three.  Both forms put the FINAL line number
+      -- in the 3rd field.
+      local sha, final = line:match('^(%x+) %d+ (%d+)$')
+      if not sha then
+        sha, final = line:match('^(%x+) %d+ (%d+) %d+$')
+      end
+      if sha and #sha == 40 then
+        pending, meta = { sha = sha, final = tonumber(final) }, {}
+      elseif pending then
+        local key, value = line:match('^(%S+) (.*)$')
+        if key == 'author' then
+          meta.author = value
+        elseif key == 'author-time' then
+          meta.time = tonumber(value)
+        elseif key == 'summary' then
+          meta.summary = value
+        end
+      end
+    end
+  end
+  return { lines = lines, max_lineno = max_lineno }
+end
+
+--- Per-line attribution.  `opts` is a `-L from,to` window; omitting it blames
+--- the whole file.
+---
+--- A worktree line that is not committed yet comes back with an all-zero sha
+--- and `author Not Committed Yet` — that is information, not an error (§5.2).
+---@param root string
+---@param rel string
+---@param opts vcssign.BlameOpts
+---@param cb fun(err: string?, result: vcssign.BlameResult?)
+function M.blame(root, rel, opts, cb)
+  local sub = { 'blame', '--line-porcelain' }
+  if opts and (opts.from or opts.to) then
+    local from = opts.from or 1
+    sub[#sub + 1] = '-L'
+    sub[#sub + 1] = string.format('%d,%d', from, opts.to or from)
+  end
+  exec.run(build(sub, { '--', rel }), { cwd = root }, function(err, res)
+    if err then
+      return cb(err)
+    end
+    local ok, result = pcall(M.parse_blame, res.stdout)
+    if not ok then
+      return cb('git: failed to parse blame output: ' .. tostring(result))
+    end
+    cb(nil, result)
   end)
 end
 
@@ -317,6 +368,45 @@ function M.diff(root, file, opts, cb)
       return cb(err)
     end
     cb(nil, res.stdout)
+  end)
+end
+
+--- Throw away the worktree change to `rel`: `git checkout -- <rel>` restores
+--- the file from the index, which is exactly the baseline the signs diff
+--- against.
+---@param root string
+---@param rel string
+---@param cb fun(err: string?)
+function M.revert(root, rel, cb)
+  exec.run(build({ 'checkout', '--' }, { rel }), { cwd = root }, function(err)
+    cb(err)
+  end)
+end
+
+--- Apply a unified diff, to the worktree or (`opts.cached`) to the index.
+---
+--- Measured (§5.2): the patch must be piped in as a single string and must
+--- carry its own final `\n` (exec writes a string verbatim, and a missing byte
+--- is exactly what makes git answer `error: corrupt patch at <stdin>:5`), and a
+--- zero-context patch — the shape `hunk.compose` will produce — needs
+--- `--unidiff-zero` or git refuses it.
+---@param root string
+---@param patch string
+---@param opts vcssign.PatchOpts
+---@param cb fun(err: string?)
+function M.apply_patch(root, patch, opts, cb)
+  opts = opts or {}
+  local sub = { 'apply' }
+  if opts.cached then
+    sub[#sub + 1] = '--cached'
+  end
+  if opts.reverse then
+    sub[#sub + 1] = '-R'
+  end
+  sub[#sub + 1] = '--unidiff-zero'
+  sub[#sub + 1] = '-'
+  exec.run(build(sub), { cwd = root, stdin = patch }, function(err)
+    cb(err)
   end)
 end
 

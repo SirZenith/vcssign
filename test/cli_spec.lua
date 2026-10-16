@@ -222,11 +222,14 @@ return {
       local repo = manager.get_by_path(dir)
       ok(repo ~= nil, 'and the repository is attached')
 
-      -- An external change, picked up by an explicit refresh.
+      -- An external change, picked up by an explicit refresh.  `Repo` does
+      -- not cache status any more (D38), so what is observable is the refresh
+      -- pass itself.
+      local passes = helpers.count_refreshes(repo)
       helpers.write(dir .. '/api.txt', 'untracked\n')
       vcssign.refresh(dir .. '/base.txt')
       helpers.wait_for(function()
-        return helpers.entry(helpers.status_entries(repo), 'api.txt') ~= nil
+        return passes() > 0
       end, 'the refresh to land')
     end),
   },
