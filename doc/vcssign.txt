@@ -1,30 +1,34 @@
-*vcssign.txt*   多版本（git / svn）行级 sign 状态                    *vcssign*
+*vcssign.txt*     Line-level VCS signs (git / svn)                     *vcssign*
 
                             VCSSIGN
 
-vcssign 把 Git / Subversion 仓库里的改动直接反映到窗口的 `'signcolumn'`：
-每个 hunk 在行号旁画一个 sign（新增 / 修改 / 删除 …），git 的暂存区与工作区
-分别用两套 sign 表示。它同时支持一棵目录里存在多个仓库（含嵌套仓库，各归各的）。
+vcssign reflects the changes in Git / Subversion repositories straight into
+the window's 'signcolumn': every hunk gets a sign next to its line numbers
+(added / changed / deleted ...), and git's staged and unstaged changes are
+drawn as two separate sign layers. Several repositories in one directory
+tree (including nested ones) are supported, each resolved on its own.
 
-  环境：在 Neovim 0.12.4、git 2.55、svn 1.14.5 上开发与测试。代码里较新的
-  API 是 |vim.system|（0.10 起）；更早的 Neovim 未验证。
-  实现计划（架构决策 D1–D46、里程碑 M0–M6）在仓库的 `impl/init/*.md`。
+  Environment: developed and tested against Neovim 0.12.4, git 2.55,
+  svn 1.14.5. The newest API used is |vim.system| (since 0.10); older
+  Neovim versions are unverified.
+  The implementation plan (decisions D1-D46, milestones M0-M6) lives in the
+  repository's `impl/init/*.md`.
 
 ==============================================================================
-目录                                                        *vcssign-contents*
+Contents                                                   *vcssign-contents*
 
-  1. 安装与设置 .................................. |vcssign-install|
-  2. 配置 ........................................ |vcssign-config|
-  3. 命令 ........................................ |vcssign-commands|
-  4. 行级 sign 与按键 ............................ |vcssign-signs|
+  1. Installation and setup ...................... |vcssign-install|
+  2. Configuration .............................. |vcssign-config|
+  3. Commands .................................... |vcssign-commands|
+  4. Line signs and keymaps ...................... |vcssign-signs|
   5. Lua API ..................................... |vcssign-api|
-  6. 高亮组 ...................................... |vcssign-highlights|
-  7. 架构 ........................................ |vcssign-arch|
+  6. Highlight groups ............................ |vcssign-highlights|
+  7. Architecture ............................... |vcssign-arch|
 
 ==============================================================================
-1. 安装与设置                                              *vcssign-install*
+1. Installation and setup                                    *vcssign-install*
 
-用任意插件管理器安装（lazy.nvim 例）： >
+Install with any plugin manager (lazy.nvim example): >
 
     {
       'you/vcssign',
@@ -36,46 +40,103 @@ vcssign 把 Git / Subversion 仓库里的改动直接反映到窗口的 `'signco
       end,
     }
 
-`setup()` 是**可选**的：所有层都有默认值，`plugin/vcssign.vim` 会注册
-|:Vcssign|，`require('vcssign')` 的 API 也能直接调。但**自动挂载**（打开文件
-时后台发现仓库、随编辑刷新）由 `setup()` 打开的自动命令负责——不调用它，
-`:Vcssign refresh` 这类显式动作仍然照常工作。
+`setup()` is optional: every layer has defaults, `plugin/vcssign.vim`
+registers |:Vcssign|, and the `require('vcssign')` API works on its own. But
+automatic attaching (discovering the repository in the background when a
+file is opened, refreshing as you edit) is done by the autocommands `setup()`
+installs — without it, explicit actions such as `:Vcssign refresh` still
+work.
 
-`setup()` 每次都是从**默认值**出发合并你给的表（不是叠加到上一次调用上）：
-第二次调用没有提到的键会退回默认值。
+Each `setup()` call starts from the defaults and merges the table you
+give it (calls do not stack): a key left out of a second call falls back to
+its default.
 
 ==============================================================================
-2. 配置                                                    *vcssign-config*
+2. Configuration                                             *vcssign-config*
 
-以下键都可以传给 `require('vcssign').setup{}`，括号内是默认值。
+Every key below can be passed to `require('vcssign').setup{}`. The defaults
+shown are exactly what `config.lua` ships.
+
+Complete defaults                                          *vcssign-defaults*
+Every option, including the nested tables (`signs_staged` carries the same
+six `text` values as `signs`; it has no `numhl` / `linehl` / `culhl` of its
+own): >
+
+    systems                               { 'git', 'svn' }
+    exec_timeout_ms                       15000
+    watch                                 true
+    update_debounce_ms                    200
+    retry_delay_ms                        1000
+    retry_max_ms                          30000
+    log_level                             'warn'
+    signs.add.text                        '▎'
+    signs.change.text                     '▎'
+    signs.delete.text                     '▁'
+    signs.topdelete.text                  '‾'
+    signs.changedelete.text               '~'
+    signs.untracked.text                  '┆'
+    signs.numhl                           false
+    signs.linehl                          false
+    signs.culhl                           false
+    signs_staged.add.text                 '▎'
+    signs_staged.change.text              '▎'
+    signs_staged.delete.text              '▁'
+    signs_staged.topdelete.text           '‾'
+    signs_staged.changedelete.text        '~'
+    signs_staged.untracked.text           '┆'
+    signcolumn                            'auto'
+    rev                                   'index'
+    attach_to_untracked                   true
+    max_file_length                       40000
+    word_diff                             false
+    deleted_preview                       false
+    current_line_blame                    false
+    current_line_blame_opts.delay         500
+    current_line_blame_opts.virt_text_pos 'eol'
+    keymaps                               (see |vcssign-keymaps|)
+    diff.mode                             'vertical'
+    diff.use_external                     false
+    diff.algorithm                        'myers'
+    diff.indent_heuristic                 true
+    diff.linematch                        false
+    diff.ignore_cr_at_eol                 true
+    commit.message_input                  'input'
+    on_attach                             nil
+    on_detach                             nil
+
+What each option means:
 
 `systems` ({ 'git', 'svn' })~
-  启用的版本控制工具，按优先级排序。
+  The VCS systems to enable, in priority order.
 
 `exec_timeout_ms` (15000)~
-  单条 VCS 命令的超时；超时会被杀死并报告。
+  Timeout for a single VCS command; a command that exceeds it is killed and
+  reported.
 
 `watch` (true)~
-  用文件系统监听发现变化（git 监听 `.git`，svn 监听 `.svn`）。关掉之后
-  只有显式刷新（`:Vcssign refresh`、`:w`、`:e!`、`FocusGained`）会重读基线。
+  Discover changes through a filesystem watcher (git watches `.git`, svn
+  watches `.svn`). With it off, only explicit refreshes (`:Vcssign refresh`,
+  `:w`, `:e!`, `FocusGained`) re-read the baseline.
 
 `update_debounce_ms` (200)~
-  缓冲区编辑的防抖窗口：编辑停下来之后才重算 hunk。200ms 与 gitsigns 的
-  `update_debounce` 同阶。
+  The debounce window for buffer edits: hunks are recomputed once editing
+  has settled. 200ms is the same order as gitsigns' `update_debounce`.
 
 `retry_delay_ms` (1000) / `retry_max_ms` (30000)~
-  一次仓库存活探测失败后的首次重试延迟与指数退避上限：期间沿用已有的仓库
-  会话（缓冲区继续用当前基线），同一次失败只警告一次。
+  The first retry delay after a failed repository liveness probe and the cap
+  of the exponential backoff: while retrying, the existing repository session
+  is kept (buffers keep their current baseline), and one failure warns once.
 
 `log_level` ('warn')~
-  插件日志级别。面向用户的**回答**（「没有仓库」、能力不足、动作失败）
-  不受它限制，一定会显示。
+  Plugin log level. User-facing answers ("no repository", missing
+  capability, failed action) are not throttled by it and always show.
 
 `signs`~
-  未暂存改动的 sign。六种 hunk 键——`signs.add`、`signs.change`、
-  `signs.delete`、`signs.topdelete`、`signs.changedelete`、`signs.untracked`
-  ——各自给 `text`（sign 列里的字符）以及可选的 `numhl` / `linehl` /
-  `culhl`（行号 / 整行 / 光标行高亮）： >
+  The signs for unstaged changes. Six hunk keys — `signs.add`,
+  `signs.change`, `signs.delete`, `signs.topdelete`, `signs.changedelete`,
+  `signs.untracked` — each take `text` (the character drawn in the sign
+  column) plus optional `numhl` / `linehl` / `culhl` (line-number / whole-
+  line / cursor-line highlighting): >
 
     signs = {
       add          = { text = '▎' },
@@ -90,7 +151,8 @@ vcssign 把 Git / Subversion 仓库里的改动直接反映到窗口的 `'signco
     }
 
 `signs_staged`~
-  git **已暂存**改动用的另一套 sign，字段与 `signs` 的六种 hunk 相同： >
+  A separate set of signs for git staged changes; the six hunk fields
+  are the same shape as `signs`: >
 
     signs_staged = {
       add          = { text = '▎' },
@@ -102,233 +164,294 @@ vcssign 把 Git / Subversion 仓库里的改动直接反映到窗口的 `'signco
     }
 
 `signcolumn` ('auto')~
-  写进 `'signcolumn'` 的值：`'auto'` 只在别的插件已经开了这一列时显示 sign。
-  设为 `false` 表示**不碰** `'signcolumn'`；这时如果你的全局值是 `'no'` 或
-  `'number'`（会把这列藏起来），插件会提示一次，因为那样看不到任何 sign。
+  The value written into 'signcolumn': with 'auto' the signs appear exactly
+  when the column already exists (some other plugin opened it). `false`
+  means: do not touch 'signcolumn'; if your global value is then 'no' or
+  'number' (which hides the column), the plugin warns once, because no sign
+  can be seen that way.
 
 `rev` ('index')~
-  拿缓冲区和哪个基线比：`'index'`（git 的暂存区 / svn 的 BASE）、`'HEAD'`，
-  或该 VCS 认识的任意版本名。
+  The baseline the buffer is compared against: 'index' (git's staging area
+  / svn's BASE), 'HEAD', or any revision name the VCS understands.
 
 `attach_to_untracked` (true)~
-  未跟踪的文件也挂载、也画 sign。
+  Attach to untracked files as well and draw their signs.
 
 `max_file_length` (40000)~
-  缓冲区行数超过它就完全不画 sign（大文件保命）。
+  Buffers with more lines than this get no signs at all (large-file
+  protection).
 
 `word_diff` (false)~
-  在 hunk 内部做词级 diff，把改动标得更精确（高亮组 `VcssignWordDiff`）。
-  改这个值立刻生效，`<leader>tw` 是它的开关。
+  Do a word-level diff inside hunks and mark the changed spans more
+  precisely (highlight group `VcssignWordDiff`). Changing the value takes
+  effect immediately; `<leader>tw` toggles it.
 
 `deleted_preview` (false)~
-  被删除的行用虚拟行预览（高亮组 `VcssignDeleteVirtLn`）。改这个值立刻
-  生效；它没有默认键位。
+  Preview deleted lines as virtual lines (highlight group
+  `VcssignDeleteVirtLn`). Changing the value takes effect immediately; it
+  has no default keymap.
 
 `current_line_blame` (false)~
-  在当前行末尾实时显示 blame。
+  Show live blame at the end of the cursor line.
 
 `current_line_blame_opts`~
-  行内 blame 的选项：`current_line_blame_opts.delay`（毫秒，默认 500）与
-  `virt_text_pos`（默认 `'eol'`）。
+  Inline blame options: `current_line_blame_opts.delay` (milliseconds,
+  default 500) and `virt_text_pos` (default 'eol').
 
 `keymaps`~
-  hunk 动作的按键表：`{ lhs = '动作名' }`，值为 `false` 表示**不绑定**该键
-  （留给用户；整个表设为 `false` 则禁用所有默认映射）。默认见
-  |vcssign-keymaps|。
+  The keymap table for hunk actions: `{ lhs = 'action' }`; mapping an lhs to
+  `false` means: do not bind it (left for the user; the whole table set
+  to `false` disables every default mapping). The defaults are listed in
+  |vcssign-keymaps|.
 
 `diff.mode` ('vertical')~
-  看 diff 时开竖分屏（'vertical'）还是横分屏（'split'）。diff 缓冲区只读、
-  定 `filetype=diff`。
+  Open a vertical split ('vertical') or a horizontal one ('split') for the
+  diff view. The diff buffer is read-only and uses `filetype=diff`.
 
 `diff.use_external` (false) / `diff.algorithm` ('myers')~
-  diff 默认用内置的 `vim.text.diff`（svn 没有本地 diff 后端，内置实现让
-  git / svn 行为一致）；`diff.algorithm` 可取 'myers' / 'minimal' /
-  'patience' / 'histogram'。
+  The diff is computed by the built-in `vim.text.diff` by default (svn has
+  no local diff backend, and one implementation keeps git and svn behaving
+  the same); `diff.algorithm` is one of 'myers' / 'minimal' / 'patience' /
+  'histogram'.
 
 `diff.indent_heuristic` / `diff.linematch` / `diff.ignore_cr_at_eol`~
-  缩进对齐启发、hunk 内逐词精修、以及把行尾 CR 当作换行的一部分。
-  `diff.linematch` 默认 `false`：linematch 对 hunk 大小是二次型，`true` 表示
-  “多大的 hunk 都跑”（实测：500 行全改 1.1s，2000 行 69s，5000 行 OOM）。
-  要开就设一个**有界整数**（只对不超过该行数的 hunk 生效）。
+  Indentation alignment heuristic, intra-hunk word-level refinement, and
+  treating a trailing CR as part of the line ending. `diff.linematch`
+  defaults to `false`: linematch is quadratic in the size of a hunk, and
+  `true` means "every hunk, however large" (measured on an all-changed
+  buffer: 500 lines 1.1s, 2000 lines 69s, 5000 lines OOM). To turn it on,
+  set a bounded integer (linematch then applies only to hunks up to
+  that many lines).
 
 `commit.message_input` ('input')~
-  提交信息怎么问：'input' 用 |vim.ui.input| 的单行提示。'buffer' 在计划里，
-  尚未实现——会警告并回落到 'input'。
+  How the commit message is asked for: 'input' uses |vim.ui.input|'s
+  one-line prompt. 'buffer' is in the plan but not implemented yet — it
+  warns and falls back to 'input'.
 
 `on_attach` / `on_detach` (nil)~
-  仓库被挂载 / 卸载时调用的函数（`fun(repo)`）。可选，每次调用时查找，
-  所以后调 `setup()` 也生效；钩子里抛异常会被隔离（记日志，不影响别人）。
+  Functions called when a repository becomes attached / detached
+  (`fun(repo)`). Optional; looked up on every call, so a later `setup()`
+  still takes effect. Exceptions thrown inside the hooks are isolated
+  (logged, nobody else is disturbed).
 
 ==============================================================================
-3. 命令                                                    *vcssign-commands*
+3. Commands                                                 *vcssign-commands*
 
                                                         *:Vcssign*
-:Vcssign {sub} [path]   执行子命令。省略 `[path]` 时依次看：当前缓冲区的
-                        文件 → 当前目录。
+:Vcssign {sub} [path]   Run a subcommand. Without `[path]` it is resolved
+                        in order: the current buffer's file, then the
+                        current directory.
 
-  子命令（也会被补全）： >
+  Subcommands (also what completion offers): >
 
-    :Vcssign toggle     开 / 关当前缓冲区的 sign（关 = 清空那一列，停止刷新）
-    :Vcssign refresh    立刻刷新（跳过去抖），不等 fs 监听
-    :Vcssign stage_hunk 暂存光标所在的 hunk（git）
+    :Vcssign toggle     turn the signs of the current buffer off / on
+                        (off = empty the column, stop refreshing)
+    :Vcssign refresh    refresh right now (skip the debounce), without
+                        waiting for the filesystem watcher
+    :Vcssign stage_hunk stage the hunk under the cursor (git)
     :Vcssign undo_stage_hunk
-                        取消暂存光标所在的 hunk（git）
-    :Vcssign reset_hunk 丢弃光标所在的 hunk
+                        unstage the hunk under the cursor (git)
+    :Vcssign reset_hunk discard the hunk under the cursor
     :Vcssign stage_buffer
-                        暂存整个文件（git）
+                        stage the whole file (git)
     :Vcssign reset_buffer
-                        丢弃整个文件的改动
+                        discard every change in the file
     :Vcssign preview_hunk
-                        浮动窗口预览光标所在的 hunk
-    :Vcssign diff       看这个文件的 diff
-    :Vcssign diffthis   和基线打开 diff；带参数时和那个 rev 比（`:Vcssign diffthis HEAD~1`）
-    :Vcssign blame_line 浮动窗口显示光标那一行的 blame
-    :Vcssign commit     提交（git：已暂存的；svn：工作副本里该文件）
-    :Vcssign debug      打印已挂载仓库、引用、监听句柄与最后一条错误
+                        preview the hunk under the cursor in a float
+    :Vcssign diff       show this file's diff
+    :Vcssign diffthis   open a diff against the baseline; with an argument,
+                        against that rev (`:Vcssign diffthis HEAD~1`)
+    :Vcssign blame_line show the blame of the cursor line in a float
+    :Vcssign commit     commit (git: the staged changes; svn: this file in
+                        the working copy)
+    :Vcssign debug      print the mounted repositories, their references,
+                        watchers and last error
 
-`diff` 会**先查能力**：不支持 diff 的系统会得到一句说明而不是静默失败。
-`path` 参数可以是文件、目录或仓库根；不在任何仓库里时明确回答「没有仓库」
-（INFO，不是错误）。
+`diff` checks the capability first: a system that cannot diff gets a
+one-line answer instead of a silent failure. The `path` argument can be a
+file, a directory or a repository root; a path outside every repository
+answers "no repository found" explicitly (INFO, not an error).
 
-`toggle` 只作用于一个缓冲区（带 `path` 时作用于显示该文件的已打开缓冲区）：
-关掉后那一列为空，也不再随编辑刷新；重新打开时按当前基线立刻重画。仓库
-引用在开关前后都不变，所以开关不产生任何额外的探测成本。
+`toggle` acts on exactly one buffer (with a `path`, on the open buffer
+showing that file): turned off, the column is empty and edits no longer
+refresh it; turned back on, it redraws immediately against the current
+baseline. The repository reference is untouched by toggling, so the switch
+costs no extra probing.
 
-`stage_hunk` / `undo_stage_hunk` / `reset_hunk` / `stage_buffer` / `reset_buffer`
-作用于**缓冲区里的那个 hunk**：hunk 由光标所在行选出，补丁由缓冲区文本
-生成（所以缓冲区可以有不落盘的修改，但 `reset` 类动作要求文件已保存）。
-因此这些子命令只接已打开的文件，没打开时明确拒绝而不是猜。`stage_hunk` /
-`stage_buffer` 在没有暂存区的系统（svn）上回答「no staging area」；`reset_hunk` /
-`reset_buffer` 在缓冲区有未保存修改时拒绝（D45），因为补丁作用在文件上。
-`preview_hunk` 在光标行旁边开一个只读浮窗，用 `diff` 语法把这个 hunk 的
-`-` / `+` 行列出来（`filetype=diff`，借用配色方案的 diff 高亮）；光标一移动
-浮窗就关。`blame_line` 用同一扇浮窗显示光标行的 blame（sha / 作者 / 日期，
-下一行是提交标题，再下一行是源码行）。`diffthis` 是 `diff` 的缓冲区形式
-（作用于当前缓冲区，不需要已挂载的仓库引用）；它的参数是 **rev 而不是路径**
-——给了参数就是和那个 rev 比，和当前内容没有差异时明确说一句而不是开一个
-空窗口。
+`stage_hunk` / `undo_stage_hunk` / `reset_hunk` / `stage_buffer` /
+`reset_buffer` act on the hunk inside the buffer: the hunk is picked by
+the cursor line and the patch is built from the buffer text (so the buffer
+may hold unsaved changes — but the `reset` family requires a saved file).
+These subcommands therefore only accept a file that is open; a file that is
+not open is refused explicitly instead of guessed at. `stage_hunk` /
+`stage_buffer` answer "no staging area" on a system without one (svn);
+`reset_hunk` / `reset_buffer` refuse while the buffer has unsaved changes
+(D45), because the patch is applied to the file.
 
-==============================================================================
-4. 行级 sign 与按键                                         *vcssign-signs*
-
-挂载之后，每次编辑停顿 `update_debounce_ms` 毫秒，缓冲区就和 `rev` 基线
-（默认 index / BASE）做一次 diff，把每个 hunk 画到 `'signcolumn'`。git 的
-暂存改动用 `signs_staged`，未暂存改动用 `signs`，因此同一个文件两边的改动
-可以同时看见。
-
-默认按键（全是 buffer-local）：                               *vcssign-keymaps* >
-
-    lhs                        action                     说明
-    [c                         prev_hunk                  跳到上一个 hunk
-    ]c                         next_hunk                  跳到下一个 hunk
-    <leader>hs                 stage_hunk                 暂存该 hunk（git）
-    <leader>hr                 reset_hunk                 还原该 hunk
-    <leader>hS                 stage_buffer               暂存整个缓冲区（git）
-    <leader>hu                 undo_stage_hunk            取消暂存该 hunk（git）
-    <leader>hR                 reset_buffer               还原整个缓冲区
-    <leader>hp                 preview_hunk               浮动窗口预览该 hunk
-    <leader>hb                 blame_line                 这一行的 blame
-    <leader>hd                 diffthis                   和基线打开 diff
-    <leader>hD                 diffthis_rev               和指定 rev 打开 diff
-    <leader>hq                 setqflist                  把 hunk 放进 quickfix（未实现）
-    <leader>hQ                 setqflist_all              全部 hunk 放进 quickfix（未实现）
-    <leader>tw                 toggle_word_diff           开 / 关词级 diff
-    <leader>tb                 toggle_current_line_blame  开 / 关行内 blame
-
-（sign 渲染、自动挂载、`]c` / `[c` 导航、hunk 动作、词级 diff、hunk 预览、
-blame 和 rev diff 都已经接上：切到一个文件缓冲区就会画 sign，`]c` / `[c` 在
-hunk 之间跳（带计数，走到头会环绕），`hs` / `hu` / `hr` 作用在光标所在的那个
-hunk，`hS` / `hR` 作用在整个文件，`hp` 弹窗看这个 hunk，`tw` 切换 hunk 内的
-词级高亮，`hb` 看这一行的 blame，`tb` 常驻行内 blame，`hd` / `hD` 打开 diff。
-只剩 `hq` / `hQ` 的 quickfix 键还是占位，按下只会提示「尚未实现」；
-`:Vcssign toggle` 可以整个关掉 sign。）
+`preview_hunk` opens a read-only float beside the cursor line listing the
+hunk's `-` / `+` lines with `diff` syntax (`filetype=diff`, borrowing the
+colorscheme's diff highlighting); the float closes as soon as the cursor
+moves. `blame_line` uses the same float for the cursor line's blame (sha /
+author / date, then the commit subject, then the source line). `diffthis`
+is the buffer form of `diff` (it acts on the current buffer and needs no
+mounted repository reference); its argument is a rev, not a path — with
+one, the buffer is compared against that rev, and if there is no difference
+against it, that is said instead of opening an empty window.
 
 ==============================================================================
-5. Lua API                                                    *vcssign-api*
+4. Line signs and keymaps                                      *vcssign-signs*
+
+Once attached, every time editing settles for `update_debounce_ms`
+milliseconds, the buffer is diffed against the `rev` baseline (index /
+BASE by default) and every hunk is drawn into 'signcolumn'. git's staged
+changes use `signs_staged` and its unstaged changes use `signs`, so both
+sides of a file's changes are visible at once.
+
+Default keymaps (all buffer-local):                        *vcssign-keymaps* >
+
+    lhs                        action                     meaning
+    [c                         prev_hunk                  jump to previous hunk
+    ]c                         next_hunk                  jump to next hunk
+    <leader>hs                 stage_hunk                 stage this hunk (git)
+    <leader>hr                 reset_hunk                 restore this hunk
+    <leader>hS                 stage_buffer               stage whole buffer
+    <leader>hu                 undo_stage_hunk            unstage this hunk
+    <leader>hR                 reset_buffer               restore whole buffer
+    <leader>hp                 preview_hunk               preview this hunk
+    <leader>hb                 blame_line                 blame this line
+    <leader>hd                 diffthis                   diff against baseline
+    <leader>hD                 diffthis_rev               diff against a rev
+    <leader>hq                 setqflist                  quickfix (planned)
+    <leader>hQ                 setqflist_all              quickfix all (planned)
+    <leader>tw                 toggle_word_diff           toggle word diff
+    <leader>tb                 toggle_current_line_blame  toggle inline blame
+
+(Sign rendering, automatic attaching, `]c` / `[c` navigation, the hunk
+actions, the word diff, the hunk preview, blame and the rev diff are all
+wired up: switching to a file buffer draws its signs, `]c` / `[c` jump
+between hunks (with a count, wrapping at the ends), `hs` / `hu` / `hr` act
+on the hunk under the cursor, `hS` / `hR` on the whole file, `hp` previews
+this hunk in a float, `tw` toggles the intra-hunk word highlighting, `hb`
+shows this line's blame, `tb` keeps the inline blame on, `hd` / `hD` open
+the diff. Only the quickfix keys `hq` / `hQ` are still placeholders — they
+answer "not implemented yet"; `:Vcssign toggle` turns the whole sign layer
+off.)
+
+==============================================================================
+5. Lua API                                                     *vcssign-api*
 
 `setup({opts})` ~
-  合并配置、启动生命周期自动命令。返回 `require('vcssign')`。
+  Merge the configuration and install the lifecycle autocommands. Returns
+  `require('vcssign')`.
 
 `refresh({path})` ~
-  立刻刷新 `path` 所属仓库（跳过去抖）。`path` 可省（同 |:Vcssign| 的解析
-  规则）。仓库还没被跟踪时会**先挂载再执行**，所以它可以是你按下的第一个
-  映射。同时也会接上（或刷新）显示该文件的缓冲区，因此不开 `setup()` 也能
-  用一条命令看到 sign。返回 nil；错误以通知形式给出。
+  Refresh the repository owning `path` right now (skipping the debounce).
+  `path` can be omitted (resolved like |:Vcssign|). A repository that is
+  not tracked yet is mounted first, then refreshed, so this can be the
+  first mapping you press. The buffer showing the file is attached (or
+  refreshed) as well, so signs appear even without `setup()` having run.
+  Returns nil; errors are reported as notifications.
 
 `attach({bufnr})` ~
-  把一个缓冲区接上 sign 管线（省略 `bufnr` 则指当前缓冲区）。返回状态表；
-  缓冲区没有可 diff 的文件（未命名、`nofile`、磁盘上不存在、行数超过
-  `max_file_length`）时返回 `nil`。重复调用是空操作。
+  Put one buffer on the sign pipeline (`bufnr` defaults to the current
+  buffer). Returns the state table; `nil` when the buffer has no file to
+  diff (unnamed, `nofile`, missing on disk, or longer than
+  `max_file_length`). Calling it twice is a no-op.
 
 `detach({bufnr})` ~
-  停止画 sign、取消去抖并释放该缓冲区的仓库引用。
+  Stop drawing signs, cancel the debounce and release this buffer's
+  repository reference.
 
 `toggle({bufnr})` ~
-  |:Vcssign toggle| 的实现，返回开关的新状态（`nil` = 这个缓冲区接不上）。
-  关闭时清空那一列并停止随编辑刷新，但不释放仓库引用。
+  The implementation behind |:Vcssign toggle|; returns the new switch state
+  (`nil` = this buffer cannot be attached). Turning it off empties the
+  column and stops refresh-on-edit, but keeps the repository reference.
 
 `get_hunks({bufnr})` ~
-  该缓冲区当前画出来的 hunk 列表（没有则空表）。
+  The hunks currently drawn for this buffer (an empty table when there are
+  none).
 
 `require('vcssign.cli').run(fargs)` ~
-  |:Vcssign| 的实现，等价于 `:Vcssign {fargs}`。
+  The implementation behind |:Vcssign|; equivalent to `:Vcssign {fargs}`.
 
-库层（`vcssign.vcs.*` / `vcssign.repo` / `vcssign.repo_manager` /
-`vcssign.actions`）是内部的：接口与回调约定（错误优先 `cb(err, ...)`、
-回调都在主循环）写在 `impl/init/01-vcs-api.md` 与 `02-repo-runtime.md`。
-
-==============================================================================
-6. 高亮组                                                *vcssign-highlights*
-
-sign 的高亮组按 hunk 类型派生：`VcssignAdd`、`VcssignChange`、`VcssignDelete`、
-`VcssignTopDelete`、`VcssignChangeDelete`、`VcssignUntracked`（依次链接到
-`DiffAdd` / `DiffChange` / `DiffDelete` / `DiffDelete` / `VcssignChange` /
-`VcssignAdd`）。加后缀 `Nr` / `Ln` / `Cul` 的组分别是 `signs.numhl` /
-`signs.linehl` / `signs.culhl` 用的行号 / 整行 / 光标行高亮；`delete` 与
-`topdelete` 没有 `Ln`——它们的 sign 挂在**没有被删掉**的那一行上。
-
-已暂存的 sign 用同名再加 `Staged` 后缀的组（`VcssignAddStaged`、
-`VcssignAddStagedNr` …）：它们由对应工作区组的前景色与 `Normal` 的背景按
-1:1 混合而来，所以比工作区那层暗一档，同一行上的两层不会看起来一样；读不到
-颜色时（例如只有 `cterm` 属性的配色方案）退回链接到对应的工作区组。
-
-词级 diff 用 `VcssignWordDiff`（链接到 `DiffText`）标出 hunk 里真正改动的
-那几段文字；被删行的虚拟预览行用 `VcssignDeleteVirtLn`（链接到 `DiffDelete`）。
-hunk 预览浮窗不另起高亮组——它直接用 `filetype=diff` 的配色。
-
-行内 blame 用 `VcssignBlame`（链接到 `Comment`，`current_line_blame_opts.delay`
-毫秒没动光标才画），blame 浮窗用 `filetype=git` 的配色。
-
-这些组都用 `default = true` 定义，配色方案或用户都能覆盖，`setup()` 不会覆盖
-已有定义。
+The library layers (`vcssign.vcs.*` / `vcssign.repo` / `vcssign.repo_manager`
+/ `vcssign.actions`) are internal: their interfaces and callback conventions
+(errors first, `cb(err, ...)`; callbacks always back on the main loop) are
+documented in `impl/init/01-vcs-api.md` and `02-repo-runtime.md`.
 
 ==============================================================================
-7. 架构                                                       *vcssign-arch*
+6. Highlight groups                                       *vcssign-highlights*
 
-自下而上，每层只认识下面一层：
+The sign highlight groups are derived from the hunk type: `VcssignAdd`,
+`VcssignChange`, `VcssignDelete`, `VcssignTopDelete`,
+`VcssignChangeDelete`, `VcssignUntracked` (linked, in order, to `DiffAdd` /
+`DiffChange` / `DiffDelete` / `DiffDelete` / `VcssignChange` /
+`VcssignAdd`). The groups with an `Nr` / `Ln` / `Cul` suffix are the
+line-number / whole-line / cursor-line highlights used by `signs.numhl` /
+`signs.linehl` / `signs.culhl`; `delete` and `topdelete` have no `Ln` —
+their sign is anchored on a line that was not removed.
 
-  `vcssign.vcs.*`        git / svn 适配器：命令、输出解析、能力声明
-  `vcssign.repo`         一个仓库的会话：基线内容、fs 监听、刷新去抖、
-                         失败退避重试
-  `vcssign.repo_manager` 路径 → 仓库的查找，引用计数式挂载与卸载
-  `vcssign.actions`      唯一的「意图 → VCS 命令」层（diff / 暂存 / 提交）
-  `vcssign.attach`        每个缓冲区的 sign 管线：基线、去抖、开关
-  `vcssign.worddiff`      hunk 内的词级高亮（extmark，独立命名空间）
-  `vcssign.preview`       被删行的虚拟行预览与 hunk 浮窗
-  `vcssign.nav`           hunk 导航：`]c` / `[c` 的落点计算
-  `vcssign.blame`         行内 blame：装饰、缓存与浮窗文本
-  `vcssign.revdiff`       diff 视图：`diffthis` 的窗口与和任意 rev 比对的文本
-  `vcssign.keymap`        默认键位（buffer-local）与动作分派
-  `vcssign.cli`          |:Vcssign| 的分派与补全
-  `vcssign.autocmds`     自动命令触发层（挂载 / 刷新 / 退出清理）
+The staged signs use the same names with a `Staged` suffix
+(`VcssignAddStaged`, `VcssignAddStagedNr`, ...): their foreground is the
+worktree group's foreground blended 1:1 with `Normal`'s background, so the
+staged layer is a step dimmer and the two layers on one line never look
+alike; when the colors cannot be read (a `cterm`-only colorscheme, say)
+they fall back to a link to the matching worktree group.
 
-设计要点：所有外部命令的回调都被切回主循环（绝不从 libuv 的 fast-event 里
-碰 vim API）；回调一律错误优先；订阅者与钩子经 `pcall` 隔离，一个坏钩子不会
-拖垮刷新。
+The word diff marks the actually-changed spans inside a hunk with
+`VcssignWordDiff` (linked to `DiffText`); the virtual preview lines of
+deleted lines use `VcssignDeleteVirtLn` (linked to `DiffDelete`). The hunk
+preview float defines no group of its own — it just uses `filetype=diff`'s
+colors.
 
-测试脚手架：`scripts/make_test_repos.sh` 建 fixture，`scripts/run_tests.sh` 在
-headless nvim 里跑 TAP（`test/run.lua` + `test/*_spec.lua`）；`make test` /
-`make lint` / `make format` 见仓库的 `Makefile`。详细的实测记录与决策理由在
-`impl/init/00-overview.md` … `07-signs-in-signcolumn.md`。
+The inline blame uses `VcssignBlame` (linked to `Comment`; drawn only after
+`current_line_blame_opts.delay` milliseconds of cursor stillness); the
+blame float uses `filetype=git`'s colors.
+
+Every group is defined with `default = true`, so a colorscheme or the user
+can override them all, and `setup()` never overwrites an existing
+definition.
+
+==============================================================================
+7. Architecture                                              *vcssign-arch*
+
+Bottom up; every layer only knows the one below it:
+
+  `vcssign.vcs.*`         the git / svn adapters: commands, output parsing,
+                          capability declarations
+  `vcssign.repo`          one repository's session: baseline content, the
+                          filesystem watcher, refresh debounce, backoff retry
+  `vcssign.repo_manager`  path-to-repository lookup, reference-counted
+                          attach and detach
+  `vcssign.actions`       the single "intent to VCS command" layer (diff /
+                          staging / committing)
+  `vcssign.attach`        the per-buffer sign pipeline: baselines, debounce,
+                          the on/off switch
+  `vcssign.worddiff`      intra-hunk word highlighting (extmarks, own
+                          namespace)
+  `vcssign.preview`       virtual-line preview of deleted lines and the
+                          hunk float
+  `vcssign.nav`           hunk navigation: where `]c` / `[c` land
+  `vcssign.blame`         inline blame: decoration, caching and the float
+                          text
+  `vcssign.revdiff`       the diff view: `diffthis`'s window and the text
+                          for a diff against any rev
+  `vcssign.keymap`        the default (buffer-local) keymaps and action
+                          dispatch
+  `vcssign.cli`           |:Vcssign|'s dispatch and completion
+  `vcssign.autocmds`      the autocommand trigger layer (attach / refresh /
+                          cleanup on exit)
+
+Design notes: every external command's callback is cut back to the main loop
+(vim API is never touched from a libuv fast-event context); callbacks are
+error-first everywhere; subscribers and hooks are isolated with `pcall`, so
+one bad hook cannot take the refresh down with it.
+
+Test scaffolding: `scripts/make_test_repos.sh` builds the fixtures,
+`scripts/run_tests.sh` runs the TAP suite in a headless nvim
+(`test/run.lua` + `test/*_spec.lua`); see the repository's `Makefile` for
+`make test` / `make lint` / `make format`. The detailed measurement logs and
+the reasoning behind each decision are in `impl/init/00-overview.md` ...
+`07-signs-in-signcolumn.md`.
 
  vim:tw=78:ts=8:noet:ft=help:norl:
