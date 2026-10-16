@@ -3,7 +3,7 @@
 ---
 --- The interface is intentionally documented as emmylua classes only — there is
 --- no runtime base object to inherit from, adapters are plain tables.  See
---- impl/init/01-vcs-adapter.md §3.
+--- loop/archive/vcs/2026-10-16T17-33-54-vcs-adapter-git-svn.md §3.
 local M = {}
 
 local is_windows = vim.uv.os_uname().sysname == 'Windows_NT'

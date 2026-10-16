@@ -2,7 +2,8 @@
 ---
 --- Defaults for the VCS layer, the line signs and the default keymaps; later
 --- milestones extend `M.defaults` with the hunk actions themselves.
---- See impl/init/00-overview.md §3 and impl/init/01-vcs-adapter.md §6.
+--- See loop/archive/bootstrap/2026-10-16T20-52-42-master-plan.md §3 and
+--- loop/archive/vcs/2026-10-16T17-33-54-vcs-adapter-git-svn.md §6.
 local formatter = require('vcssign.blame_formatter')
 
 local M = {}
@@ -34,7 +35,7 @@ local M = {}
 ---@field on_detach? fun(repo: vcssign.Repo)
 
 --- How a unified diff is shown and which algorithm computes it
---- (impl/init/04-commands-actions.md §2.1).
+--- (loop/archive/commands/2026-10-16T17-33-54-commands-and-actions.md §2.1).
 ---@class vcssign.DiffConfig
 ---@field mode "vertical"|"split"  the diff window: a vertical split or a horizontal one
 ---@field use_external boolean      shell out to the VCS instead of the internal diff
@@ -70,7 +71,7 @@ local M = {}
 ---@field use_focus boolean    annotate the focused window only (gitsigns' behaviour)
 ---@field extra_opts string[]  extra arguments for `git blame`
 
---- Committing (impl/init/04-commands-actions.md §2.2).
+--- Committing (loop/archive/commands/2026-10-16T17-33-54-commands-and-actions.md §2.2).
 ---@class vcssign.CommitConfig
 ---@field message_input "input"|"buffer"  `buffer` is reserved: only `input` is implemented
 

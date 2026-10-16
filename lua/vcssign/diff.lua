@@ -10,7 +10,7 @@
 --- the two sides disagree, the diff invents a change on the last line, so both
 --- sides are normalised to "no trailing newline" here and nowhere else.
 ---
---- See impl/init/07-signs-in-signcolumn.md (D39/D43).
+--- See loop/archive/signs/2026-10-16T23-24-18-line-signs-in-signcolumn.md (D39/D43).
 local config = require('vcssign.config')
 local hunk = require('vcssign.hunk')
 

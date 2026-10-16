@@ -8,7 +8,7 @@
 --- what it needs, when it needs it (D38).  That is what makes "10 rapid writes
 --- produce at most 2 probes" hold, and what keeps concurrent refreshes
 --- impossible.
---- See impl/init/02-repo-runtime.md §3.
+--- See loop/archive/repo/2026-10-16T14-39-35-repo-runtime-and-refresh-pipeline.md §3.
 local config = require('vcssign.config')
 local debounce = require('vcssign.debounce')
 local log = require('vcssign.log')
@@ -508,7 +508,8 @@ function M:_mark_deleted()
 end
 
 --- Release every handle and subscriber.  Terminal: the manager drops the repo
---- from its maps right after this, and `impl/init/02-repo-runtime.md` §5.4
+--- from its maps right after this, and
+--- loop/archive/repo/2026-10-16T14-39-35-repo-runtime-and-refresh-pipeline.md
 --- asserts that no `uv_fs_event_t`/`uv_timer_t` survives it.
 ---
 --- The manager is normally the caller, but calling it directly is still safe:

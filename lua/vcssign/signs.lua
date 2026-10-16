@@ -1,5 +1,5 @@
 --- Extmark signs: the two namespaces, the highlight groups and the placement
---- rules of impl/init/07-signs-in-signcolumn.md §3.2 / §4.
+--- rules of loop/archive/signs/2026-10-16T23-24-18-line-signs-in-signcolumn.md §3.2 / §4.
 ---
 --- The sign layer is deliberately repository-free: it maps `vcssign.Hunk[]` onto
 --- extmarks and knows nothing about git, svn or buffers' contents.  That keeps

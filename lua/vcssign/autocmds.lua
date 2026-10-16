@@ -15,7 +15,7 @@
 --- event fired for the file the user opened, and no further event is coming
 --- for it: without the sweep the sign column would stay empty until the user
 --- leaves and re-enters the buffer.
---- See impl/init/07-signs-in-signcolumn.md §6.
+--- See loop/archive/signs/2026-10-16T23-24-18-line-signs-in-signcolumn.md §6.
 local attach = require('vcssign.attach')
 local config = require('vcssign.config')
 local log = require('vcssign.log')

@@ -10,7 +10,7 @@
 --- `Repo` stopped caching status in M6 (D38), so "the plugin saw the change"
 --- is asserted through the VCS (the helpers below) or through the refresh
 --- mechanism (`helpers.count_refreshes`), never through a status list.
---- See impl/init/04-commands-actions.md §2, §6.
+--- See loop/archive/commands/2026-10-16T17-33-54-commands-and-actions.md §2, §6.
 local actions = require('vcssign.actions')
 local attach = require('vcssign.attach')
 local autocmds = require('vcssign.autocmds')

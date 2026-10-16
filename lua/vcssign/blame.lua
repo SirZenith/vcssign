@@ -1,5 +1,5 @@
 --- Current-line blame: the `current_line_blame` decoration and the `blame_line`
---- float of impl/init/07-signs-in-signcolumn.md §4 / §6 (Step 11).
+--- float of loop/archive/signs/2026-10-16T23-24-18-line-signs-in-signcolumn.md §4 / §6 (Step 11).
 ---
 --- The decoration follows gitsigns: `current_line_blame_opts` decides where the
 --- text goes (`virt_text`, `virt_text_pos`, `virt_text_priority`), how long the
