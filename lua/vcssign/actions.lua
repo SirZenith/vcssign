@@ -14,12 +14,14 @@
 --- resolved from the path itself.
 --- See impl/init/04-commands-actions.md §2.
 local attach = require('vcssign.attach')
+local blame = require('vcssign.blame')
 local config = require('vcssign.config')
 local diff = require('vcssign.diff')
 local hunk = require('vcssign.hunk')
 local log = require('vcssign.log')
 local manager = require('vcssign.repo_manager')
 local preview = require('vcssign.preview')
+local revdiff = require('vcssign.revdiff')
 local signs = require('vcssign.signs')
 local base = require('vcssign.vcs.base')
 
@@ -93,77 +95,12 @@ local function resolve(target)
   }
 end
 
--- ▏ diff ─────────────────────────────────────────────────────────────────────
+-- ▏ diff ────────────────────────────────────────────────────────────────────
 
---- The buffer a file's diff is shown in, reused across `d` presses: pressing
---- `d` twice should not leave two diff buffers behind.
----@param t vcssign.Target
----@return integer
-local function diff_buffer(t)
-  local name = 'vcssign://' .. t.repo.system.name .. '/' .. t.repo.root .. '/' .. t.rel_path
-  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
-    if vim.api.nvim_buf_is_valid(bufnr) and vim.api.nvim_buf_get_name(bufnr) == name then
-      if vim.api.nvim_buf_is_loaded(bufnr) then
-        return bufnr
-      end
-      -- Left over from a `:bunload`: start over rather than write into a
-      -- buffer that would have to be loaded first.
-      vim.api.nvim_buf_delete(bufnr, { force = true })
-      break
-    end
-  end
-  local bufnr = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_buf_set_name(bufnr, name)
-  vim.bo[bufnr].buftype = 'nofile'
-  vim.bo[bufnr].swapfile = false
-  -- The diff is a view, not a document: closing its window should end it.
-  vim.bo[bufnr].bufhidden = 'wipe'
-  vim.bo[bufnr].filetype = 'diff'
-  return bufnr
-end
-
---- Show `text` as a unified diff in a new window.
----@param t vcssign.Target
----@param text string
-local function show_diff(t, text)
-  local bufnr = diff_buffer(t)
-  vim.bo[bufnr].modifiable = true
-  -- `trimempty` drops the empty line a trailing newline would add (a diff
-  -- ends with one); empty *context* lines inside the diff are kept.
-  local lines = vim.split(text, '\n', { plain = true, trimempty = true })
-  local ok, err = pcall(vim.api.nvim_buf_set_lines, bufnr, 0, -1, false, lines)
-  if vim.api.nvim_buf_is_valid(bufnr) then
-    -- Read-only: an accidental edit would make the buffer lie about the diff
-    -- it is supposed to be showing.
-    vim.bo[bufnr].modifiable = false
-  end
-  if not ok then
-    error(err, 0)
-  end
-
-  -- The window may already be showing this diff (the user pressed `d` twice,
-  -- or came back to the file): focus it instead of stacking another split.
-  local existing = vim.fn.bufwinid(bufnr)
-  if existing ~= -1 then
-    vim.api.nvim_set_current_win(existing)
-    return
-  end
-
-  -- A sensible default size, and one place that knows which way the split
-  -- goes, so the two modes cannot drift apart.
-  local opts = config.get().diff.mode == 'split'
-      and { split = 'below', height = math.max(10, math.floor(vim.o.lines / 2)) }
-    or { split = 'right', width = math.max(40, math.floor(vim.o.columns / 2)) }
-  -- Same reason as `open`: opening a window can fail (no room), and that must
-  -- arrive as a message rather than as an error inside a callback.
-  local opened, win = pcall(vim.api.nvim_open_win, bufnr, true, opts)
-  if not opened then
-    return fail(tostring(win))
-  end
-  vim.wo[win].wrap = false
-  vim.wo[win].foldenable = false
-  vim.api.nvim_win_set_cursor(win, { 1, 0 })
-end
+--- The window and the scratch buffer the diff is shown in live in
+--- `vcssign.revdiff` (Step 11 moved them there: `diffthis <rev>` shows its
+--- own text in the same window).  What is left here is the policy: which
+--- baseline the configured `rev` means, and when "no diff" is an answer.
 
 --- Which baseline to diff against.
 ---
@@ -199,7 +136,7 @@ function M.diff(target, opts)
         -- property-only change, and git prints nothing for an unmodified file.
         return info('%s: no changes to show', t.rel_path)
       end
-      show_diff(t, text)
+      revdiff.show(t, text)
     end)
   end
 
@@ -702,6 +639,109 @@ function M.commit(target, opts)
   else
     ask_or_commit(true)
   end
+end
+
+-- ▏ blame / rev diff ────────────────────────────────────────────────────────
+
+--- Ask for a revision, the way `ask_message` asks for a commit message.
+---@param prompt string
+---@param cb fun(rev: string)
+local function ask_rev(prompt, cb)
+  vim.ui.input({ prompt = prompt }, function(input)
+    if input == nil then
+      -- Cancelled (Esc / C-c).
+      return
+    end
+    local rev = vim.trim(input)
+    if rev ~= '' then
+      cb(rev)
+    end
+  end)
+end
+
+--- `diffthis`: the file against the configured baseline, or against `opts.rev`.
+---
+--- The baseline case *is* the plain `diff` action -- the same comparison, and
+--- the one `system.diff` can print itself.  A named revision is built by
+--- `vcssign.revdiff` from `show(root, rev, rel)` and the buffer's lines: no
+--- adapter can diff an arbitrary revision for us, and the buffer's text (saved
+--- or not) is what the user is looking at.
+---@param target string|nil
+---@param opts? { rev?: string }
+function M.diffthis(target, opts)
+  local rev = opts and opts.rev
+  if rev == nil or rev == '' then
+    return M.diff(target)
+  end
+  local t, err = resolve(target)
+  if not t then
+    return fail(err)
+  end
+  if not t.repo.system.capabilities.show_rev then
+    return refuse('%s: diff is not supported', t.repo.system.name)
+  end
+  local bufnr = buffer_showing(t.path)
+  if not bufnr then
+    return fail(string.format('%s is not open in a buffer', t.rel_path))
+  end
+  t.repo.system.show(t.repo.root, rev, t.rel_path, function(show_err, text)
+    if show_err then
+      return fail(show_err)
+    end
+    local buf_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    local body = revdiff.text(t.rel_path, text or '', buf_lines)
+    if body == '' then
+      return info('%s: no changes against %s', t.rel_path, rev)
+    end
+    revdiff.show(t, body)
+  end)
+end
+
+--- `diffthis_rev`: ask which revision, then show it.
+---@param target string|nil
+---@param opts? { rev?: string }
+function M.diffthis_rev(target, opts)
+  local rev = opts and opts.rev
+  if rev and rev ~= '' then
+    return M.diffthis(target, { rev = rev })
+  end
+  ask_rev('Revision to compare with: ', function(input)
+    M.diffthis(target, { rev = input })
+  end)
+end
+
+--- `blame_line`: the blame of one line in a float (`vcssign.blame`).
+---@param target string|nil
+---@param opts? { bufnr?: integer, lnum?: integer }
+function M.blame_line(target, opts)
+  opts = opts or {}
+  local bufnr = opts.bufnr
+  if not (bufnr and vim.api.nvim_buf_is_valid(bufnr)) then
+    local t, err = resolve(target)
+    if not t then
+      return fail(err)
+    end
+    bufnr = buffer_showing(t.path)
+    if not bufnr then
+      return fail(string.format('%s is not open in a buffer', t.rel_path))
+    end
+  end
+  local lnum = opts.lnum or cursor_line(bufnr)
+  blame.line(bufnr, lnum, function(err)
+    if err then
+      return fail(err)
+    end
+  end)
+end
+
+--- `toggle_current_line_blame`: the decoration takes the configured delay
+--- anyway, so a buffer that already has the cursor on screen re-renders by
+--- itself.
+function M.toggle_current_line_blame()
+  local cfg = config.get()
+  cfg.current_line_blame = not cfg.current_line_blame
+  blame.refresh_all()
+  info('blame %s', cfg.current_line_blame and 'on' or 'off')
 end
 
 -- ▏ refresh ──────────────────────────────────────────────────────────────────

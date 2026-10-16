@@ -23,6 +23,7 @@
 ---   * a repository disappearing deactivates the buffer without re-entering the
 ---     manager from inside its `on_delete` emit.
 local api = vim.api
+local blame = require('vcssign.blame')
 local config = require('vcssign.config')
 local base = require('vcssign.vcs.base')
 local debounce = require('vcssign.debounce')
@@ -122,6 +123,7 @@ local function deactivate(st)
   st.attached = false
   st.repo = nil
   clear_layers(st.bufnr)
+  blame.detach(st.bufnr)
   st.refresh_cancel()
   unobserve(st)
   settle(st, 'the repository is gone')
@@ -357,6 +359,7 @@ function M.attach(bufnr)
   signs.define_highlights()
   worddiff.define_highlights()
   preview.define_highlights()
+  blame.define_highlights()
 
   local ref = 'attach:' .. bufnr
   manager.attach(ref, path, function(err, repo)
@@ -387,6 +390,7 @@ function M.attach(bufnr)
     -- the baseline is still in flight; navigation asks for the hunks when it
     -- runs, not when the mapping is installed.
     keymap.attach(bufnr)
+    blame.attach(bufnr)
     st.unsubscribe = {
       repo:on_update(function()
         M.mark_dirty(bufnr)
@@ -524,6 +528,7 @@ function M.detach(bufnr)
   unobserve(st)
   settle(st, 'the buffer was detached')
   keymap.detach(bufnr)
+  blame.detach(bufnr)
   M._bufs[bufnr] = nil
   manager.detach('attach:' .. bufnr)
 end
@@ -604,6 +609,7 @@ end
 function M.forget_all()
   for _, st in pairs(M._bufs) do
     clear_layers(st.bufnr)
+    blame.detach(st.bufnr)
     st.refresh_cancel()
     unobserve(st)
     settle(st, 'the signs were dropped')

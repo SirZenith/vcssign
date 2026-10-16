@@ -25,6 +25,8 @@ M.subcommands = {
   'reset_buffer',
   'preview_hunk',
   'diff',
+  'diffthis',
+  'blame_line',
   'commit',
   'debug',
 }
@@ -173,6 +175,19 @@ for _, name in ipairs({
     end
     actions[name](target, { bufnr = bufnr })
   end
+end
+
+--- The view commands describe the *current buffer's* file, so their argument is
+--- a revision (`:Vcssign diffthis HEAD~1`), not a path: a diff against a named
+--- revision is built from the buffer's own text, and blame is about the line the
+--- cursor is on.
+---@param rev string|nil
+commands.diffthis = function(rev)
+  actions.diffthis(nil, rev and { rev = rev } or nil)
+end
+
+commands.blame_line = function()
+  actions.blame_line(nil, nil)
 end
 
 ---@return string

@@ -228,27 +228,33 @@ end
 --- bit, so the caller must have kept it while normalising the text; callers
 --- that do not care can omit `opts`.
 ---
+--- `opts.headers = false` suppresses the three file headers (`diff --git`,
+--- `---`, `+++`) and leaves only the `@@` block: a whole-file diff announces the
+--- file once and then lists several hunks, so `vcssign.revdiff` writes the
+--- headers itself and builds every body with `headers = false`.
+---
 --- @param hunk vcssign.Hunk
 --- @param base_lines string[]
 --- @param buf_lines string[]
 --- @param rel string repository-relative path (backslashes are normalised)
---- @param opts? { base_no_nl_at_eof?: boolean, buf_no_nl_at_eof?: boolean }
+--- @param opts? { base_no_nl_at_eof?: boolean, buf_no_nl_at_eof?: boolean, headers?: boolean }
 --- @return string
 function M.build_patch(hunk, base_lines, buf_lines, rel, opts)
   opts = opts or {}
   rel = rel:gsub('\\', '/')
 
   local lines = M.lines_of(hunk, base_lines, buf_lines)
-  local out = {
-    string.format('diff --git a/%s b/%s', rel, rel),
-    string.format('--- a/%s', rel),
-    string.format('+++ b/%s', rel),
-    string.format(
-      '@@ -%s +%s @@',
-      range(hunk.removed.start, hunk.removed.count),
-      range(hunk.added.start, hunk.added.count)
-    ),
-  }
+  local out = {}
+  if opts.headers ~= false then
+    out[#out + 1] = string.format('diff --git a/%s b/%s', rel, rel)
+    out[#out + 1] = string.format('--- a/%s', rel)
+    out[#out + 1] = string.format('+++ b/%s', rel)
+  end
+  out[#out + 1] = string.format(
+    '@@ -%s +%s @@',
+    range(hunk.removed.start, hunk.removed.count),
+    range(hunk.added.start, hunk.added.count)
+  )
 
   for _, line in ipairs(lines.removed) do
     out[#out + 1] = '-' .. line
