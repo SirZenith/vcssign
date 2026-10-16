@@ -21,8 +21,7 @@ supported, each resolved on its own.
 
 Developed and tested against Neovim 0.12.4, git 2.55 and svn 1.14.5. The
 newest API used is |vim.system| (since 0.10); older Neovim versions are
-unverified. The implementation plan (decisions D1-D46, milestones M0-M6)
-lives in the repository's `impl/init/*.md`.
+unverified.
 
 ==============================================================================
 USAGE                                                          *vcssign-usage*
