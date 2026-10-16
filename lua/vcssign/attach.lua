@@ -276,77 +276,6 @@ function M._render(st)
   end
 end
 
---- Set `'signcolumn'` on one window; answer whether the window is fine now.
----
---- Two guards, both from a real crash (07 §6.3): the window may be gone by the
---- time its id is written to, and *writing the value it already holds still fires
---- `OptionSet`* — which lands in whatever another plugin is doing at that moment
---- (noice opens its windows from inside `nvim_win_call`).  So the current value is
---- compared first, and a window that will not take the write is dropped instead of
---- raising into the `WinEnter` chain of whoever is opening a window.
----@param win integer
----@param sc string
----@return boolean
-local function apply_signcolumn(win, sc)
-  if not api.nvim_win_is_valid(win) then
-    return false
-  end
-  local ok, current = pcall(api.nvim_get_option_value, 'signcolumn', { win = win })
-  if ok and current == sc then
-    return true
-  end
-  return (pcall(api.nvim_set_option_value, 'signcolumn', sc, { win = win }))
-end
-
---- Apply `config.signcolumn` to every window showing `bufnr`.
----
---- `'signcolumn'` is a *window* option: `vim.wo[bufnr]` would not take effect,
---- so the buffer's windows are looked up and each one set.
----
---- With `signcolumn = false` the option is the user's to keep, so all that is
---- left is to say *once* that the column they set hides the signs (07 §8): a
---- silently sign-free buffer is the worst of the three outcomes.
----@param bufnr integer
-local function set_signcolumn(bufnr)
-  local sc = config.get().signcolumn
-  local windows = vim.fn.win_findbuf(bufnr)
-  if sc == false then
-    local current = vim.o.signcolumn
-    local win = windows[1]
-    if win and api.nvim_win_is_valid(win) then
-      local ok, value = pcall(api.nvim_get_option_value, 'signcolumn', { win = win })
-      if ok and value then
-        current = value
-      end
-    end
-    if current == 'no' or current == 'number' then
-      vim.notify_once(
-        'vcssign: `signcolumn` is ' .. current .. ', so no signs will show',
-        vim.log.levels.WARN
-      )
-    end
-    return
-  end
-  for _, win in ipairs(windows) do
-    if not apply_signcolumn(win, sc) then
-      log.debug('window %d: will not take signcolumn=%s', win, tostring(sc))
-    end
-  end
-end
-
---- Re-apply `config.signcolumn` to the windows showing `bufnr`.
----
---- `M.attach` runs from `BufReadPost`, which can be *before* the buffer has a
---- window, and `:split` adds windows later on; both would keep the global
---- value.  `vcssign.autocmds` calls this from `WinEnter`, which fires for
---- every buffer, hence the cheap no-op for buffers this module does not own.
----@param bufnr integer
-function M.reapply_signcolumn(bufnr)
-  if M._bufs[bufnr] then
-    set_signcolumn(bufnr)
-  end
-end
-
 --- Attach `bufnr` (default: the current buffer) to the signs pipeline.
 ---
 --- Returns the state table on success, `nil` when the buffer is not eligible
@@ -422,9 +351,6 @@ function M.attach(bufnr)
   -- synchronously, and the callback below must find this state.
   M._bufs[bufnr] = st
 
-  -- Put the column in place before any command runs, so the window does not
-  -- jump width when the signs finally arrive.
-  set_signcolumn(bufnr)
   signs.define_highlights()
   worddiff.define_highlights()
   preview.define_highlights()

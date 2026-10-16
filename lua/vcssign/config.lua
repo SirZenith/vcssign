@@ -15,7 +15,7 @@ local M = {}
 ---@field log_level vcssign.LogLevel
 ---@field signs vcssign.SignsConfig         signs for unstaged changes
 ---@field signs_staged vcssign.SignsConfig  signs for staged changes (git)
----@field signcolumn string|false    `'signcolumn'` value, or `false` to leave it alone
+---@field signcolumn boolean         draw the sign text (gitsigns' `signcolumn`)
 ---@field rev string                 revision the buffer is compared against
 ---@field attach_to_untracked boolean
 ---@field max_file_length integer    buffers longer than this get no signs
@@ -99,9 +99,13 @@ M.defaults = {
     changedelete = { text = '~' },
     untracked = { text = '┆' },
   },
-  -- `'auto'` is the default: signs appear exactly when the column already
-  -- exists.  `false` means "do not touch `'signcolumn'`".
-  signcolumn = 'auto',
+  -- Whether the sign text is drawn at all (gitsigns' `signcolumn`).  vcssign
+  -- never writes the window's `'signcolumn'`: the option is a *window* option,
+  -- and writing it from a `WinEnter` handler fires `OptionSet` even when the
+  -- value does not change -- which lands in whatever the plugin opening the
+  -- window is doing.  Set `'signcolumn'` yourself; Neovim's default `'auto'`
+  -- opens the column as soon as there is a sign to show.
+  signcolumn = true,
   -- The baseline a buffer is compared against: the index (git) or BASE (svn),
   -- or any revision name the VCS understands.
   rev = 'index',

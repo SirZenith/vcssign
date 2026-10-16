@@ -3,7 +3,7 @@
                             VCSSIGN
 
 vcssign reflects the changes in Git / Subversion repositories straight into
-the window's 'signcolumn': every hunk gets a sign next to its line numbers
+the sign column: every hunk gets a sign next to its line numbers
 (added / changed / deleted ...), and git's staged and unstaged changes are
 drawn as two separate sign layers. Several repositories in one directory
 tree (including nested ones) are supported, each resolved on its own.
@@ -35,7 +35,7 @@ Install with any plugin manager (lazy.nvim example): >
       config = function()
         require('vcssign').setup({
           signs = { add = { text = '▎' } },
-          signcolumn = 'auto',
+          signcolumn = true,
         })
       end,
     }
@@ -84,7 +84,7 @@ own): >
     signs_staged.topdelete.text           '‾'
     signs_staged.changedelete.text        '~'
     signs_staged.untracked.text           '┆'
-    signcolumn                            'auto'
+    signcolumn                            true
     rev                                   'index'
     attach_to_untracked                   true
     max_file_length                       40000
@@ -163,12 +163,12 @@ What each option means:
       untracked    = { text = '┆' },
     }
 
-`signcolumn` ('auto')~
-  The value written into 'signcolumn': with 'auto' the signs appear exactly
-  when the column already exists (some other plugin opened it). `false`
-  means: do not touch 'signcolumn'; if your global value is then 'no' or
-  'number' (which hides the column), the plugin warns once, because no sign
-  can be seen that way.
+`signcolumn` (true)~
+  Whether the sign text is drawn at all. vcssign leaves the window's
+  'signcolumn' option alone, so set it to a value that shows the column:
+  Neovim's default 'auto' opens it as soon as there is a sign to show, while
+  'no' and 'number' hide it. With `signcolumn = false` the signs carry no
+  text, but `signs.numhl` / `signs.linehl` still get their highlights.
 
 `rev` ('index')~
   The baseline the buffer is compared against: 'index' (git's staging area
@@ -303,7 +303,7 @@ against it, that is said instead of opening an empty window.
 
 Once attached, every time editing settles for `update_debounce_ms`
 milliseconds, the buffer is diffed against the `rev` baseline (index /
-BASE by default) and every hunk is drawn into 'signcolumn'. git's staged
+BASE by default) and every hunk gets its sign. git's staged
 changes use `signs_staged` and its unstaged changes use `signs`, so both
 sides of a file's changes are visible at once.
 
