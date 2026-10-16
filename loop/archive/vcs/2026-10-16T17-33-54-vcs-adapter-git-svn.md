@@ -1,5 +1,9 @@
 # 01 · VCS 抽象层与 git / svn 适配器（P0）
 
+> 归档自早期计划文档 `01-vcs-adapter.md`（M0–M6 实施计划，原 `impl/` 目录）。由 2026-10-16 的 `loop/` 迁移整篇移入 `loop/archive/`，状态：**已实现、冻结**。
+> 文中 `00`–`07` 的简写指的是本目录下的归档文档，对照表见 `loop/archive/README.md`；
+> 被抽取到 `loop/knowledge/` 的小节在正文里只留指针。
+
 > **⚠ M6 起部分内容已过时**：`status_type.lua`（§2 的统一状态枚举）在 M6 Step 1（`080379c`）随侧边栏
 > 一起退役 —— 现在没有「文件状态列表」这一层，适配器只提供五个**交互原语**（`show` / `is_tracked` /
 > `blame` / `apply_patch` / `revert` + `VcsCaps`，接口见 `07-signs-in-signcolumn.md` §3.1）。§2–§5 的枚举与
@@ -125,128 +129,18 @@ commit(root, files, msg, cb)  -> cb(err, info)           -- info: 提交摘要
 
 **base.lua 里同时写死「能力接口默认实现」**：不支持的调用返回 `"capability unsupported: <name>"` 错误，防止子模块漏实现导致 nil 调用。
 
-## 4. git 适配器要点（vcs/git.lua）
+> 本节已抽取到（归档后不再维护）：
+> - `loop/knowledge/vcs/git-output-formats.md`
+> - `loop/knowledge/nvim/diff-and-hunks.md`
+>
+> §4.1/§4.2 在 git 文档，§4.3（stage / unstage / commit）在 diff 文档。
 
-### 4.1 root 检测
+---
 
-- 异步权威：在 `path` 目录下执行 `git rev-parse --show-toplevel`（git 能正确处理 worktree、`.git` 为文件的情况；vcs-helper 的纯 keyfile 扫描处理不了 worktree）。
-- 同步兜底：向上扫描 `.git`（目录 **或文件** 都认）；扫到文件时读 `gitdir: ...` 指向再判断，拿不准就返回 nil、等异步权威值。
-- **实现修正（代码审查后）**：兜底 marker 必须真的像一个仓库：`.git` 为目录时要求它里面有 `HEAD`；
-  `.git` 为文件时要求 `gitdir:`（相对路径按所在目录解析）目标**存在且是目录**。
-  否则「main repo 已被删除的 worktree 残留」会被当成合法 root，还会把
-  「这不是仓库」这个正确结论永久吞掉（见 §6 的确定性否定规则）。
+> 本节已抽取到（归档后不再维护）：
+> - `loop/knowledge/vcs/svn-output-formats.md`
 
-### 4.2 状态获取（对照参考修正三处硬伤）
-
-命令：
-
-```
-git --no-pager --no-optional-locks --literal-pathspecs \
-    -c core.quotepath=off -c gc.auto=0 \
-    status --porcelain=v1 -z --untracked-files=all
-```
-
-相对 vcs-helper `systems/git.lua` 的修正：
-
-1. **`--porcelain=v1 -z`**：NUL 分隔的机器可读格式。含空格 / 中文 / 引号的路径直接按整段读取，**无需** `read_quoted_string` 反引号解码（C 风格引号转义仅在非 `-z` 的 porcelain 出现）。重命名条目格式：`XY <new>\0<old>\0`。
-2. 环境强制 `LC_ALL=C`（gitsigns `git/cmd.lua` 的经验，防本地化输出污染解析）；Windows 下 `MSYS=noglob CYGWIN=noglob`（防 MSYS2 改写参数）。
-3. 解析循环按 `-z` 协议：`vim.split(stdout, "\0")`；若当前段匹配 `^R. `，则**下一段是 orig_path**，两段一起消费。
-
-X/Y 字符 → `StatusType` 映射表（参考 oil-vcs-status `systems/git.lua` 的 `STATUS_MAP` / `UPSTREAM_STATUS_MAP`）：
-
-| 域 | 字符 → 类型 |
-|----|-------------|
-| index (X) | `M→modified A→added D→deleted R→renamed C→renamed T→typechange .→nil ?→untracked !→ignored U→conflicted` |
-| worktree (Y) | 同上 + `.`→nil |
-
-两个特殊情形单独处理（不查表）：`??` → 仅 `worktree=untracked`（否则 X 列也会被当成 untracked），
-`!!` → 仅 `worktree=ignored`；unmerged 组合 `UU/AU/UD/UA/DU` 与 `AA/DD` 一律两域都是 `conflicted`。
-`C`（copied）枚举里没有对应项，归入 `renamed`（默认 `status.renames` 不检测副本，实际很少出现）。
-
-> **实测校正**：在 `temp/git-repo` 上用 `-z` 抓到的真实字节流已验证上述全部假设：
-> rename 确实是「新路径 + orig_path」两段相邻记录；`-z` 下**不会**出现引号转义（因此完全不需要解码）；
-> 中文字节直接原样传输。样本见 `impl/init/06-todo.md` 附录 A1。
-> 另：`--literal-pathspecs` 也用在 stage/unstage/commit 上，避免文件名里的 glob 元字符被展开。
-
-### 4.3 stage / unstage / commit
-
-- `stage`: `git add -- <files>`（`--` 分隔防路径歧义）
-- `unstage`: `git restore --staged -- <files>`（需 git ≥ 2.23）。**实现选择**：不做版本号解析，
-  首次失败且错误匹配 `not a git command`（旧版 git 无 `restore` 子命令，实测文案 `git: 'restore' is not a git command.`）
-  或 `unknown option`（未来选项变动）时，记住标记并自动改用 `git reset HEAD --` 重试一次。
-  ⚠ 只匹配 `unknown option` 是错的——代码审查发现这是**死分支**，已在本次修复。
-- `commit`: `git commit -m <msg> -- <files>`（初版不做 `--amend`）
-
-## 5. svn 适配器要点（vcs/svn.lua）
-
-### 5.1 root 检测
-
-- 异步权威：`svn info --show-item wc-root`（svn ≥ 1.9；拿到的是工作副本根）。**实现选择**：不预先跑
-  `svn --version --quiet`，而是在 `--show-item` 报 `invalid option` / `unknown option` 时才回退到 marker 扫描结果
-  并 `vim.notify` warn 一次（懒探测，省一次进程）。
-- 同步兜底：向上扫描 `.svn` **目录**（svn 不存在 `.git`-为-worktree-文件那种情况）。
-
-### 5.2 状态获取
-
-命令：`svn status --ignore-externals`（初版不展示 externals 展开项，`X` 标记的外部目录本身仍显示为 external 条目）。
-
-输出为**本地化安全**（svn 输出不受 locale 影响状态列，但保险起见仍设 `LC_ALL=C`）。
-列定义以 `svn help status` 为准（svn 1.14.5 实测抄录，**7 个状态列 + 1 个空格，路径固定从第 9 列开始**）：
-
-| 列 | 含义 | 取值 |
-|----|------|------|
-| 1 | item 状态 | `' ' A C D I M R X ? ! ~` |
-| 2 | 属性修改 | `' ' C M` |
-| 3 | 工作副本加锁 | `' ' L` |
-| 4 | 提交将产生副本（addition-with-history） | `' ' +` |
-| 5 | switched / file external | `' ' S X` |
-| 6 | 仓库排他锁（带 `-u`） | `' ' K O T B` |
-| 7 | **tree conflict 受害者** | `' ' C` |
-
-> **实测校正（重要）**：
-> 1. **路径必须按固定列切（第 9 列起）**——svn 对空格/中文路径**不引号也不转义**，
->    `?       sp ace 名.txt` 原样输出（实测 `svn status | cat -A`），任何按空白切分的写法都会错（vcs-helper 的正则即存在此隐患）。
-> 2. Windows 工作副本输出 **CRLF** 行尾、路径分隔符为 **反斜杠**（`sub2\q.txt`）→ 需 `\` → `/` 归一。
-> 3. **tree conflict 会在状态行后追加一行解释文本**（如 `      >   local edit, incoming delete upon update`），
->    解析必须跳过以 `>` 开头的续行，否则会被当成条目。
-> 4. `svn status <target>` 打印的是**相对 cwd** 的路径（实测 `temp\svn-repo\base.txt`）。
->    因此必须 `cwd = root` 且**不传 target 参数**，这就是计划 D5 所说的 vcs-helper getcwd 缺陷的根因。
-> 5. 管道输出中**没有** `Status against revision: N` 汇总行，但解析器仍按「不认识的列字符即丢弃」的方式
->    容错（映射表自然会滤掉它）。
-
-实现规则（**列 7 tree conflict > 列 2 属性冲突 > 列 1 主状态**，冲突一律压过其它状态）：
-
-- 先 `local cols = line:sub(1, 7)`（先判 `line:match('^%s*>')` 跳过续行），再 `local rel = line:sub(9)`；
-  不做任何正则/空白切分。映射表：
-
-| svn 列1 | → StatusType |
-|---------|--------------|
-| `M` | modified（列2 也是 M 时保持 modified，`rel_path` 不变） |
-| `A` | added |
-| `D` | deleted |
-| `R` | replaced |
-| `C` | conflicted |
-| `!` | missing |
-| `?` | untracked |
-| `X` | external |
-| `~` | obstructed |
-| `I` | ignored（`svn status --no-ignore` 时出现；初版默认不带 `--no-ignore`，不采集） |
-| 列7 `C` | conflicted（tree conflict，优先于列 1） |
-| 列2 `M`（列1 为空格） | modified（纯属性修改） |
-| 列2 `C` | conflicted（属性冲突） |
-| 列5 `S`（其它均为空） | switched（降级为兼底标记） |
-
-- svn 无暂存区 → `index = nil`（永远只有 worktree 域；侧边栏 git 双列 / svn 单列，见 03）。
-- 列 3 `L`（加锁）/ 列 4 `+`（带历史）/ 列 6 `K` 等不产生条目，仅作为列 1 的补充信息忽略。
-
-### 5.3 svn 动作能力
-
-```lua
-capabilities = { diff = true, commit = true, stage = false, unstage = false }
-```
-
-- `commit`: `svn commit -m <msg> -- <files>`（注意 svn commit 是**递归**到 `path` 下的，UI 传文件级条目时天然正确）。
-- `diff`: `svn diff -- <file>`（svn diff 支持 `--`）。
+---
 
 ## 6. registry（vcs/init.lua）
 
@@ -270,15 +164,10 @@ function M.detect_async(path, cb)
   `get_systems()` 每次读 config，改配置立即生效（不做启动时快照）。
 - 新增 VCS = 新写一个模块实现 base 接口 + 注册到列表，**不改任何上层代码**（本层验收的唯一硬指标）。
 
-## 6.1 `exec.run` 的超时定时器（M4 实测修正）
+> 本节已抽取到（归档后不再维护）：
+> - `loop/knowledge/nvim/libuv-and-vim-system.md`
 
-计划里的顺序是「先 `vim.system`，再建并武装超时定时器」。实测发现 **`vim.system` 的退出回调可能在本函数返回之前就跑**
-（立刻失败的进程，例如 `cwd` 不存在），于是那次 `finish` 看到 `timer = nil`（还没有定时器可关），
-定时器随后被武装、却再也没人关它——直到 15s 后超时回调发现自己 `finished` 才自我关闭。
-期间它是一个活着的、已武装的 handle（`autocmds_spec` 的 `VimLeavePre` 用例抓到的就是这个）。
-
-改为**先建定时器再 spawn**（`proc` 预先声明为局部变量，超时回调里判空后再 `kill`）：`finish` 无论如何都能关掉它。
-`test/exec_spec.lua` 的 7 个用例（含超时与「0 表示不限时」）在改动后仍全绿。
+---
 
 ## 7. 验收标准
 

@@ -1,5 +1,9 @@
 # 04 · 用户命令、动作、autocmd 生命周期（P3）
 
+> 归档自早期计划文档 `04-commands-actions.md`（M0–M6 实施计划，原 `impl/` 目录）。由 2026-10-16 的 `loop/` 迁移整篇移入 `loop/archive/`，状态：**已实现、冻结**。
+> 文中 `00`–`07` 的简写指的是本目录下的归档文档，对照表见 `loop/archive/README.md`；
+> 被抽取到 `loop/knowledge/` 的小节在正文里只留指针。
+
 > **⚠ M6 起交付物表与子命令集已变**：侧边栏退役后 `:Vcssign` 只剩 13 个子命令（`toggle` /
 > `refresh` / `stage_hunk` / `undo_stage_hunk` / `reset_hunk` / `stage_buffer` / `reset_buffer` /
 > `preview_hunk` / `diff` / `diffthis` / `blame_line` / `commit` / `debug`），autocmd 从「按仓库挂载」改成
@@ -209,15 +213,12 @@ require("vcssign").get_entries([path])  # 该仓库的全部条目（侧边栏�
 5. **headless 里 `FocusGained` 永远不会来**（和 `VimResized`/`WinResized` 一样），用例必须用
    `nvim_exec_autocmds` 驱动——驱动的是同一个处理器，注册本身另有用例断言。
 
-### 7.3 backlog（本里程碑不做）
+> 本节已抽取到（归档后不再维护）：
+> - `loop/workspace/commands/2026-10-16T23-59-34-backlog-commands-and-actions.md`
+>
+> 该 backlog 已转成活跃任务文档。
 
-- `commit.message_input = "buffer"`：临时缓冲区写提交消息（gitsigns `actions/commit.lua` 是参考）。
-- 多选/整组 stage（`:Vcssign stage` 目前一次一个文件）。
-- diff 的左右窗模式（worktree vs HEAD 并排）、word diff。
-- `:Vcssign` 的路径参数补全（需要 `-complete=file` 之外的自定义实现）。
-- 未跟踪文件的 `d`：`git diff HEAD` 对 untracked 永远是空，用户想看的是「新文件全文」。
-  实现路径是 `git diff --no-index`（Windows 上 `/dev/null` 的等价物要单独处理），不是一行能改对的。
-- 补全在带范围/缩写前缀时（`:1,5Vcssign st`）返回空集：`cmdline` 的形态比 `Vimcssign <word>` 多，需要更细的解析。
+---
 
 ## 7.4 M4 独立审查（code-reviewer）与修复
 

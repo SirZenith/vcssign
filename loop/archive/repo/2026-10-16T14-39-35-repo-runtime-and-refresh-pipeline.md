@@ -1,5 +1,9 @@
 # 02 · 仓库运行时：进程执行、Repo 对象、缓存、FS 监听、刷新管线（P1）
 
+> 归档自早期计划文档 `02-repo-runtime.md`（M0–M6 实施计划，原 `impl/` 目录）。由 2026-10-16 的 `loop/` 迁移整篇移入 `loop/archive/`，状态：**已实现、冻结**。
+> 文中 `00`–`07` 的简写指的是本目录下的归档文档，对照表见 `loop/archive/README.md`；
+> 被抽取到 `loop/knowledge/` 的小节在正文里只留指针。
+
 > 承接 01 的数据通路，把它变成「活」的：元数据变更自动发现、
 > 并发收敛到一条防抖刷新管线、仓库存活探测。本层完成后，UI 层只管消费事件。
 >
@@ -19,28 +23,10 @@
 | `lua/vcssign/repo.lua` | `Repo` 对象：元数据监听（句柄池化）+ 存活探测 + 刷新管线 + 退避重试 + `dispose`（**无状态缓存**，D38） | ✅ |
 | `lua/vcssign/repo_manager.lua` | `root → Repo` 映射、attach/detach 引用计数、全局事件分发 | ✅ |
 
-## 2. exec.lua（进程执行封装）
+> 本节已抽取到（归档后不再维护）：
+> - `loop/knowledge/nvim/libuv-and-vim-system.md`
 
-```lua
----@param cmd string[]            # {"git", "status", ...} 拼好的参数表
----@param opts { cwd: string, env?: table<string,string>, timeout?: integer }
----@param cb fun(err: string?, res: vcssign.ExecResult?)
-M.run(cmd, opts, cb)
-```
-
-要点（来自 gitsigns `git/cmd.lua` 的实战经验，去 git 专用化）：
-
-1. 基于 `vim.system(cmd, { cwd=..., text=true, env={LC_ALL="C", ...} }, cb)`。
-2. Windows：`env.MSYS = "noglob"`、`env.CYGWIN = "noglob"`（防 MSYS2 展开路径参数）。
-3. 超时（默认 `config.exec_timeout_ms = 15000`）via `SystemObj:kill()` + timer。
-4. 返回统一结构；`code > 0` 时 `err = "exit <code>: <stderr 首行>"`，方便上层统一告警（`M.error_message`）。
-5. `M.split_nul(stdout)`（git `-z` 输出用）与 `M.split_lines(stdout)`（去结尾空行；逐行去 `\r`）。
-6. **不做** gitsigns 的 coroutine async 框架 —— 本插件所有调用点都是回调链。
-7. `pcall` 包住 `vim.system`：命令不存在时它**抛异常**（ENOENT）而非回调（已实测）。
-8. **回调一律切回主循环**（M2 审查后新增）：`vim.system` 的退出回调实测就在 fast-event 上下文
-   （`vim.in_fast_event() == true`）。在那里 `vim.fn.fnamemodify`/`vim.fs.normalize`/`vim.uv.*`/
-   `vim.schedule` 可用，但 **`vim.notify` 与 `nvim_buf_set_lines` 会报 E5560**。
-   若不在 `finish` 里统一 `vim.schedule` 一次，M3 的渲染器与 M4 的动作回调就会静默失效（被 pcall 吃掉）。
+---
 
 ## 3. Repo 对象（repo.lua）
 
@@ -92,52 +78,10 @@ Repo:start()           # 开始监听（manager 建仓时调用）
 > ⚠ `refresh*` 的回调由 `pcall` 隔离（见 §3.3），
 > 因此**回调里不要写断言**：测试要记录结果、在用例体内断言（spec 里已按此写）。
 
-### 3.2 FS 监听（自动发现变更）
+> 本节已抽取到（归档后不再维护）：
+> - `loop/knowledge/nvim/libuv-and-vim-system.md`
 
-监听集（`_init_watch`，M6 Step 2 + `f1d1735` 修正后共两项）：
-
-| 路径 | 递归 | 为什么 |
-|------|------|--------|
-| `metadata_path` | 是（非 Linux） | index / wc 元数据变化 —— 这是 Repo 唯一需要的信号（D38） |
-| `root` | **否** | **只作存活探测**：libuv 从不报告「被监听目录自身消失」，见下 |
-
-> ⚠ **M6 Step 2（D38）**：`root` 的直接子目录**不再监听**（工作树内容变化由缓冲区侧的
-> `on_lines` 防抖 + 按需 diff 覆盖，见 07 §3.2），旧的 `_sync_watch_set` 随之删除。
->
-> ⚠ **但 `root` 自身的非递归监听必须留着**（`f1d1735` 修）：libuv **从不报告「被监听目录
-> 自身消失」** —— 实测把 `.git` 改名走，挂在 `.git` 上的 handler 收 **0 个事件**，而挂在
-> `root` 上的非递归 handler 立刻收到 `.git` / `.git-gone` 的 rename（3 events）。少了它，
-> 工作副本被删后 `Repo` 永不自杀，只能等某次无关 refresh 失败才被回收
-> （`repo_spec` 的「`.git` 消失」「`.svn` 消失」两个用例在 `3ecbdd7`..`7acc713` 上因此
-> 过滤运行必红、全量运行间歇红）。`_on_fs_event` 已有的「marker 不存在 ⇒ `_mark_deleted()`」
-> 分支就是这条探测的落点。
-
-> **实际监听的是 `metadata_path`**，不一定是 `<root>/<keyfile>`：git worktree / submodule 的
-> `.git` 是**文件**，真正的 index 在 `<main>/.git/worktrees/<name>/index`（在仓库之外）。
-> 由适配器的可选钩子 `system.metadata_dir(root)`（01 §3）解析，缺省回落到 `root/keyfile`。
-> 没有这个解析，`git add` 在 worktree 里就永远发现不了（有个专门用例钉住）。
-
-- libuv 在 Linux 上不支持递归 fs_event（inotify 无此模式），那里 `.git` 退化为非递归；
-  `.git/index` 是 `.git` 的**直接子项**，所以关键的暂存域信号仍然能拿到（已实测）。
-- `_sync_watch_set`（**M6 Step 2 已删除**）：root 层出现新目录 → 补监听；被监听目录消失 → 释放句柄。
-  现在监听集固定为 `metadata_path` 一项，不再随目录增删变化。
-- 回调里**只做两件事**：`is_dirty = true` + 重置去抖 timer（实现上就是 `mark_dirty`）。
-  绝不直接跑命令。
-- 监听目录消失 → `_mark_deleted()`（`is_deleted`、停监听、通知 manager detach）。
-  `.git` 可能是**文件**（worktree），所以判据是「marker 不存在」而不是「不是目录」。
-- 句柄报错（目录被删/不可访问）→ **warn 日志 + 释放该句柄**（不是只记 debug 后留着一个死句柄）；
-  目录再出现时由 `_sync_watch_set` 重新拾起。
-- `.git` 的 rename 事件 = 仓库被删 → 同上。
-
-**实测（Windows 11 + nvim 0.12.4）：**
-
-| 现象 | 结论 |
-|------|------|
-| 单个文件内容修改 | root 监听收到 `change=true, filename=base.txt`（非递归也够）✅ |
-| `git add` | `.git` 递归监听收到 `index.lock` → `index` 的 rename 序列（约 12 个事件）→ **必须去抖** |
-| timer / fs_event 回调 | `vim.in_fast_event() == true` → 一切 vim API 必须先 `vim.schedule`（本文件所有 uv 回调都 `schedule_wrap`） |
-| 删除/改名**被监听目录** | 之后 libuv 会**持续投递**事件（探针里刷了上千条，nvim 一度不退出）→ 首个事件里必须 `stop()+close()`；实测 `stop()` 能立即止住风暴 |
-| Windows 上重命名被监听目录 | `uv.fs_rename` 成功（句柄是共享删除的）→ §5.4 用例可以这么做 |
+---
 
 ### 3.3 刷新管线（防抖 + 串行化）
 
@@ -227,33 +171,10 @@ M.on_repo_attached(fn) / M.on_repo_detached(fn)
 | 附加 | 首刷（attach）成功后 `has_loaded`/`is_dirty`/`error_count` 正确 | 「the first probe marks the repository loaded, with no status cache」 |
 | 附加 | `on_error` 订阅真会被调用 | 失败用例里 `eq(errors, 1)`, `eq(errors, 2)` |
 
-## 6. 实测与偏差记录（回写）
+> 本节已抽取到（归档后不再维护）：
+> - `loop/knowledge/lua/pitfalls.md`
 
-0. **M6 Step 2（D38）· Repo 降级为「仓库会话」**：删除 `status`/`status_map`/`entries()`/
-   `get_entry()`/`get_status()`/`_apply_status()`，以及 `_do_refresh` 里的 `system.status(...)`；
-   刷新改成**存活探测** `system.get_root_async(root, cb)`（复用适配器既有接口，不新增 API）：
-   拿到 root ⇒ 存活 ⇒ 广播 `on_update`；`registry.is_definitive_negative(err)` ⇒ `_mark_deleted()`；
-   其它错误 ⇒ 退避重试。监听集只剩 `metadata_path`（root 与直接子目录、`_sync_watch_set` 一并删除）。
-   连带改动（调用方即时查询）：`actions.resolve` 不再 `get_entry`，改用 `actions.fetch_status`（`t.status` 可用则同步，否则即时 `system.status`）；
-   `cli.debug_report` 去掉 `entries=%d`。`exec.run` 增加 `stdin`（字符串原样写入、不补尾换行；`string[]` 逐元素补 `\n`；`text=true` 只解码 stdout）。
-   实测（探针 A/B4）：零上下文补丁必须以 `\n` 结尾，否则 `git apply --cached --unidiff-zero` 报 `error: corrupt patch at <stdin>:5`。
-
-1. **去抖只做一层**（§3.3）：去掉「FS 路径 timer 池」，管线防抖兼任。
-2. **监听集为 root + 直接子目录 + marker**（§3.2）：初版只写 root + marker，
-   那样子目录里的编辑完全不可见；全量递归展开仍是后续优化项。
-3. **`entries()` 不排序**（§3.1）：排序/分组归 03。
-4. **`fs_timers` / `fs_timer_pool` 字段不存在**：随第 1 条一起取消。
-5. **`debounce.lua` 相对 gitsigns 的两处改动**：
-   (a) 额外返回 `cancel()` —— `dispose` 必须做到句柄清零，而 gitsigns 的 timer 藏在闭包里够不着；
-   (b) 触发时 `vim.schedule` —— luv 回调是 fast-event 上下文，直接调 `fn` 会禁掉 `vim.system` 与全部 vim API。
-   同时把「已触发但未调度」的句柄留在池中复用（否则会把下一次调用刚重启的 timer 关掉）。
-6. **低级陷阱**：`Repo.new` 里忘了 `M.__index = M` 会让所有方法变 nil（首次跑 spec 时 13 个用例全挂）——
-   已加注释固定。
-7. **回调隔离的测试含义**：`pcall` 掉的断言不会让用例失败，测试必须记录结果后再断言（§3.1 的 ⚠）。
-8. **修了一个自己暴露的 bug**：`dispose` 会清空 `_waiters` 而**不**回调它们 → 排队中的
-   `Repo:refresh(cb)` 调用方永久挂起（探针复现：`waiter called=false`）。
-   现在 `_mark_deleted` 会先以 `repository deleted: <root>` 释放在排的 waiter，
-   再广播 `on_delete`（顺序很重要：manager 在后者里才 `dispose` 并清空列表）。
+---
 
 ## 7. 独立代码审查（M2，code-reviewer）与修复
 
