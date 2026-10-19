@@ -261,7 +261,11 @@ M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
     `test/run.lua` 的 `DEFAULT_SPECS` + `REQUIRES` 要登记新 spec
   - 文档：08 §6.1 + A4 状态块、05 §1 表格与 §3 两条规矩
 - [ ] S1 svn `.svn` 递归 watch 的句柄数（`metadata_dir` 钩子 + 非递归）——先按 08 §7-7 在大 wc 上量
-- [ ] P2 六项随顺路提交捎带（含 P2-6 `diff.lua:71` 文档漂移）
+- [x] P2 六项（M7 收尾，一个提交）：`UNTRACKED_MARK_LIMIT = 2000`（5000 行 5000 mark / 3.8 ms →
+    2 mark / 0.002 ms）、`signs.place` 的 `config.get()` ×8 → 1、渲染里 `normalize` ×2 → 1、
+    `define_highlights(force)` + `ColorScheme`（0.17 ms/attach → 0；**`hlexists` 当守卫不行**，
+    `:hi clear` 后仍返回 1，第一版因此让 signs_spec 变红）、`util.emit` 浅拷贝、
+    `diff.lua:71` 注释纠偏（默认 `false`）。新增 `test/util_spec.lua` 3 例，回归 301 → 306
 
 ## 里程碑依赖
 

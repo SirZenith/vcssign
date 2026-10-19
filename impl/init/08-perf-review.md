@@ -520,12 +520,31 @@ svn 侧的对应收益全部来自 P0-1 的 status 缓存：**干净文件不取
 
 | 编号 | 位置 | 内容 | 实测 |
 |------|------|------|------|
-| P2-1 | `lua/vcssign/signs.lua:255` | 每个 added 行一个 extmark：未跟踪 5000 行 = 5000 extmark | 3.8 ms + 内存；可只标首/末行或在超长未跟踪文件截断 |
+| P2-1 | `lua/vcssign/signs.lua:255` | 每个 added 行一个 extmark：未跟踪 5000 行 = 5000 extmark | 3.8 ms + 内存；→ `UNTRACKED_MARK_LIMIT = 2000`，超限只标首/末行 |
 | P2-2 | `lua/vcssign/signs.lua:227-232` | `signs.place` 内 `config.get()` ×8 | 一次取局部变量即可 |
 | P2-3 | `lua/vcssign/attach.lua:240,252` | `diff.normalize(st.base_text)` 算两次 | 一个局部变量 |
-| P2-4 | `lua/vcssign/attach.lua:354` | `signs.define_highlights()`（约 30 个 `nvim_set_hl`+`nvim_get_hl`）每次 attach 重建 | 0.17 ms/次；加模块级 `defined` 标志 |
+| P2-4 | `lua/vcssign/attach.lua:354` | `signs.define_highlights()`（约 30 个 `nvim_set_hl`+`nvim_get_hl`）每次 attach 重建 | 0.17 ms/次；→ 模块级 `defined` 标志 + `ColorScheme(force)` |
 | P2-5 | `lua/vcssign/util.lua:38` | `emit` 用 `vim.deepcopy` 拷函数列表 | 0.0009 ms，性能可忽略；**语义**上应为浅拷贝（deepcopy 函数表既贵也无隔离意义） |
 | P2-6 | `lua/vcssign/diff.lua:71` vs `lua/vcssign/config.lua:170` | **文档漂移**：diff.lua 注释说「`config.diff.linematch` 默认 `true`」，config.lua 实际 `false`（且注释里带着实测：500 行 1.1s / 2000 行 69s / 5000 行 OOM） | 改注释，防止有人「顺手」打开它 |
+
+> **状态：六项全部落地（M7 收尾）**，没有一项值得单独一个 perf 提交，所以合成一个。
+>
+> | 项 | 落成形态 | 实测 |
+> |----|----------|------|
+> | P2-1 | `signs.lua` 的 `UNTRACKED_MARK_LIMIT = 2000`：超限的未跟踪 hunk 只标首行与末行 | 5000 行 **5000 个 extmark / 3.8 ms → 2 个 / 0.002 ms**；上限之内仍逐行（2000 个 = 1.3 ms，即每个 mark ≈ 0.6 µs） |
+> | P2-2 | `M.place` 一次 `config.get()` 存进局部 `conf` | 8 → 1（未单独计时，与 P2-1 同一个函数） |
+> | P2-3 | 渲染时把 `diff.normalize(st.base_text)` 提到局部 `base_text` | 2 → 1 |
+> | P2-4 | `M.define_highlights(force)` + 模块级 `defined`；`autocmds.lua` 新增 `ColorScheme` → `define_highlights(true)` | 每次 attach 的 **0.17 ms → 0**；一次真正的定义 0.03–0.09 ms |
+> | P2-5 | `util.emit` 浅拷贝（`local current = {...}`） | 省掉每次 emit 两次表分配；语义不变（边遍历边退订/加订都锁进了 spec） |
+> | P2-6 | `diff.lua` 注释改为「默认 `false`」，并写明「要开就传有界整数而不是 `true`」 | 无（纯文档） |
+>
+> **P2-4 的坑（值得记）**：`hlexists` 不能当「已定义」的守卫——`:highlight clear <group>`
+> 之后它**仍返回 1**（0.12.4 实测，`test/signs_spec.lua:118` 那条注释也写过同一件事）。
+> 第一版用它做判断，`signs_spec` 的「颜色不能混合时回落链接」当场变红（组被清空但守卫说「已定义」）。
+> 只有「模块标志位 + `ColorScheme` 强制重建」这一条路走得通：能把组抹掉的只有换配色。
+>
+> 回归口径：`test/signs_spec.lua` +2（首/末两行、只定义一次）、新增 `test/util_spec.lua` 3 例、
+> `test/autocmds_spec.lua` 的期望事件表 +`ColorScheme`；全文 301 → **306** 例。
 
 ## §3.5 按 VCS 的适用矩阵（git / svn）
 
@@ -546,7 +565,7 @@ svn 侧的对应收益全部来自 P0-1 的 status 缓存：**干净文件不取
 | P1-2 `has_staged_change` | ✅ **已修**：commit 5 → 3 进程、`show` 2 → 0（§2.9） | ❌ 无 index（函数不会被调用） | git-only |
 | P1-3 blame `-L` | ✅ **已修**：2000 行首看 211 → 63 ms，按行缓存 | ✅ **同样受益**（靠缓存而非 `-L`）：整文件答案被按行摊开，换行 0 进程 | svn 无行窗口（适配器 `_opts` 忽略），收益全来自缓存 + 基线指纹 |
 | P1-4 `get_by_path` 线性 | ✅ | ✅ | 与 VCS 无关 |
-| P2-1…P2-5 | ✅ | ✅ | 与 VCS 无关（P2-6 文档漂移跨两者） |
+| P2-1…P2-6 | ✅ **已修** | ✅ **已修** | 与 VCS 无关（P2-6 是文档漂移） |
 
 ### svn 专属发现
 
@@ -622,8 +641,8 @@ staged 变更由批量 `status` 缓存（失效面小：只在索引/HEAD 变动
 | `vim.text.diff` 本身 | 40000 行全改写 8.1 ms（§2.3）；`linematch=false` 的实测见 `config.lua:164-170` | 已经够快；`linematch=false` 是**对的**（D39 相关），别开 |
 | staged 层的第二次 diff | +0.4 ms（2000 行、2%） | 不是问题，别为省它搞增量 diff |
 | `worddiff` 逐字符 tokenizer | opt-in（默认关）；开启后 200 对 2.2 ms | 不值得重写 |
-| `util.emit` 的 deepcopy | 0.0009 ms | 性能上忽略；要改是语义问题（P2-5） |
-| `define_highlights` 重复执行 | 0.17 ms/attach | 加标志位是顺手改（P2-4），不是优化项 |
+| `util.emit` 的 deepcopy | 0.0009 ms | 性能上忽略；要改是语义问题（P2-5）→ 已改浅拷贝 |
+| `define_highlights` 重复执行 | 0.17 ms/attach | 加标志位是顺手改（P2-4），不是优化项 → 已改（0.17 ms → 0） |
 | `get_by_path` 线性扫描 | 10 root 0.25 ms | 当前规模不构成问题（P1-4 备档） |
 | 已禁用的 preview 仍被调用 | 0.001–0.002 ms（纯 namespace 清空） | 开销为零，保留「渲染一致性」的设计反而正确 |
 | svn 的 `blame --xml` 整文件（74.7 ms） | svn **没有**行窗口选项，`-L` 无法用 | 不是「不想优化」而是「优化不了」；svn 侧只能靠缓存（P1-3） |
@@ -655,7 +674,9 @@ staged 变更由批量 `status` 缓存（失效面小：只在索引/HEAD 变动
       同时数 `exec.run` 与 `exec.stream`，预算按 VCS 各一套（attach git 5 / svn 10 等）。
       没有往 `exec_spec` 里加断言——进程数要看**一个场景**（装 8 个文件、一次 sweep），
       单条命令的 spec 看不见。
-- [ ] P2 六项在顺路提交里捎带（尤其 P2-6 的文档漂移——独立一个 `docs(diff)` 提交也行）。
+- [x] **7. P2 六项**——已落地（§3 P2 收尾块）：未跟踪超长 hunk 的 2000 行上限（5000 mark / 3.8 ms
+      → 2 mark / 0.002 ms）、`config.get()` ×8 → 1、`normalize` ×2 → 1、`define_highlights` 加标志位 +
+      `ColorScheme` 强制重建（0.17 ms/attach → 0）、`emit` 浅拷贝、`diff.lua` 注释纠偏。回归 301 → 306。
 
 **验收断言建议**（A4 固化时用计数写，不写毫秒）：
 

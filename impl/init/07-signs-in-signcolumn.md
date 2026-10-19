@@ -141,7 +141,9 @@ lua/vcssign/exec,log,util,debounce.lua  既有基建（exec 加 stdin）
 - `change`：`added` 每行一个 sign；若 `removed.count > 0`，`added` 末行改用 `changedelete`。
 - `delete`（`added.count == 0`）：`removed.start > 1` → 在 `removed.start - 1` 行放 `▁`；
   `removed.start == 1` → 第 1 行放 `topdelete`（`‾`）。
-- `untracked`：文件未跟踪时整缓冲区一个 `┆`。
+- `untracked`：文件未跟踪时**整份文件一个新的块**；`added` 逐行放 `┆`，但超过
+  `UNTRACKED_MARK_LIMIT = 2000` 行时只标首行与末行（M7 P2-1：5000 行原本是 5000 个 extmark /
+  3.8 ms，而这一层要表达的信息只有「整份都是新的」）。
 - `numhl/linehl/culhl` 开关分别写 `number_hl_group`/`line_hl_group`；光标行用 `Cul` 变体在 `CursorMoved`
   上刷（与 `current_line_blame` 共用一次 `CursorMoved` 处理）。
 
@@ -171,7 +173,9 @@ keymaps = { ['[c'] = 'prev_hunk', [']c'] = 'next_hunk', ['<leader>hs'] = 'stage_
 commit = { message_input = 'input' },
 ```
 
-**高亮组**（`signs.define_highlights()`，`default = true`，允许用户主题覆盖）：
+**高亮组**（`signs.define_highlights(force)`，`default = true`，允许用户主题覆盖）：
+`define_highlights` 只在第一次调用时干活（模块级 `defined` 标志，M7 P2-4），`ColorScheme` 用
+`force = true` 重建——**不能用 `hlexists` 做守卫**，`:highlight clear <组>` 之后它仍返回 1。
 `Vcssign{Add,Change,Delete,TopDelete,ChangeDelete,Untracked}` 及其 `…Staged`、`…Ln`、`…Nr`、`…Cul` 变体，
 默认 link 到 `DiffAdd/DiffChange/DiffDelete`（Staged 用更暗的链接，参考 gitsigns 的 `GitSignsAddStaged`）。
 命名空间：`vcssign_signs`、`vcssign_signs_staged`、`vcssign_worddiff`、`vcssign_preview`、`vcssign_blame`。
