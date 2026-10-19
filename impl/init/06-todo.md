@@ -260,7 +260,13 @@ M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
   - 坑：没 `autocmds.setup()` 时 `nvim_exec_autocmds('FocusGained')` 是空操作，用例会假通过；
     `test/run.lua` 的 `DEFAULT_SPECS` + `REQUIRES` 要登记新 spec
   - 文档：08 §6.1 + A4 状态块、05 §1 表格与 §3 两条规矩
-- [ ] S1 svn `.svn` 递归 watch 的句柄数（`metadata_dir` 钩子 + 非递归）——先按 08 §7-7 在大 wc 上量
+- [x] S1 svn `.svn` 递归 watch —— 量完发现**句柄不是问题**（1200 文件 wc 上始终 2 个：libuv 的递归
+    是一个标志，不是每子目录一个句柄），代价在**事件量**：一次 300 文件 `svn commit` 递归 3135 条
+    / 非递归 1225 条 / `wc.db` 单文件 1 条。修法：`VcsSystem.metadata_recursive?`（默认真，git 保持）
+    + svn 的 `metadata_dir = <root>/.svn` 且 `metadata_recursive = false`，`Repo:_init_watch` 据此
+    决定 `_watch` 的 recursive 参数；新增 `repo.watch_recursive[path]` 供断言。插件侧 `_on_fs_event`
+    调用 2985 → 1108（`temp/probe_s1d.lua`），句柄仍是 2。回归：`vcs_svn_spec` +1、
+    `repo_spec` 的 git 生命周期用例补递归断言；全文 307。
 - [x] P2 六项（M7 收尾，一个提交）：`UNTRACKED_MARK_LIMIT = 2000`（5000 行 5000 mark / 3.8 ms →
     2 mark / 0.002 ms）、`signs.place` 的 `config.get()` ×8 → 1、渲染里 `normalize` ×2 → 1、
     `define_highlights(force)` + `ColorScheme`（0.17 ms/attach → 0；**`hlexists` 当守卫不行**，

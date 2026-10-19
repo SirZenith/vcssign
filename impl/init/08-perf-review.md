@@ -566,19 +566,37 @@ svn 侧的对应收益全部来自 P0-1 的 status 缓存：**干净文件不取
 | P1-3 blame `-L` | ✅ **已修**：2000 行首看 211 → 63 ms，按行缓存 | ✅ **同样受益**（靠缓存而非 `-L`）：整文件答案被按行摊开，换行 0 进程 | svn 无行窗口（适配器 `_opts` 忽略），收益全来自缓存 + 基线指纹 |
 | P1-4 `get_by_path` 线性 | ✅ | ✅ | 与 VCS 无关 |
 | P2-1…P2-6 | ✅ **已修** | ✅ **已修** | 与 VCS 无关（P2-6 是文档漂移） |
+| S1 `.svn` 递归 watch | — | ✅ **已修**（非递归 metadata watch，回调 2985 → 1108） | git 必须递归（index/HEAD/refs 分散），svn 不需要 |
 
 ### svn 专属发现
 
-**S1 `.svn` 的递归 watch 落点与句柄数（待验证，中低优先级）。**
-`lua/vcssign/repo.lua:364` 是 `self.system.metadata_dir and self.system.metadata_dir(self.root)`，
-而 svn 适配器**没有** `metadata_dir`（只有 `lua/vcssign/vcs/git.lua:124` 有），于是
-`metadata_path = marker_path = <root>/.svn`，再按 `RECURSIVE_FS_EVENT`（非 Linux 为真）**递归**
-监听。svn 1.7+ 的 `.svn/pristine/` 按 sha1 首字节**分片到最多 256 个子目录**，在 Windows/macOS
-上就是每仓库几百个 `uv_fs_event_t`。功能上没问题（`wc.db` 就在 `.svn/` 下，非递归也能看见），
-但**句柄数**这件事没人量过：本文的 fixture 只有 4 个分片（文件太少），需在 1000+ 文件的真实 wc
-上数 `helpers.uv_count()` 才有结论（列为 §7-7）。修法很轻：给 svn 加
-`metadata_dir = function(root) return root .. '/.svn' end` 并让 `_init_watch` 对 metadata 只做
-非递归监听（`pristine/` 的变化与「基线上限」无关）。
+**S1 `.svn` 的递归 watch 落点（已量、已修；结论与原先的猜测相反）。**
+原先的猜测是「`.svn/pristine/` 分片到 256 个子目录 → 每仓库几百个 `uv_fs_event_t`」。在
+1200 文件的工作副本（255 个 pristine 分片、1464 个 pristine 文件）上实测**不成立**：libuv 在
+Windows/macOS 的递归监听是**一个** `uv_fs_event_t`（`ReadDirectoryChangesW` 的 recursive 标志 /
+FSEvents），整个仓库始终只有 **2 个句柄**（metadata + root 存活探针），递归与否都是 2。
+
+真正的代价在**事件量**而不是句柄：一次 300 文件的 `svn commit`（写下 300 个 pristine）
+
+| 监听方式 | 事件回调 | 句柄 |
+|----------|----------|------|
+| `.svn` 递归（M7 之前） | **3135** | 2 |
+| `.svn` 非递归 | **1225** | 2 |
+| `.svn/wc.db` 单文件 | **1** | 2 |
+
+多出来的 ~1900 条全部来自 `.svn/pristine/**`，而**没有任何基线读取会看那里**——它们只是让
+`_on_fs_event` 白跑一趟（每次 `uv.fs_stat` + `record_change` + `drop_status` + 重置去抖），
+并且把去抖一直踩住、拖后真正的那次刷新。经插件侧复测（`temp/probe_s1d.lua`，同一份 300 文件
+commit）：`_on_fs_event` 调用 **2985 → 1108**，仓库句柄 2 → 2。
+
+修法（十行级）：`vcssign.VcsSystem` 新增可选字段 **`metadata_recursive`**（默认真，git 保持递归：
+index/HEAD/refs 分散在 git 目录里），svn 适配器给出 `metadata_dir(root) = <root>/.svn` 并把
+`metadata_recursive = false`；`Repo:_init_watch` 据此决定 `_watch` 的 `recursive` 参数，并新增
+`repo.watch_recursive[path]` 记录「这个路径是怎么监听的」（回归断言用）。
+
+为什么不直接监听 `wc.db` 那一个文件（1 条事件）？目录监听对「文件被替换/临时移走」免疫，
+文件监听在 inotify/FSEvents 下的寿命语义各平台不一——**少 1224 次回调**已经足够，不必拿
+「静默变聋」的风险去换最后那 1 个数量级。
 
 **S2 `svn info` 接受多目标——不换接口就能把 N 次进程压成 1 次（两类 VCS 都有类似物）。**
 实测：`svn info` 带 6 个目标 = **54.2 ms**，而单目标 82.5 ms，即**多问 5 个文件几乎不要钱**。
@@ -747,9 +765,10 @@ spec 只管进程条数（跨平台稳定）。两边都留。
    `HEAD` 本身字节不变，只 stat `HEAD` 会漏），svn 是 `.svn/wc.db`（update/switch/revert/add/commit
    都重写它）。因此**不再依赖 P0-1**，§6 第 1、4 步的顺序可以任意。配置侧另加一个「渲染相关
    选项」指纹（`config.setup` 换表 + `word_diff` 原地翻转都要能被看见）。
-7. **svn 大工作副本的句柄数**（S1）——在 1000+ 文件的 wc 上数 `helpers.uv_count()`（`repo_spec`
-   已有按 `vim.uv.walk` 断言句柄的写法可抄），确认 `.svn` 递归 watch 是否真的要几百个句柄；
-   若成立，`metadata_dir` 钩子 + 非递归 metadata watch 是个十行级的修法。
+7. ~~**svn 大工作副本的句柄数**~~——**已解决（M7 S1）**：1200 文件的 wc 上句柄始终是 2 个
+   （递归只是 libuv 的一个标志，不是每子目录一个句柄），猜测不成立；真正的代价是事件量
+   （300 文件 commit：递归 3135 / 非递归 1225 / `wc.db` 单文件 1）。已改为 `metadata_dir` +
+   `metadata_recursive = false`，插件侧回调 2985 → 1108。见 §3.5 S1。
 8. **多目标合并的上限**（S2）——`svn info` / `git ls-files` 单次能安全带多少路径？
    Windows 的 argv 上限（约 32K 字符）在深层路径下可能几十个文件就碰到，需要分块策略。
 
