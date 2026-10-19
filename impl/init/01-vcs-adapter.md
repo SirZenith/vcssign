@@ -91,6 +91,7 @@ M.default_sign_priority = { modified = 10, added = 20, deleted = 30, ... }
 -- 元数据目录（可选）：Repo 要监听的是它，而不是 `<root>/<keyfile>`。
 -- git worktree/submodule 的 `.git` 是**文件**且真 index 在仓库外，只能由这里给出。
 ---@field metadata_dir? fun(root: string): string?
+---@field metadata_recursive? boolean   -- 默认真；基线存储只有一层文件时设 false
 
 -- 基线指纹（可选，M7 P0-4）：回答「决定 show(rev, rel) 结果的那份元数据现在是什么」。
 -- 只用于渲染短路——值没变就跳过整趟重读。零进程（uv.fs_stat 的 ino/size/mtime），

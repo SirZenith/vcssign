@@ -52,6 +52,7 @@ M.run(cmd, opts, cb)
 ---@field root string
 ---@field marker_path string                    # root/.git 或 root/.svn
 ---@field metadata_path string                 # 实际监听的元数据目录（见 §3.2）
+---@field watch_recursive table<string, boolean> # 每个被监听路径当初是怎么起监听的（M7 S1）
 ---@field refs table<string, true>              # 持有它的引用令牌
 ---@field is_dirty boolean                      # 有变更待刷新
 ---@field is_updating boolean                   # 探测中（防重入）
@@ -136,7 +137,7 @@ Repo:start()           # 开始监听（manager 建仓时调用）
 
 | 路径 | 递归 | 为什么 |
 |------|------|--------|
-| `metadata_path` | 是（非 Linux） | index / wc 元数据变化 —— 一个 store 服务全仓，所以「指认不了文件」 |
+| `metadata_path` | 看适配器（`metadata_recursive`，默认「是（非 Linux）」） | index / wc 元数据变化 —— 一个 store 服务全仓，所以「指认不了文件」。**M7 S1**：svn 的 store 是一个文件，递归只会白收 `.svn/pristine/**` 的事件（300 文件 commit：递归 3135 条 / 非递归 1225 条），所以 svn 设 `metadata_recursive = false`；git 必须递归（index/HEAD/refs 分散） |
 | `root` | **否** | 存活探测（libuv 不报告「被监听目录自身消失」）；**M7 起另兼「哪个文件变了」**——非递归所以 libuv 会给 `filename` |
 
 > ⚠ **M6 Step 2（D38）**：`root` 的直接子目录**不再监听**（工作树内容变化由缓冲区侧的
