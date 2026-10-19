@@ -92,6 +92,14 @@ M.default_sign_priority = { modified = 10, added = 20, deleted = 30, ... }
 -- git worktree/submodule 的 `.git` 是**文件**且真 index 在仓库外，只能由这里给出。
 ---@field metadata_dir? fun(root: string): string?
 
+-- 基线指纹（可选，M7 P0-4）：回答「决定 show(rev, rel) 结果的那份元数据现在是什么」。
+-- 只用于渲染短路——值没变就跳过整趟重读。零进程（uv.fs_stat 的 ino/size/mtime），
+-- 不查 status、不算内容 hash。拿不到或不确定就返回 nil，调用方退回「每次都重读」，
+-- 所以没有这个钩子的适配器行为与以前完全一致。
+-- git: `.git/index` + `HEAD` + `HEAD` 指向的分支文件（提交只改后者，只 stat HEAD 会漏）；
+-- svn: `.svn/wc.db`（update/switch/revert/add/commit 都会重写它）。
+---@field baseline_stamp? fun(root: string): string?
+
 -- 拉取状态，归一化为 FileStatus 表。
 -- 注意: 必须以 root 为基准拼绝对路径（修正 vcs-helper 的 getcwd 缺陷）。
 ---@param root string
@@ -122,6 +130,10 @@ commit(root, files, msg, cb)  -> cb(err, info)           -- info: 提交摘要
 > 参数校验失败（空文件列表）都是**同步**调 `cb`；`vim.system` 路径才是异步。
 > 因此 M2 的「调用后再置 `is_updating` / `is_dirty`」写法会被同步回调打穿，
 > 要么先置标志再调用，要么统一用 `vim.schedule` 延后回调。
+
+> **M7 追加**：`baseline_stamp(root)` 与 `metadata_dir(root)` 都是**可选**钩子，都不进 `capabilities`
+> ——它们的语义是「能回答就回答」，不是「支持/不支持某个动作」：`metadata_dir` 服务 fs 监听（D20），
+> `baseline_stamp` 服务渲染短路（08 P0-4）。拿不到就不回答，上层自然退回旧行为。
 
 **base.lua 里同时写死「能力接口默认实现」**：不支持的调用返回 `"capability unsupported: <name>"` 错误，防止子模块漏实现导致 nil 调用。
 

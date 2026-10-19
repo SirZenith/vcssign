@@ -78,12 +78,19 @@ M.new(system, root) → Repo
 Repo:refresh(cb?)      # 走防抖窗口；cb(err) 在本轮结束时调用一次
 Repo:refresh_now(cb?)  # 跳过防抖（attach 首刷、动作后强制刷新）；并重置退避计数
 Repo:mark_dirty()      # 只置脏 + 排队（FS 事件/autocmd 用）
-Repo:on_update(fn)     # 一次存活探测成功 → fn(repo)；返回 unsubscribe
+Repo:on_update(fn)     # 一次存活探测成功 → fn(repo, changed)；返回 unsubscribe（M7 步骤 2）
 Repo:on_error(fn)      # 一次存活探测失败（超时/权限/EBUSY…）→ fn(err, repo)
 Repo:on_delete(fn)     # 明确否定（marker 消失 / 适配器判定「不是仓库」）→ fn(repo)
 Repo:dispose()         # 停监听/定时器/订阅，终态
 Repo:start()           # 开始监听（manager 建仓时调用）
 ```
+
+> ⚠ **M7 步骤 2（08 P0-3）**：`on_update` 的第二个参数 `changed` 是三态——
+> **集合**（`table<string, true>`，归一化绝对路径）= 这一轮 fs 事件指名的文件；
+> **`nil`** = 有事但指认不了（`.git/index` / `.svn/wc.db` 变了、目录汇总事件、路径已消失）；
+> **空集** = 什么也没动（`FocusGained` / 手动刷新这类「再看一眼」的探测）。
+> 只有 fs 事件会记账（`_record_change`）；`mark_dirty` / `refresh*` 是请求，不是证据。
+> 订阅方用 `not changed or changed[path]` 判自己要不要动。
 
 > ⚠ **M6 Step 2（D38）**：`refresh*` 的回调现在只收到 `err`（不再有 `entries`）。
 > `entries()` / `get_entry()` / `get_status()` 已删除：状态查询改成调用方即时跑一次 `system.status`
@@ -98,8 +105,8 @@ Repo:start()           # 开始监听（manager 建仓时调用）
 
 | 路径 | 递归 | 为什么 |
 |------|------|--------|
-| `metadata_path` | 是（非 Linux） | index / wc 元数据变化 —— 这是 Repo 唯一需要的信号（D38） |
-| `root` | **否** | **只作存活探测**：libuv 从不报告「被监听目录自身消失」，见下 |
+| `metadata_path` | 是（非 Linux） | index / wc 元数据变化 —— 一个 store 服务全仓，所以「指认不了文件」 |
+| `root` | **否** | 存活探测（libuv 不报告「被监听目录自身消失」）；**M7 起另兼「哪个文件变了」**——非递归所以 libuv 会给 `filename` |
 
 > ⚠ **M6 Step 2（D38）**：`root` 的直接子目录**不再监听**（工作树内容变化由缓冲区侧的
 > `on_lines` 防抖 + 按需 diff 覆盖，见 07 §3.2），旧的 `_sync_watch_set` 随之删除。
@@ -121,8 +128,8 @@ Repo:start()           # 开始监听（manager 建仓时调用）
   `.git/index` 是 `.git` 的**直接子项**，所以关键的暂存域信号仍然能拿到（已实测）。
 - `_sync_watch_set`（**M6 Step 2 已删除**）：root 层出现新目录 → 补监听；被监听目录消失 → 释放句柄。
   现在监听集固定为 `metadata_path` 一项，不再随目录增删变化。
-- 回调里**只做两件事**：`is_dirty = true` + 重置去抖 timer（实现上就是 `mark_dirty`）。
-  绝不直接跑命令。
+- 回调里**只做三件事**：记下「这一轮谁动了」（`_record_change`）+ `is_dirty = true` + 重置去抖 timer。
+  绝不直接跑命令。记账的三态语义见 §3.1 的 ⚠。
 - 监听目录消失 → `_mark_deleted()`（`is_deleted`、停监听、通知 manager detach）。
   `.git` 可能是**文件**（worktree），所以判据是「marker 不存在」而不是「不是目录」。
 - 句柄报错（目录被删/不可访问）→ **warn 日志 + 释放该句柄**（不是只记 debug 后留着一个死句柄）；
@@ -153,7 +160,8 @@ FS 事件 / autocmd / 手动 refresh
    ├─ is_updating = true  ← **先置位，再发命令**
    ├─ system.get_root_async(root, cb)          ← 存活探测（D38，不再跑 status）
    │     成功（拿到 root）→ is_dirty=false → error_count=0 → 清退避
-   │                        → has_loaded=true → emit(on_update)
+   │                        → has_loaded=true → 取走本轮记账的变更集（_take_changes）
+   │                        → emit(on_update, changed)   ← 集合 / nil / 空集，见 §3.1
    │     明确否定（registry.is_definitive_negative）→ _mark_deleted()（不再重试）
    │     其它失败 → 保留 has_loaded → error_count++ → 同一失败串只 warn 一次
    │                → 指数退避重试（1000 × 2^(n-1)，封顶 30000，成功后取消）
@@ -165,6 +173,10 @@ FS 事件 / autocmd / 手动 refresh
   **同步**回调，先调后置会被同步回调清掉标志，然后真正的异步回调再跑一轮 → 并发刷新。
 - **剪裁**（M6 Step 2 起不再适用）：Repo 已无状态缓存；`_on_alive` 一律广播 `on_update`。
   「变化了才通知」的语义（如果有）归渲染层。
+- **M7 步骤 2 修正了上一条的代价**：广播依旧每轮都发（它同时是「仓库还活着」的信号），
+  但带上了「哪个文件动了」。于是「没变」也能被表达（空集）——这正是 08 §2.5 里
+  `FocusGained` 40 → 20 次渲染进入的来源。`_take_changes` 是取走即清（快照原子），
+  期间新到的事件算下一轮。
 - ⚠ **偏差（去抖只做一层）**：初版计划在 FS 事件上再套一层「按路径的去抖 timer 池」
   （oil-vcs-status 模式），管线本身又有 300ms 防抖 → 600ms 串联延迟且两套定时器。
   实际只保留管线这一层：FS 回调直接 `mark_dirty()`，去抖由 `debounce_trailing` 完成。
@@ -204,7 +216,7 @@ M.on_repo_attached(fn) / M.on_repo_detached(fn)
 - 仓库消失（§3.2）→ `repo:on_delete` → manager 移除 + `dispose()` + 广播 detached。
 - 所有清理路径都汇到 `Repo:dispose()`：停 fs_event 句柄、关去抖/退避 timer、清订阅与 waiters。
 
-## 5. 验收标准（M6 Step 2 版，见 `test/repo_spec.lua`，20 用例）
+## 5. 验收标准（M6 Step 2 版，见 `test/repo_spec.lua`，20 用例；M7 步骤 2 后 24）
 | # | 场景 | 用例 |
 |---|------|------|
 | 5.1 | 元数据事件到达订阅者**恰好一次** | 「a metadata change is announced exactly once」（`git add` 后 `on_update` 增量 == 1） |
@@ -226,6 +238,7 @@ M.on_repo_attached(fn) / M.on_repo_detached(fn)
 | 附加（二轮） | 防抖窗口内的手动刷新不跑两遍 | 「a manual refresh inside the debounce window is not run twice」 |
 | 附加 | 首刷（attach）成功后 `has_loaded`/`is_dirty`/`error_count` 正确 | 「the first probe marks the repository loaded, with no status cache」 |
 | 附加 | `on_error` 订阅真会被调用 | 失败用例里 `eq(errors, 1)`, `eq(errors, 2)` |
+| 5.6（M7-2） | 变更通道三态：工作区事件指认文件 / 元数据事件不指认 / 无事件背后的探测给空集，git 与 svn 各一份 | 「a work tree event announces the file it touched」「a metadata change announces no path, because it moves every baseline」「a probe with no filesystem event behind it announces an empty set」「an svn metadata change announces no path either」 |
 
 ## 6. 实测与偏差记录（回写）
 
