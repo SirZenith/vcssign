@@ -57,7 +57,8 @@ M.run(cmd, opts, cb)
 ---@field is_updating boolean                   # 探测中（防重入）
 ---@field has_pending boolean                   # 探测期间又来了一次请求 → 跑完补跑
 ---@field is_deleted boolean                    # 仓库消失 / 已 dispose
----@field has_loaded boolean                    # 至少成功探测过一次（存活检查）
+---@field has_loaded boolean                    # 至少成功探测过一次（存活检查），
+--                                              # 或 root 由 `verified` 直接交进来（M7-3）
 ---@field error_count integer                   # 连续失败次数（退避指数）
 ---@field last_error string?
 ---@field fs_handles table<string, uv.uv_fs_event_t>   # 监听路径 → 句柄
@@ -76,7 +77,7 @@ M.new(system, root) → Repo
 
 ```lua
 Repo:refresh(cb?)      # 走防抖窗口；cb(err) 在本轮结束时调用一次
-Repo:refresh_now(cb?)  # 跳过防抖（attach 首刷、动作后强制刷新）；并重置退避计数
+Repo:refresh_now(cb?)  # 跳过防抖（动作后强制刷新、`verified` 之外的首次绑定）；并重置退避计数
 Repo:mark_dirty()      # 只置脏 + 排队（FS 事件/autocmd 用）
 Repo:on_update(fn)     # 一次存活探测成功 → fn(repo, changed)；返回 unsubscribe（M7 步骤 2）
 Repo:on_error(fn)      # 一次存活探测失败（超时/权限/EBUSY…）→ fn(err, repo)
@@ -209,8 +210,13 @@ M.on_repo_attached(fn) / M.on_repo_detached(fn)
 ```
 
 - 同一 root 只有一个 `Repo`，多个 buffer 共享缓存与监听（引用计数）。
+- **M7 步骤 3（08 P0-5）**：`Repo.new(system, root, { verified = true })`——`root` 是
+  `detect_async` 刚问过该系统命令拿到的，所以新仓库直接 `has_loaded = true` / `is_dirty = false`，
+  首刷不再白跑一次存活探测（每仓库省 1 进程 + 1 轮串行往返，首标 git −40 ms）。
+  仓库在 detect 与 `start()` 之间消失的极窄窗口由 watcher 兜住，之后的任何真实触发照旧探测。
 - **快速路径**：`registry.detect`（纯 marker 扫描，不起进程）命中已知 root → 直接复用；
-  且若该 repo `has_loaded and not is_dirty` → 直接回缓存、**不起进程**。
+  且若该 repo `has_loaded and not is_dirty` → 直接回缓存、**不起进程**（M7 步骤 3 之后，
+  **新仓库的第一次** attach 也走这条：`verified` 让 `has_loaded` 一出生就是真）。
   注意这条路径下 `cb` 是**同步**调用的（已在文档注释里写明）。
 - `ref` 换仓库（buffer 换目录）→ 先解绑旧的再绑新的，不会泄漏引用。
 - 仓库消失（§3.2）→ `repo:on_delete` → manager 移除 + `dispose()` + 广播 detached。
@@ -236,7 +242,8 @@ M.on_repo_attached(fn) / M.on_repo_detached(fn)
 | 附加（二轮） | 仓库根目录本身解析回该仓库（`cd repo && nvim` 时 `active()`） | 「the repository root itself maps back to the repository」 |
 | 附加（二轮） | `dispose_all` 之后不再诞生仓库（检测在飞时会话退出） | 「dispose_all cancels an attach that is still detecting」 |
 | 附加（二轮） | 防抖窗口内的手动刷新不跑两遍 | 「a manual refresh inside the debounce window is not run twice」 |
-| 附加 | 首刷（attach）成功后 `has_loaded`/`is_dirty`/`error_count` 正确 | 「the first probe marks the repository loaded, with no status cache」 |
+| 附加 | 首刷（attach）成功后 `has_loaded`/`is_dirty`/`error_count` 正确 | 「a root the detector resolved costs no second probe (M7 P0-5)」（`count_probes` == 1） |
+| 5.7（M7-3） | 交给 `Repo` 的 root 不再探测一次；但之后的显式刷新照旧探测（git 与 svn 各一份） | 「a later trigger still probes a repository that skipped its first one」「a working copy is resolved once too, not once per layer」 |
 | 附加 | `on_error` 订阅真会被调用 | 失败用例里 `eq(errors, 1)`, `eq(errors, 2)` |
 | 5.6（M7-2） | 变更通道三态：工作区事件指认文件 / 元数据事件不指认 / 无事件背后的探测给空集，git 与 svn 各一份 | 「a work tree event announces the file it touched」「a metadata change announces no path, because it moves every baseline」「a probe with no filesystem event behind it announces an empty set」「an svn metadata change announces no path either」 |
 
