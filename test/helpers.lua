@@ -285,6 +285,58 @@ function M.capture_notify(fn, is_done)
   return captured
 end
 
+--- `capture_notify`, but waiting for the message a case is about.
+---
+--- Waiting for "any notification" and then asserting on `seen[1]` makes the
+--- assertion depend on *which* asynchronous chain answers first.  A case is not
+--- alone in the process: a repository an earlier case left behind can still emit
+--- a warning of its own (its watcher fires, its probe fails), and that warning
+--- would win the race and be asserted on instead of the message the command just
+--- produced — a flake whose failure signature is `expected: 2, actual: 4`:
+--- INFO asserted, ERROR arrived.
+---
+--- The needle is the *subject* of the case, not a filter for unexpected
+--- messages: the other captured entries belong to other cases and stay
+--- unasserted here.  What the notification layer promises is one message per
+--- command, naming what happened, so that is what gets waited for.
+---@param fn function
+---@param needle string  substring the wanted message must contain
+---@return vcssign.CapturedNotify
+function M.capture_notify_one(fn, needle)
+  ---@param captured vcssign.CapturedNotify[]
+  ---@return vcssign.CapturedNotify?
+  local function match(captured)
+    for _, notification in ipairs(captured) do
+      if notification.message:find(needle, 1, true) then
+        return notification
+      end
+    end
+    return nil
+  end
+
+  local captured = M.capture_notify(fn, function(list)
+    return match(list) ~= nil
+  end)
+  local found = match(captured)
+  if not found then
+    -- Unreachable: the wait above only returns once something matched.
+    error('no notification mentions ' .. vim.inspect(needle), 2)
+  end
+  return found
+end
+
+--- The captured messages, for a failure that would otherwise only report a
+--- count (`expected 0, actual 1` says nothing about *what* arrived).
+---@param captured vcssign.CapturedNotify[]
+---@return string
+function M.describe_notifications(captured)
+  local lines = {}
+  for _, notification in ipairs(captured) do
+    lines[#lines + 1] = string.format('[%d] %s', notification.level, notification.message)
+  end
+  return table.concat(lines, '\n')
+end
+
 --- One rendered screen row of `win`, as a string.
 ---
 --- Reads the real screen grid, so it asserts what a user sees — signs and all —
