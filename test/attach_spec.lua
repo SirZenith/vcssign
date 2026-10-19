@@ -96,18 +96,38 @@ end
 --- Count how many *liveness probes* `fn` triggers (`repo_spec.lua:27` pattern).
 ---@param fn fun()
 ---@return integer
-local function count_probes(fn)
-  local real_run = exec.run
-  local calls = 0
+--- Patch both spawn paths for the duration of `fn`.
+---
+--- A command that runs and returns is `exec.run`; the batch reader (08 P0-2) is
+--- `exec.stream`, a child that outlives the call.  Counting only the first would
+--- make "one process per repository" look like "no process at all".
+---@param record fun(cmd: string[])
+---@return fun() restore
+local function patch_spawns(record)
+  local real_run, real_stream = exec.run, exec.stream
   exec.run = function(cmd, opts, cb)
+    record(cmd)
+    return real_run(cmd, opts, cb)
+  end
+  exec.stream = function(cmd, opts, on_stdout, on_exit)
+    record(cmd)
+    return real_stream(cmd, opts, on_stdout, on_exit)
+  end
+  return function()
+    exec.run, exec.stream = real_run, real_stream
+  end
+end
+
+local function count_probes(fn)
+  local calls = 0
+  local restore = patch_spawns(function(cmd)
     local joined = table.concat(cmd, ' ')
     if joined:find('rev-parse', 1, true) or joined:find('wc-root', 1, true) then
       calls = calls + 1
     end
-    return real_run(cmd, opts, cb)
-  end
+  end)
   local ok, err = pcall(fn)
-  exec.run = real_run
+  restore()
   if not ok then
     error(err, 0)
   end
@@ -120,14 +140,12 @@ end
 ---@param fn fun()
 ---@return integer
 local function count_procs(fn)
-  local real_run = exec.run
   local calls = 0
-  exec.run = function(cmd, opts, cb)
+  local restore = patch_spawns(function()
     calls = calls + 1
-    return real_run(cmd, opts, cb)
-  end
+  end)
   local ok, err = pcall(fn)
-  exec.run = real_run
+  restore()
   if not ok then
     error(err, 0)
   end
@@ -142,14 +160,12 @@ end
 ---@param fn fun()
 ---@return string[]
 local function spawned(fn)
-  local real_run = exec.run
   local calls = {}
-  exec.run = function(cmd, opts, cb)
+  local restore = patch_spawns(function(cmd)
     calls[#calls + 1] = table.concat(cmd, ' ')
-    return real_run(cmd, opts, cb)
-  end
+  end)
   local ok, err = pcall(fn)
-  exec.run = real_run
+  restore()
   if not ok then
     error(err, 0)
   end
@@ -879,10 +895,10 @@ return {
       local argv = spawned(function()
         attach_now(bufnr)
       end)
-      -- rev-parse + status + one `show :base.txt`; HEAD is not read because the
-      -- view says the index matches it.
+      -- rev-parse + status + one spawn of the batch reader (08 P0-2); HEAD is
+      -- not read because the view says the index matches it.
       eq(#argv, 3, 'three commands: ' .. table.concat(argv, ' | '))
-      ok(argv[3]:find('show', 1, true), 'the baseline is read: ' .. argv[3])
+      ok(argv[3]:find('cat-file', 1, true), 'the baseline comes through the reader: ' .. argv[3])
       local st = attach._bufs[bufnr]
       eq(#st.hunks, 1)
       eq(#st.hunks_staged, 0)
@@ -891,11 +907,17 @@ return {
       local staged_argv = spawned(function()
         refresh_now(bufnr)
       end)
-      -- The index moved, so the cached view is retired: one status query plus
-      -- the HEAD read the staged layer needs.  The baseline itself is the
-      -- buffer's text now (worktree in sync), so no second `show`.
+      -- The index moved, so the cached view is retired (one status query) and so
+      -- is the batch reader: a `cat-file --batch` child resolves `:<path>`
+      -- against the index it started on, so it would answer with the previous
+      -- blob (measured).  The baseline itself is the buffer's text — worktree in
+      -- sync — and HEAD rides on the fresh reader, so nothing else is spawned.
       eq(#staged_argv, 2, 'two commands: ' .. table.concat(staged_argv, ' | '))
-      ok(staged_argv[2]:find('show HEAD', 1, true), 'HEAD is read: ' .. staged_argv[2])
+      ok(staged_argv[1]:find('status', 1, true), 'the view is asked again: ' .. staged_argv[1])
+      ok(
+        staged_argv[2]:find('cat-file', 1, true),
+        'a fresh reader answers HEAD: ' .. staged_argv[2]
+      )
       eq(#st.hunks, 0, 'the worktree layer is empty again')
       eq(#st.hunks_staged, 1, 'and the staged layer has the hunk')
     end),
@@ -927,6 +949,48 @@ return {
       end
       eq(asked, 1, 'the per-file question is asked instead')
       eq(#attach.hunks(bufnr), 1, 'and the signs are still right')
+    end),
+  },
+
+  {
+    name = 'two dirty files in one repository cost one baseline process between them',
+    fn = guarded(function()
+      -- The arithmetic 08 P0-2 is about: the first buffer pays for the reader,
+      -- the second one pays for nothing at all.
+      local dir = helpers.git_repo('attach-batch-shared')
+      helpers.write(dir .. '/base.txt', 'base\nnew\n')
+      helpers.write(dir .. '/sub/nested.txt', 'nested\nmore\n')
+      local first = open(dir .. '/base.txt')
+      local second = open(dir .. '/sub/nested.txt')
+      local argv = spawned(function()
+        attach_now(first)
+        attach_now(second)
+      end)
+      eq(#argv, 3, 'three commands for both buffers: ' .. table.concat(argv, ' | '))
+      eq(attach._bufs[second].repo, attach._bufs[first].repo, 'one repository')
+      eq(#attach.hunks(first), 1)
+      eq(#attach.hunks(second), 1)
+    end),
+  },
+
+  {
+    name = 'a reader that dies is dropped, and the read still answers',
+    fn = guarded(function()
+      -- A dead child must never turn into "no signs": the answer falls back to
+      -- the per-file command, and the corpse is not reused.
+      local dir = helpers.git_repo('attach-batch-dead')
+      helpers.write(dir .. '/base.txt', 'base\nnew\n')
+      local bufnr = open(dir .. '/base.txt')
+      attach_now(bufnr)
+      local repo = attach._bufs[bufnr].repo
+      local reader = repo._reader
+      ok(reader ~= nil and not reader.closed, 'the first read opened a reader')
+
+      reader.closed = true -- what a crashed child looks like to its holder
+      helpers.sh({ 'git', '-C', dir, 'add', 'base.txt' })
+      refresh_now(bufnr)
+      ok(repo._reader ~= reader, 'the dead reader is not kept')
+      eq(#attach._bufs[bufnr].hunks_staged, 1, 'and the staged layer still appeared')
     end),
   },
 }

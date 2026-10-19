@@ -190,6 +190,23 @@ end
 ---@param st vcssign.AttachState
 ---@param done fun()
 ---@param staged boolean?  what the status view said; nil when this refresh has none
+--- Read a baseline through the repository's batch reader when it has one (08
+--- P0-2), or through the adapter's per-file command otherwise.
+---
+--- Everything that reads a baseline goes through here so that the two paths stay
+--- interchangeable: they answer the same text (CRLF-free), and only the process
+--- count differs.
+---@param st vcssign.AttachState
+---@param rev string
+---@param cb fun(err: string?, text: string?)
+local function show_text(st, rev, cb)
+  local repo = st.repo
+  if repo then
+    return repo:read_blob(rev, st.rel, cb)
+  end
+  st.system.show(st.root, rev, st.rel, cb)
+end
+
 local function load_head(st, done, staged)
   -- `staged == false` is the status view saying the index matches `HEAD`, so the
   -- second layer has nothing to show and reading it would be pure cost (08 P0-1).
@@ -197,7 +214,7 @@ local function load_head(st, done, staged)
     st.head_text = nil
     return done()
   end
-  st.system.show(st.root, 'HEAD', st.rel, function(err, text)
+  show_text(st, 'HEAD', function(err, text)
     if M._bufs[st.bufnr] ~= st then
       return
     end
@@ -224,7 +241,7 @@ local function load_base_show(st, done, staged)
   ---@param rev string
   ---@param retry boolean
   local function show_with(rev, retry)
-    st.system.show(st.root, rev, st.rel, function(err, text)
+    show_text(st, rev, function(err, text)
       if M._bufs[st.bufnr] ~= st then
         return
       end

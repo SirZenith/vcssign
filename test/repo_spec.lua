@@ -989,4 +989,64 @@ return {
       end)
     end),
   },
+
+  {
+    name = 'the batch reader serves every read, and is closed with the repository',
+    fn = guarded(function()
+      local dir = helpers.git_repo('runtime-reader')
+      helpers.with_repo('spec:reader', dir, function(repo)
+        local git = require('vcssign.vcs.git')
+        local _, shown = helpers.wait(function(cb)
+          git.show(dir, 'HEAD', 'base.txt', cb)
+        end)
+        local _, first = helpers.wait(function(cb)
+          repo:read_blob('HEAD', 'base.txt', cb)
+        end)
+        eq(first, shown, 'the reader answers exactly what the command answers')
+        local reader = repo._reader
+        ok(reader ~= nil and not reader.closed, 'a reader is open')
+
+        local _, second = helpers.wait(function(cb)
+          repo:read_blob('index', 'base.txt', cb)
+        end)
+        eq(second, first, 'the staged blob is the same text')
+        eq(repo._reader, reader, 'the same child answered both')
+
+        repo:dispose()
+        ok(reader.closed, 'dispose closes the child instead of leaking it')
+      end)
+    end),
+  },
+  {
+    name = 'a reader started before the index moved is replaced, not believed',
+    fn = guarded(function()
+      -- Measured, and the reason this case exists: a `cat-file --batch` child
+      -- reads the index once, so after `git apply --cached` the same child keeps
+      -- answering with the *previous* blob.  Staging a hunk looked like it had
+      -- not happened at all (attach_spec "the sign layers to split" timed out)
+      -- until the reader started being retired when the store moves.
+      local dir = helpers.git_repo('runtime-reader-stale')
+      helpers.with_repo('spec:reader-stale', dir, function(repo)
+        local _, before = helpers.wait(function(cb)
+          repo:read_blob('index', 'base.txt', cb)
+        end)
+        local first = repo._reader
+        ok(first ~= nil and not first.closed, 'a reader is open')
+
+        helpers.write(dir .. '/base.txt', 'staged text' .. string.char(10))
+        helpers.sh({ 'git', '-C', dir, 'add', 'base.txt' })
+        local _, after = helpers.wait(function(cb)
+          repo:read_blob('index', 'base.txt', cb)
+        end)
+        eq(
+          after,
+          'staged text' .. string.char(10),
+          'the moved index is what is read, not the cached one'
+        )
+        ok(after ~= before, 'which is a different answer from before')
+        ok(repo._reader ~= first, 'the stale child is not reused')
+        ok(first.closed, 'and it is closed rather than leaked')
+      end)
+    end),
+  },
 }

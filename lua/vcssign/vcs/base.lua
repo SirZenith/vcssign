@@ -75,6 +75,18 @@ local NORMALIZE_OPTS = { expand_env = false }
 ---@field ignored boolean?  not under version control because it is ignored
 ---@field dir boolean?      the entry is an ignored directory, not a file
 
+--- A long-lived child that answers `show`'s question without one process per
+--- file (08 P0-2).
+---
+--- The protocol is the adapter's business; what callers may rely on is that a
+--- failed read reports an error rather than answering with something, and that
+--- `closed` becomes true once the child is gone — a caller holding a reader must
+--- then drop it instead of retrying through it.
+---@class vcssign.BlobReader
+---@field closed boolean  no more reads will be answered
+---@field read fun(self: vcssign.BlobReader, rev: string, rel: string, cb: fun(err: string?, text: string?))
+---@field close fun(self: vcssign.BlobReader)  shut the child down; safe to call twice
+
 --- How `apply_patch` should apply its patch.
 ---@class vcssign.PatchOpts
 ---@field cached boolean?   apply to the index instead of the worktree (git only)
@@ -127,6 +139,15 @@ local NORMALIZE_OPTS = { expand_env = false }
 --- Baseline text of `rel` as of `rev`; `rev == 'index'` means the staging
 --- baseline (git's index, svn's BASE — D42).
 ---@field show fun(root: string, rev: string, rel: string, cb: fun(err: string?, text: string?))
+--- Open a reader for `show`'s answers — the same text through one process
+--- instead of one process per file.
+---
+--- Optional, and only worth it where the VCS has a batch protocol (git's
+--- `cat-file --batch`); svn has none, so its adapter leaves this out and every
+--- read stays a `svn cat`.  Never returns nil: a reader that could not start
+--- comes back closed, which is the same thing to the caller as an adapter
+--- without the hook.
+---@field open_blob_reader? fun(root: string): vcssign.BlobReader
 --- Whether `rel` is under version control.  Untracked is `false`, not an error.
 ---@field is_tracked fun(root: string, rel: string, cb: fun(err: string?, tracked: boolean?))
 --- Per-line attribution.  svn ignores `opts` (no line window).

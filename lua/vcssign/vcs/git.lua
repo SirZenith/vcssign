@@ -21,6 +21,7 @@
 ---     the only one a fresh repository can serve.
 local exec = require('vcssign.exec')
 local base = require('vcssign.vcs.base')
+local config = require('vcssign.config')
 
 local M = {}
 
@@ -206,6 +207,213 @@ function M.show(root, rev, rel, cb)
     end
     cb(nil, res.stdout)
   end)
+end
+
+-- ▏ one process for every blob read (M7 P0-2) ───────────────────────────────
+
+--- A `git cat-file --batch` child, kept for as long as its repository lives.
+---
+--- `show` costs one process per file — some 45 ms of start-up for a reply of a
+--- few kilobytes (08 §2.1) — and this protocol exists to avoid exactly that:
+--- `<rev>:<path>` in, `<sha> <type> <size>` + content out.  The byte count in
+--- the header delimits a reply, so the reader never has to guess where a file
+--- ends, and any content (binary included) parses as long as the count is right.
+---
+--- Lifetime belongs to the caller: `Repo:read_blob` owns one per repository and
+--- closes it on dispose.  A reader that dies answers everything in flight with
+--- an error and stays closed; the next caller spawns a fresh one, which is why
+--- `Repo:read_blob` retries a failed read through the plain `show` command.
+local CatFile = {}
+CatFile.__index = CatFile
+
+---@class vcssign.BlobReader
+---@field closed boolean  true once the child is gone or was closed
+---@field read fun(self: vcssign.BlobReader, rev: string, rel: string, cb: fun(err: string?, text: string?))
+
+---@param root string
+---@return vcssign.BlobReader
+function CatFile.new(root)
+  local self = setmetatable({
+    root = root,
+    queue = {},
+    buf = '',
+    stderr = '',
+    closed = false,
+    timer = nil,
+  }, CatFile)
+  local proc, err = exec.stream(build({ 'cat-file', '--batch' }), {
+    cwd = root,
+    on_stderr = function(data)
+      self.stderr = self.stderr .. data
+    end,
+  }, function(_, data)
+    if data and data ~= '' then
+      self:_receive(data)
+    end
+  end, function(res)
+    self:_died(res)
+  end)
+  if not proc then
+    -- A missing or unrunnable `git` degrades to the per-call command, not to an
+    -- error nobody sees (see `Repo:read_blob`).
+    self.closed = true
+    self.stderr = err or 'could not start'
+    return self
+  end
+  self.proc = proc
+  return self
+end
+
+---@private
+function CatFile:_arm()
+  self:_disarm()
+  local timeout = config.get().exec_timeout_ms
+  if not timeout or timeout <= 0 then
+    return
+  end
+  local timer = vim.uv.new_timer()
+  if not timer then
+    return
+  end
+  self.timer = timer
+  timer:start(timeout, 0, function()
+    -- A reader that stops answering would otherwise wedge every refresh of this
+    -- repository; killing it turns the stall into the error path, which retries
+    -- through `show`.  `vim.schedule` because the timer callback is a fast event.
+    vim.schedule(function()
+      self:timer_expired(timeout)
+    end)
+  end)
+end
+
+---@private
+function CatFile:_disarm()
+  local timer = self.timer
+  self.timer = nil
+  if timer and not timer:is_closing() then
+    timer:stop()
+    timer:close()
+  end
+end
+
+---@private
+---@param timeout integer
+function CatFile:timer_expired(timeout)
+  if self.closed then
+    return
+  end
+  self.closed = true
+  self:_fail_all(string.format('git cat-file --batch did not answer within %dms', timeout))
+  if self.proc then
+    pcall(function()
+      self.proc:kill('sigterm')
+    end)
+  end
+end
+
+---@private
+---@param reason string
+function CatFile:_fail_all(reason)
+  local queue = self.queue
+  self.queue = {}
+  self.buf = ''
+  self:_disarm()
+  for _, request in ipairs(queue) do
+    request.cb(reason)
+  end
+end
+
+---@private
+---@param res vcssign.ExecResult?
+function CatFile:_died(res)
+  if self.closed then
+    return
+  end
+  self.closed = true
+  local reason = self.stderr ~= '' and self.stderr or ('exit ' .. tostring(res and res.code))
+  self:_fail_all('git cat-file --batch exited: ' .. vim.trim(reason))
+end
+
+---@private
+---@param data string
+function CatFile:_receive(data)
+  self.buf = self.buf .. data
+  while #self.queue > 0 do
+    local nl = self.buf:find('\n', 1, true)
+    if not nl then
+      return
+    end
+    local header = self.buf:sub(1, nl - 1)
+    local size = tonumber(header:match('^%x+ %a+ (%d+)$'))
+    if not size then
+      -- `<object> missing` / `<object> ambiguous`: a real answer to the request,
+      -- not a protocol error.
+      local request = table.remove(self.queue, 1)
+      self.buf = self.buf:sub(nl + 1)
+      request.cb(header)
+      if #self.queue == 0 then
+        self:_disarm()
+      end
+    else
+      local from = nl + 1
+      if #self.buf - from + 1 < size + 1 then
+        return -- the content and its trailing newline have not arrived yet
+      end
+      local text = self.buf:sub(from, from + size - 1)
+      self.buf = self.buf:sub(from + size + 1)
+      local request = table.remove(self.queue, 1)
+      -- `show` (through `exec.run`, `text = true`) hands the caller CRLF-free
+      -- text, so the reader must too: otherwise the same file would produce two
+      -- different baselines depending on which path read it.
+      request.cb(nil, (text:gsub('\r\n', '\n')))
+      if #self.queue == 0 then
+        self:_disarm()
+      end
+    end
+  end
+end
+
+--- Read one blob through the persistent child.
+---@param rev string  a revision name, or 'index' for the staged blob
+---@param rel string  path relative to the repository root
+---@param cb fun(err: string?, text: string?)
+function CatFile:read(rev, rel, cb)
+  if self.closed then
+    return cb('git cat-file --batch is not running: ' .. self.stderr)
+  end
+  local object = rev == 'index' and (':' .. rel) or (rev .. ':' .. rel)
+  self.queue[#self.queue + 1] = { cb = cb }
+  if #self.queue == 1 then
+    self:_arm()
+  end
+  -- A failed write means the child is gone; its exit callback (or the timer)
+  -- answers the request, so there is nothing to do here.
+  pcall(self.proc.write, self.proc, object .. '\n')
+end
+
+--- Shut the child down.
+---
+--- Requests still in flight are answered with an error (never dropped): whoever
+--- asked retries through `show`, which is the path without a reader.
+function CatFile:close()
+  if self.closed then
+    return
+  end
+  self.closed = true
+  self:_fail_all('git cat-file --batch closed')
+  if self.proc then
+    pcall(function()
+      self.proc:kill('sigterm')
+    end)
+  end
+end
+
+--- Open a reader for `root` (08 P0-2).  Never fails: an unrunnable child comes
+--- back as a reader whose every read errors, and the caller falls back.
+---@param root string
+---@return vcssign.BlobReader
+function M.open_blob_reader(root)
+  return CatFile.new(root)
 end
 
 --- Whether `rel` is under version control.
