@@ -197,7 +197,11 @@ M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
       `repo_spec` +4 例（git/svn 各一套），全文 275 例通过。
       坑记一笔：`x and nil or y` 永远得不到 `nil`（两处都是此惯用法）→ 改显式 `if`；
       目录汇总事件（实测 `git add` 在根 watch 上以 `filename='.git'` 触发）必须回落「全员」，否则静默漏刷新。
-- [ ] 3. P0-5 首次 attach 去重 root 探测（git `rev-parse`×2 / svn `info --show-item`×2 → 1）
+- [x] 3. P0-5 首刷去重 root 探测（**已落地**，实测见 08 §2.6）：`Repo.new(system, root, { verified = true })`
+      （`is_dirty = false` + `has_loaded = true`），`repo_manager.attach` 只在新仓库分支传它。
+      首刷进程 git 5 → 4、svn 4 → 3，**首标延迟 224–236 → 185–195 ms**（省的是 1 轮串行往返，
+      进程计数只差 1 个——`_bind` 的缓存快路径本来就让同仓库后续 buffer 不再探测）。
+      回归：`repo_spec` 改写 1 例 + 新增 2 例（后续触发仍探测、svn 版），全文 277 例通过。
 - [ ] 4. P0-1 仓库级状态缓存（跨 VCS：git `status --porcelain=v2 -z`、svn `status --xml`；
       干净文件直接不取基线）+ P0-2 `cat-file --batch` 常驻（**仅 git**，svn 无 blob 批协议）
       —— 可先落 S2 过渡步（多目标 `svn info` / `ls-files`）；先做 08 §7 的待验证探针
