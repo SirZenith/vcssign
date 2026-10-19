@@ -7,12 +7,10 @@
 --- cache — a cache that agrees with a command which did nothing is the failure
 --- mode worth catching.
 ---
---- "The plugin saw the change" is asserted through the VCS (the helpers
---- below) or through the refresh mechanism (`helpers.count_refreshes`).  The
---- repository's status *view* (M7 4a) is fair game too, but it is a cache: an
---- assertion that reads it is also asserting that its fingerprint still held,
---- so the VCS stays the authority whenever the two could disagree.
---- See impl/archive/actions/ §2, §6.
+--- `Repo` stopped caching status in M6 (D38), so "the plugin saw the change"
+--- is asserted through the VCS (the helpers below) or through the refresh
+--- mechanism (`helpers.count_refreshes`), never through a status list.
+--- See loop/archive/commands/2026-10-16T17-33-54-commands-and-actions.md §2, §6.
 local actions = require('vcssign.actions')
 local attach = require('vcssign.attach')
 local autocmds = require('vcssign.autocmds')

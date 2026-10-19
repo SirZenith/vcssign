@@ -1,6 +1,6 @@
 --- svn adapter.
 ---
---- See impl/knowledge/vcs/ §5.  Everything here was verified against a
+--- See loop/archive/vcs/2026-10-16T17-33-54-vcs-adapter-git-svn.md §5.  Everything here was verified against a
 --- real working copy (svn 1.14.5 on Windows).  The three things that shape the
 --- code:
 ---   * paths are printed verbatim (spaces, UTF-8 bytes, no quoting), so the

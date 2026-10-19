@@ -8,12 +8,7 @@
 --- what it needs, when it needs it (D38).  That is what makes "10 rapid writes
 --- produce at most 2 probes" hold, and what keeps concurrent refreshes
 --- impossible.
----
---- What *is* cached here is the answer to "which files did the filesystem say
---- moved": filesystem events name a path wherever libuv gives one, and that set
---- travels with the `on_update` announcement (`changed_paths`, perf P0-3), so the
---- sign layer can refresh the affected buffers instead of all of them.
---- See impl/knowledge/runtime/ §3.
+--- See loop/archive/repo/2026-10-16T14-39-35-repo-runtime-and-refresh-pipeline.md §3.
 local config = require('vcssign.config')
 local debounce = require('vcssign.debounce')
 local log = require('vcssign.log')
@@ -820,7 +815,8 @@ function M:_mark_deleted()
 end
 
 --- Release every handle and subscriber.  Terminal: the manager drops the repo
---- from its maps right after this, and `impl/knowledge/runtime/` §5.4
+--- from its maps right after this, and
+--- loop/archive/repo/2026-10-16T14-39-35-repo-runtime-and-refresh-pipeline.md
 --- asserts that no `uv_fs_event_t`/`uv_timer_t` survives it.
 ---
 --- The manager is normally the caller, but calling it directly is still safe:

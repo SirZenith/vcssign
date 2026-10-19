@@ -1,4 +1,4 @@
-# vcssign developer tasks (impl/knowledge/testing/ §4).
+# vcssign developer tasks (loop/archive/testing/2026-10-16T17-33-54-testing-infra-and-toolchain.md §4).
 #
 # On Linux/macOS use `make`.  git-bash on Windows usually has no make, so
 # the scripts are the real entry points (`sh scripts/run_tests.sh`) — this
@@ -10,7 +10,7 @@ EXE := $(if $(filter Windows_NT,$(OS)),.exe,)
 FILTER ?=
 STYLUA ?= deps/stylua$(EXE)
 LUACHECK ?= deps/luacheck$(EXE)
-LUA_FILES := $(shell git ls-files 'lua/**/*.lua' 'test/*.lua' 'scripts/*.lua')
+LUA_FILES := $(shell git ls-files 'lua/**/*.lua' 'test/*.lua' 'scripts/*.lua' 'plugin/*.lua')
 
 .DEFAULT_GOAL := help
 
@@ -31,7 +31,7 @@ test: fixtures tools ## run the specs (FILTER=renderer_spec for just one)
 	sh scripts/run_tests.sh $(FILTER)
 
 .PHONY: format
-format: tools ## rewrite lua/ and test/ with stylua
+format: tools ## rewrite lua/, test/, scripts/ and plugin/ with stylua
 	$(STYLUA) $(LUA_FILES)
 
 .PHONY: format-check
@@ -39,5 +39,5 @@ format-check: tools ## fail when a file is not stylua-formatted (CI)
 	$(STYLUA) --check $(LUA_FILES)
 
 .PHONY: lint
-lint: tools ## luacheck lua/, test/ and scripts/
+lint: tools ## luacheck everything but loop/, deps/ and temp/
 	$(LUACHECK) .

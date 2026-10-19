@@ -1,5 +1,5 @@
 --- M6 Step 5–7: the sign layer's placement rules and highlight groups.
---- See impl/knowledge/signs/ §3.2 / §4 (D40).
+--- See loop/archive/signs/2026-10-16T23-24-18-line-signs-in-signcolumn.md §3.2 / §4 (D40).
 ---
 --- No repository and no VCS binary: `signs.lua` maps `vcssign.Hunk[]` onto
 --- extmarks, so a scratch buffer pins every rule (which line a hunk anchors on,
@@ -150,6 +150,51 @@ return {
     end),
   },
   {
+    name = 'define_highlights prefers a theme-coloured git sign group to Diff*',
+    fn = guarded(function()
+      local function link(name)
+        return api.nvim_get_hl(0, { name = name, link = true }).link
+      end
+
+      -- The chain is resolved when the groups are defined, and a group set with
+      -- `default = true` is not replaced by a later `default = true` set
+      -- (measured on 0.12.4), so the Vcssign groups are cleared with
+      -- `:highlight clear` before the re-definition — same rule as the case
+      -- above.
+      local function redefine()
+        for _, ty in ipairs({ 'add', 'change', 'changedelete', 'untracked' }) do
+          vim.cmd('highlight clear ' .. signs.hl_name(ty))
+        end
+        vim.cmd('highlight clear ' .. signs.hl_name('add', true))
+        -- `define_highlights` runs once per session, so a re-definition after
+        -- clearing the groups has to be forced.
+        signs.define_highlights(true)
+      end
+
+      local passed, err = pcall(function()
+        -- Neovim itself defines none of the candidates under `-u NONE`, so
+        -- this is exactly the shape a theme like nightfox gives the group.
+        api.nvim_set_hl(0, 'GitGutterAdd', { fg = 0xff0000 })
+        redefine()
+        eq(link('VcssignAdd'), 'GitGutterAdd', 'the theme group beats DiffAdd')
+        -- `VcssignAddStaged` is derived from the *resolved* colour, so the fade
+        -- is back for a theme whose sign group carries a real foreground.
+        ok(resolved('VcssignAddStaged').fg ~= nil, 'the staged fade survives the chain')
+      end)
+      -- Put the bare environment back: a leftover `GitGutterAdd` would leak
+      -- into every later case (`highlight clear`, not `nvim_set_hl({})`, which
+      -- still counts as defined).
+      vim.cmd('highlight clear GitGutterAdd')
+      redefine()
+      if not passed then
+        error(err, 0)
+      end
+      eq(link('VcssignAdd'), 'DiffAdd', 'with no candidate the chain falls back')
+      eq(link('VcssignChangeDelete'), 'VcssignChange', 'changedelete still aliases change')
+      eq(link('VcssignUntracked'), 'VcssignAdd', 'untracked still aliases add')
+    end),
+  },
+  {
     name = 'add places one sign per added line',
     fn = guarded(function()
       with_buf({ 'a', 'b', 'c', 'd' }, function(bufnr)
@@ -283,6 +328,41 @@ return {
         local r = rows(bufnr)
         eq(r[1].line_hl_group, nil)
         eq(r[0].line_hl_group, nil)
+      end)
+    end),
+  },
+  {
+    name = 'culhl writes cursorline_hl_group for every type, staged layer included',
+    fn = guarded(function()
+      config.setup({ signs = { culhl = true } })
+      with_buf({ 'a', 'b', 'c', 'd' }, function(bufnr)
+        signs.place(bufnr, { hunk('add', 1, 1), hunk('delete', 0, 0, 4, 1) })
+        signs.place(bufnr, { hunk('add', 2, 1) }, { staged = true })
+        local r = rows(bufnr)
+        eq(r[0].cursorline_hl_group, 'VcssignAddCul')
+        -- `Cul` has no delete/topdelete exception; only `Ln` has.
+        eq(r[2].cursorline_hl_group, 'VcssignDeleteCul')
+        eq(rows(bufnr, true)[1].cursorline_hl_group, 'VcssignAddStagedCul')
+      end)
+
+      config.setup({ signs = { culhl = false } })
+      with_buf({ 'a' }, function(bufnr)
+        signs.place(bufnr, { hunk('add', 1, 1) })
+        eq(rows(bufnr)[0].cursorline_hl_group, nil)
+      end)
+    end),
+  },
+  {
+    name = 'culhl without the sign text places nothing',
+    fn = guarded(function()
+      -- Neovim applies `cursorline_hl_group` to the sign *cell* on the cursor
+      -- line, so with no text there is nothing to highlight: the early return
+      -- in `place` deliberately does not test `culhl` (gitsigns' guard does not
+      -- either).
+      config.setup({ signcolumn = false, signs = { culhl = true } })
+      with_buf({ 'a', 'b' }, function(bufnr)
+        eq(signs.place(bufnr, { hunk('add', 1, 2) }), 0)
+        eq(signs.sign_count(bufnr), 0)
       end)
     end),
   },

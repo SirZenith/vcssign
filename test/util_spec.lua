@@ -1,9 +1,10 @@
 --- The listener lists: `util.emit` walks a copy of the list, so a listener is
 --- free to unsubscribe itself (or add another one) while it is being called.
 ---
---- See impl/archive/perf/ P2-5: the copy used to be a `vim.deepcopy`,
---- which bought nothing — a fresh table of the same functions is what the walk
---- needs, and functions are copied by reference anyway.
+--- See loop/archive/perf/2026-10-19T11-33-42-m7-performance-review.md P2-5: the
+--- copy used to be a `vim.deepcopy`, which bought nothing — a fresh table of the
+--- same functions is what the walk needs, and functions are copied by reference
+--- anyway.
 local util = require('vcssign.util')
 
 --- Run a case, then restore the module state it may have changed.

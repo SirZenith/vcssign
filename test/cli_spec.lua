@@ -4,8 +4,8 @@
 --- answered, so the cases below are mostly about *targeting*: the current
 --- buffer's file, the path argument, and what the user is told when none of
 --- them apply.
---- See impl/archive/actions/ §3, §6 and
---- impl/knowledge/signs/ §6.
+--- See loop/archive/commands/2026-10-16T17-33-54-commands-and-actions.md §3, §6 and
+--- loop/archive/signs/2026-10-16T23-24-18-line-signs-in-signcolumn.md §6.
 local attach = require('vcssign.attach')
 local autocmds = require('vcssign.autocmds')
 local cli = require('vcssign.cli')
@@ -365,10 +365,10 @@ return {
     end),
   },
   {
-    name = 'plugin/vcssign.vim registers the command and it runs',
+    name = 'plugin/vcssign.lua registers the command and it runs',
     fn = guarded(function()
       reset()
-      vim.cmd('source ' .. vim.fn.fnameescape(helpers.plugin_root .. '/plugin/vcssign.vim'))
+      vim.cmd('source ' .. vim.fn.fnameescape(helpers.plugin_root .. '/plugin/vcssign.lua'))
       eq(vim.fn.exists(':Vcssign'), 2, 'defined as a user command')
 
       local dir = repo_dir('cli-shim')

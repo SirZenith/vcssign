@@ -206,7 +206,7 @@ return {
             open_attached(dir .. '/' .. name)
           end
           settle()
-        end)
+        end, dir)
         local budget = BUDGET[kind].attach
         ok(
           #calls <= budget,
@@ -244,7 +244,7 @@ return {
         local calls = helpers.spawns(function()
           open_attached(dir .. '/' .. files[1])
           settle()
-        end)
+        end, dir)
         local forbidden = kind == 'git' and 'show' or 'cat'
         eq(#helpers.running(calls, forbidden), 0, kind .. ': a clean file needs no ' .. forbidden)
         ok(
@@ -266,7 +266,7 @@ return {
         local edit = helpers.spawns(function()
           api.nvim_buf_set_lines(bufnr, 0, 1, false, { 'edited in the buffer' })
           settle()
-        end)
+        end, dir)
         eq(#edit, 0, kind .. ': a buffer edit spawns nothing (the baseline cannot have moved)')
 
         -- `FocusGained` is the sweep a user triggers just by coming back to the
@@ -276,7 +276,7 @@ return {
         local calls = helpers.spawns(function()
           vim.api.nvim_exec_autocmds('FocusGained', {})
           settle()
-        end)
+        end, dir)
         stop()
         local repos = #manager.all()
         ok(
@@ -318,7 +318,7 @@ return {
             return (seen[first] or 0) >= 1
           end, kind .. ': the buffer to be re-rendered')
           settle()
-        end)
+        end, dir)
         stop()
         ok(
           #calls <= BUDGET[kind].external,
@@ -349,7 +349,7 @@ return {
           actions.stage_hunk(nil, { bufnr = bufnr })
         end, 'staged ' .. files[1])
         settle()
-      end)
+      end, dir)
       ok(
         #staged <= BUDGET.git.stage,
         string.format('git: stage_hunk spawned %d processes, budget %d', #staged, BUDGET.git.stage)
@@ -381,7 +381,7 @@ return {
         local committed = helpers.spawns(function()
           with_input('feat: budget', function()
             actions.commit(path)
-          end)
+          end, dir)
           settle()
         end)
         if kind == 'git' then
@@ -437,12 +437,12 @@ return {
           end, kind .. ': the annotation')
         end
 
-        local first = helpers.spawns(look)
+        local first = helpers.spawns(look, dir)
         ok(
           #first <= BUDGET[kind].blame,
           string.format('%s: %d processes for one line of blame', kind, #first)
         )
-        local again = helpers.spawns(look)
+        local again = helpers.spawns(look, dir)
         eq(#again, 0, kind .. ': the same line again costs nothing')
         reset_repositories()
       end

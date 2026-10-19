@@ -1,6 +1,6 @@
 --- M1 acceptance: git adapter.
---- Covers impl/knowledge/vcs/ §7.3 (linked worktree root detection) and
---- the M6 sign primitives of impl/knowledge/signs/ §3.1 /
+--- Covers loop/archive/vcs/2026-10-16T17-33-54-vcs-adapter-git-svn.md §7.3 (linked worktree root detection) and
+--- the M6 sign primitives of loop/archive/signs/2026-10-16T23-24-18-line-signs-in-signcolumn.md §3.1 /
 --- §5.2 (baseline text, trackedness, blame, hunk patches, revert).
 local helpers = require('helpers')
 

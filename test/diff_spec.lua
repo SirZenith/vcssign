@@ -1,5 +1,5 @@
 --- M6 Step 3: the built-in diff driver and its newline convention.
---- See impl/knowledge/signs/ §3 (D39/D43).
+--- See loop/archive/signs/2026-10-16T23-24-18-line-signs-in-signcolumn.md §3 (D39/D43).
 local diff = require('vcssign.diff')
 
 local function guarded(fn)

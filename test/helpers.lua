@@ -2,7 +2,7 @@
 ---
 --- Specs are plain Lua modules returning a list of `{ name, fn }` cases; a
 --- failing assertion raises, and the runner (test/run.lua) turns that into a
---- `not ok` line.  See impl/knowledge/testing/ §3.
+--- `not ok` line.  See loop/archive/testing/2026-10-16T17-33-54-testing-infra-and-toolchain.md §3.
 local M = {}
 
 --- `vim.fs.normalize` is lexical and does not absolutise, so make sure the
@@ -79,19 +79,33 @@ end
 --- be blind to exactly the command a regression adds.
 ---@param fn function
 ---@return string[]
-function M.spawns(fn)
+---@param fn function
+---@param only_cwd? string  count only spawns made inside this directory tree
+---@return string[]
+function M.spawns(fn, only_cwd)
   local exec = require('vcssign.exec')
   local real_run, real_stream = exec.run, exec.stream
   local calls = {}
-  local function record(cmd)
+  -- A budget is about ONE repository. Every other repository in the same
+  -- Neovim (`attach_spec` leaves a handful behind) keeps probing while this
+  -- case runs, so an unscoped count measures the suite rather than the change:
+  -- `-p` ordering used to turn a 3-process attach into 4 or 5.
+  local scope = only_cwd and vim.fs.normalize(vim.fn.fnamemodify(only_cwd, ':p')) or nil
+  local function record(cmd, opts)
+    if scope then
+      local cwd = opts and opts.cwd and vim.fs.normalize(vim.fn.fnamemodify(opts.cwd, ':p'))
+      if not cwd or (cwd ~= scope and cwd:sub(1, #scope + 1) ~= scope .. '/') then
+        return
+      end
+    end
     calls[#calls + 1] = table.concat(cmd, ' ')
   end
   exec.run = function(cmd, opts, cb)
-    record(cmd)
+    record(cmd, opts)
     return real_run(cmd, opts, cb)
   end
   exec.stream = function(cmd, opts, on_stdout, on_exit)
-    record(cmd)
+    record(cmd, opts)
     return real_stream(cmd, opts, on_stdout, on_exit)
   end
   local ok, err = pcall(fn)

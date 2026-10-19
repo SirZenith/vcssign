@@ -4,7 +4,7 @@
 --- A repository lives as long as at least one reference holds it, so several
 --- buffers inside the same repository share one runtime and one watcher, and
 --- only the last release disposes it.
---- See impl/knowledge/runtime/ §4.
+--- See loop/archive/repo/2026-10-16T14-39-35-repo-runtime-and-refresh-pipeline.md §4.
 local log = require('vcssign.log')
 local util = require('vcssign.util')
 local Repo = require('vcssign.repo')

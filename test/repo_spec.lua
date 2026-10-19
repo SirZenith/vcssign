@@ -341,7 +341,8 @@ return {
     fn = guarded(function()
       -- Deliberately does *not* stub `vim.notify`: this is the case whose one
       -- expected warning is the suite's single stderr line (see
-      -- impl/knowledge/testing/ §6).  The probe now runs `git rev-parse`,
+      -- loop/archive/testing/2026-10-16T17-33-54-testing-infra-and-toolchain.md
+      -- §6).  The probe now runs `git rev-parse`,
       -- so that line names `rev-parse --show-toplevel`.
       local dir = helpers.git_repo('runtime-retry-real')
       with_config({ retry_delay_ms = 100, retry_max_ms = 200 }, function()

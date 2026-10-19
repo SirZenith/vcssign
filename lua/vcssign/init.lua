@@ -11,7 +11,8 @@
 ---     copy of it.
 --- `M.cli` — the `:Vcssign` implementation the plugin file loads — is exposed
 --- alongside them for the same reason.
---- See impl/knowledge/signs/ §6 and impl/archive/actions/ §5.
+--- See loop/archive/signs/2026-10-16T23-24-18-line-signs-in-signcolumn.md §6 and
+--- loop/archive/commands/2026-10-16T17-33-54-commands-and-actions.md §5.
 local api = vim.api
 local attach = require('vcssign.attach')
 local autocmds = require('vcssign.autocmds')

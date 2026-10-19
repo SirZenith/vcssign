@@ -1,5 +1,5 @@
 --- M6 Step 3: the hunk model and the patch builder.
---- See impl/knowledge/signs/ §3 (D40/D41).
+--- See loop/archive/signs/2026-10-16T23-24-18-line-signs-in-signcolumn.md §3 (D40/D41).
 local hunk = require('vcssign.hunk')
 local helpers = require('helpers')
 

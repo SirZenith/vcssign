@@ -4,7 +4,7 @@
 --- "which repository does the user mean" — the same question the public API in
 --- `vcssign/init.lua` asks, which is why both go through
 --- `repo_manager.ensure()`.
---- See impl/archive/actions/ §3.
+--- See loop/archive/commands/2026-10-16T17-33-54-commands-and-actions.md §3.
 local actions = require('vcssign.actions')
 local attach = require('vcssign.attach')
 local log = require('vcssign.log')
