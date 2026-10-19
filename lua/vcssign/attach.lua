@@ -155,14 +155,10 @@ end
 ---@param st vcssign.AttachState
 ---@return string?
 local function stamp_of(st)
-  local fn = st.system and st.system.baseline_stamp
-  if not fn then
-    return nil
-  end
-  -- Adapters are the extension point: one that raises must not wedge every
-  -- refresh, so a failure degrades to "no fingerprint" (re-read, never skip).
-  local ok, stamp = pcall(fn, st.root)
-  return (ok and type(stamp) == 'string') and stamp or nil
+  -- The pcall lives in `base.stamp` so the blame cache asks the same question
+  -- the same way: an adapter that raises degrades to "no fingerprint" (re-read,
+  -- never skip) instead of wedging every refresh.
+  return base.stamp(st.system, st.root)
 end
 
 --- Whether the baseline `st` holds may be out of date now.

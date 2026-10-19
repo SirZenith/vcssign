@@ -364,11 +364,14 @@ function M.stage_hunk(target, opts)
         return fail(aerr)
       end
       info('staged %s (line %d)', t.rel_path, signs.sign_line(ctx.hunk))
-      -- The repository probe behind `refresh_now` is debounced, and the *next*
-      -- hunk action reads this buffer's layers: refresh them now, not 200ms
-      -- from now, so `hs` followed by `hu` acts on what is on screen.
+      -- Refresh this buffer now, not 200ms from now: the *next* hunk action reads
+      -- the layers on screen, so `hs` followed by `hu` must see the new split.
+      -- The repository's own probe is left to the debounce — the index write
+      -- already produced a filesystem event, and staging changed that store's
+      -- fingerprint, so the status view (and the blob reader, 08 P0-1/P0-2) are
+      -- rebuilt on their own.  Asking for both paths here meant two refreshes
+      -- for one action (08 §7-5, §2.9).
       attach.refresh(ctx.bufnr)
-      t.repo:refresh_now()
     end)
   end)
 end
@@ -400,8 +403,8 @@ function M.unstage_hunk(target, opts)
         return fail(aerr)
       end
       info('unstaged %s (line %d)', t.rel_path, signs.sign_line(ctx.hunk))
+      -- Same as `stage_hunk`: this buffer now, the repository's probe debounced.
       attach.refresh(ctx.bufnr)
-      t.repo:refresh_now()
     end)
   end)
 end
@@ -556,23 +559,33 @@ end
 
 --- Whether the index holds a change a commit would record.
 ---
---- `show` is the whole vocabulary now (D42): a staged change is exactly "the
---- index blob differs from HEAD's".  A missing index blob means the file is
---- untracked (nothing to commit), and an unborn HEAD means everything the index
---- holds is new (all of it worth committing).
+--- The repository view already answers this for every path (08 P0-1): a staged
+--- change is `staged` on its entry, and a path the view does not mention is in
+--- sync with `HEAD`.  So the usual cost is zero — but the view is only believed
+--- when it was taken from the store as it is now; if the store moved after the
+--- query (`trusted` false) it may be describing an index somebody else has
+--- already staged into, and then the two reads below answer directly.
+--- (svn has no index: the view reports `staged = false` for everything, which is
+--- the same answer the reads used to give.)
 ---@param t vcssign.Target
 ---@param cb fun(staged: boolean)
 local function has_staged_change(t, cb)
   local root, rel = t.repo.root, t.rel_path
-  t.repo.system.show(root, 'index', rel, function(index_err, index_text)
-    if index_err then
-      return cb(false)
+  t.repo:status(function(serr, entries, trusted)
+    if not serr and trusted and entries then
+      local entry = entries[base.normalize(vim.fs.joinpath(root, rel))]
+      return cb(entry ~= nil and entry.staged == true)
     end
-    t.repo.system.show(root, 'HEAD', rel, function(head_err, head_text)
-      if head_err then
-        return cb(true)
+    t.repo.system.show(root, 'index', rel, function(index_err, index_text)
+      if index_err then
+        return cb(false)
       end
-      cb(index_text ~= head_text)
+      t.repo.system.show(root, 'HEAD', rel, function(head_err, head_text)
+        if head_err then
+          return cb(true)
+        end
+        cb(index_text ~= head_text)
+      end)
     end)
   end)
 end

@@ -10,16 +10,19 @@
 --- per-window question (`is that window focused?`) is answered on every render,
 --- so a cursor move in one window does not disturb another.
 ---
---- Blame is a whole-file question whose answer is reused while the buffer's text
---- does not change: every line of the file gets one attribution, and moving the
---- cursor must not cost a process.  The cache is therefore keyed by the
---- buffer's `changedtick` (plus the options that shape the answer), and svn --
---- which cannot blame a line range (§6.3) -- is served by exactly the same cache.
+--- A blame is asked for **one line at a time** (`-L l,l`, 08 P1-3) and cached per
+--- line number: moving the cursor must not cost a process, and neither must
+--- coming back to a line that was already answered.  The cache is keyed by the
+--- buffer's `changedtick`, the options that shape the answer and the baseline
+--- fingerprint (so a commit retires it), and svn -- which cannot blame a line
+--- range (§6.3) -- is served by exactly the same cache: its adapter answers the
+--- whole file, and the merge in `store()` keeps every line of it.
 ---
 --- Neither the decoration nor the float is worth blocking on: both render from
 --- whatever the cache holds and quietly do nothing when there is no answer, so a
 --- failure here can never disturb the signs.
 local api = vim.api
+local base = require('vcssign.vcs.base')
 local config = require('vcssign.config')
 local debounce = require('vcssign.debounce')
 local formatter = require('vcssign.blame_formatter')
@@ -67,9 +70,10 @@ M._bufs = {}
 
 --- The last successful blame of a buffer, valid while the cache key matches.
 ---@class vcssign.blame.Entry
----@field key string
----@field result vcssign.BlameResult
----@field has_summary boolean  whether any line carries a commit subject
+---@field key string          buffer text (changedtick) plus the shaping options
+---@field stamp string?       the baseline fingerprint the lines were read under
+---@field result vcssign.BlameResult  a sparse map: lines answered so far
+---@field has_summary boolean  whether any cached line carries a commit subject
 
 ---@type table<integer, vcssign.blame.Entry>
 M._cache = {}
@@ -142,44 +146,84 @@ function M.line_text(bl, opts)
   return text
 end
 
---- Whether any line of `result` carries a commit subject.
----@param result vcssign.BlameResult
----@return boolean
-local function has_summary(result)
-  for _, bl in pairs(result.lines or {}) do
-    if bl.summary and bl.summary ~= '' then
-      return true
-    end
-  end
-  return false
-end
-
 --- The options that shape a blame answer.  They are part of the cache key: the
 --- same file blamed with and without `-w` is two different answers.
+---
+--- The line *window* is deliberately **not** in the key: `from`/`to` say which
+--- slice of the answer a call wants, not what the answer is.  Answers are cached
+--- per line number instead (see `blame_for`).
 ---@param opts vcssign.BlameOpts
 ---@return string
 local function options_key(opts)
   local extra = opts.extra_opts and table.concat(opts.extra_opts, ' ') or ''
-  return string.format('%s:%s:%s', tostring(opts.ignore_whitespace), extra, tostring(opts.from))
+  return string.format('%s:%s', tostring(opts.ignore_whitespace), extra)
 end
 
---- The blame of a buffer, from the cache when neither its text nor the options
---- have changed.
+--- Fold a fetched slice into the buffer's cache entry.
+---
+--- A new entry is made when the key or the baseline moved; otherwise the slice
+--- is merged in, which is what makes the second look at a nearby line free (and
+--- what makes svn's whole-file answer, which arrives on the first look, cover
+--- every line of the buffer).
+---@param bufnr integer
+---@param key string
+---@param stamp string?
+---@param result vcssign.BlameResult
+---@return vcssign.blame.Entry
+local function store(bufnr, key, stamp, result)
+  local entry = M._cache[bufnr]
+  if not entry or entry.key ~= key or entry.stamp ~= stamp then
+    entry = {
+      key = key,
+      stamp = stamp,
+      result = { lines = {}, max_lineno = 0 },
+      has_summary = false,
+    }
+  end
+  for line, bl in pairs(result.lines or {}) do
+    entry.result.lines[line] = bl
+    if not entry.has_summary and bl.summary and bl.summary ~= '' then
+      entry.has_summary = true
+    end
+  end
+  entry.result.max_lineno = math.max(entry.result.max_lineno, result.max_lineno or 0)
+  M._cache[bufnr] = entry
+  return entry
+end
+
+--- The blame of one line of a buffer.
+---
+--- A blame costs a process, so the three decisions here are all about not paying
+--- for one:
+---
+--- * **ask for the line window** (`-L l,l`), not the whole file — git then
+---   answers with one line's attribution and parses one line (svn has no line
+---   window, so its adapter ignores the window and answers the whole file; every
+---   later line of that buffer is then free, 08 §3.5);
+--- * **cache per line number**, keyed by the buffer's `changedtick`, the options
+---   that shape the answer and the baseline fingerprint — moving the cursor
+---   costs nothing, because the line it moves to is usually already known;
+--- * **compare the fingerprint** so "Not Committed Yet" stays honest: a commit,
+---   a `git add` or an `svn commit` changes what the answer is without touching
+---   the buffer's text.
 ---
 --- `cb` gets an error when the buffer cannot be blamed at all (no repository, or
 --- no `blame` capability); the adapter's own error passes through.  A failed
 --- fetch is not cached, so the next cursor move retries it.
 ---@param bufnr integer
+---@param lnum integer
 ---@param cb fun(err: string?, entry: vcssign.blame.Entry?, st: vcssign.AttachState?)
-local function blame_for(bufnr, cb)
+local function blame_for(bufnr, lnum, cb)
   if not api.nvim_buf_is_valid(bufnr) or not api.nvim_buf_is_loaded(bufnr) then
     return cb(string.format('buffer %d is not loaded', bufnr))
   end
   local opts = config.get().current_line_blame_opts
   local key = string.format('%d:%s', vim.b[bufnr].changedtick, options_key(opts))
+  local state = attached().state(bufnr)
+  local stamp = base.stamp(state and state.system, state and state.root)
   local cached = M._cache[bufnr]
-  if cached and cached.key == key then
-    return cb(nil, cached)
+  if cached and cached.key == key and cached.stamp == stamp and cached.result.lines[lnum] then
+    return cb(nil, cached, state)
   end
   attached().ready(bufnr, function(err, st)
     if not st then
@@ -188,14 +232,26 @@ local function blame_for(bufnr, cb)
     if not st.system.capabilities.blame then
       return cb(string.format('%s: blame is not supported', st.system.name))
     end
-    st.system.blame(st.root, st.rel, opts, function(berr, result)
-      if berr then
-        return cb(berr)
+    --- Ask once with the line window, and once without it when the window is
+    --- refused: a line that only exists in the buffer (an unsaved insertion) is
+    --- past the end of the file git can see, and the whole-file answer still
+    --- covers the lines that do exist.
+    local function ask(window, retried)
+      local ask_opts = opts
+      if window then
+        ask_opts = vim.tbl_extend('force', opts, { from = lnum, to = lnum })
       end
-      local entry = { key = key, result = result, has_summary = has_summary(result) }
-      M._cache[bufnr] = entry
-      cb(nil, entry, st)
-    end)
+      st.system.blame(st.root, st.rel, ask_opts, function(berr, result)
+        if berr and window and not retried then
+          return ask(false, true)
+        end
+        if berr then
+          return cb(berr)
+        end
+        cb(nil, store(bufnr, key, stamp, result), st)
+      end)
+    end
+    ask(true, false)
   end)
 end
 
@@ -265,7 +321,7 @@ function M.render(bufnr)
   if not still_wanted(bufnr, win, lnum) then
     return
   end
-  blame_for(bufnr, function(err, entry)
+  blame_for(bufnr, lnum, function(err, entry)
     -- Blame is a decoration: a buffer that cannot be blamed (or that the
     -- cursor, the switch or the focus has left) is not worth a message.
     if err or not entry or not still_wanted(bufnr, win, lnum) then
@@ -434,7 +490,7 @@ function M.line(bufnr, lnum, cb)
     preview.close()
     return cb(nil, false)
   end
-  blame_for(bufnr, function(err, entry, st)
+  blame_for(bufnr, lnum, function(err, entry, st)
     if err then
       return cb(err)
     end
