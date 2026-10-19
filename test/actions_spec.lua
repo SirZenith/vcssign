@@ -99,6 +99,12 @@ end
 -- is still in place.
 local collect = helpers.capture_notify
 
+-- The same, waiting for the message the case is about: a repository an earlier
+-- case left behind can emit a notification of its own, and waiting on "any
+-- notification" would make every assertion below depend on which chain answers
+-- first (see `helpers.capture_notify_one`).
+local answered = helpers.capture_notify_one
+
 --- Stage `rel` and wait for the plugin to say so.
 ---
 --- The answer is only emitted once the VCS command has succeeded, so it doubles
@@ -106,13 +112,11 @@ local collect = helpers.capture_notify
 --- index really changed.
 ---@param dir string
 ---@param rel string
----@return vcssign.CapturedNotify[]
+---@return vcssign.CapturedNotify
 local function stage_quietly(dir, rel)
-  return collect(function()
+  return answered(function()
     actions.stage(dir .. '/' .. rel)
-  end, function(s)
-    return #s > 0
-  end)
+  end, 'staged ' .. rel)
 end
 
 --- How many diff views exist: the claim "pressing `d` twice reuses the buffer"
@@ -261,15 +265,6 @@ local function two_hunk_repo(name)
   return dir, bufnr
 end
 
---- Wait for the plugin to answer at all, then hand the notifications back.
----@param fn function
----@return vcssign.CapturedNotify[]
-local function collect_until_answered(fn)
-  return collect(fn, function(s)
-    return #s > 0
-  end)
-end
-
 return {
   -- ▏ the hunk actions ──────────────────────────────────────────────────────
   {
@@ -279,11 +274,11 @@ return {
       local dir, bufnr = two_hunk_repo('actions-stage-hunk')
       put_cursor(bufnr, 2)
 
-      local seen = collect_until_answered(function()
+      local notification = answered(function()
         actions.stage_hunk(nil, { bufnr = bufnr })
-      end)
-      eq(seen[1].message, 'vcssign: staged base.txt (line 2)')
-      eq(seen[1].level, vim.log.levels.INFO)
+      end, 'staged base.txt (line 2)')
+      eq(notification.message, 'vcssign: staged base.txt (line 2)')
+      eq(notification.level, vim.log.levels.INFO)
       -- The index holds the first edit and only the first ...
       local staged = helpers.sh({ 'git', '-C', dir, 'show', ':base.txt' })
       ok(staged:find('LINE TWO', 1, true) ~= nil, 'the staged hunk is in the index')
@@ -303,10 +298,10 @@ return {
       reset()
       local dir, bufnr = two_hunk_repo('actions-undo-stage-hunk')
       put_cursor(bufnr, 2)
-      local staged = collect_until_answered(function()
+      local staged = answered(function()
         actions.stage_hunk(nil, { bufnr = bufnr })
-      end)
-      eq(staged[1].message, 'vcssign: staged base.txt (line 2)')
+      end, 'staged base.txt (line 2)')
+      eq(staged.message, 'vcssign: staged base.txt (line 2)')
       -- The layer the action reads is the *plugin's* staged layer, not git's:
       -- the index changing is not the same thing as the signs having caught up.
       helpers.wait_for(function()
@@ -314,10 +309,10 @@ return {
         return st ~= nil and #st.hunks_staged == 1
       end, 'the staged layer to appear')
 
-      local undone = collect_until_answered(function()
+      local undone = answered(function()
         actions.undo_stage_hunk(nil, { bufnr = bufnr })
-      end)
-      eq(undone[1].message, 'vcssign: unstaged base.txt (line 2)')
+      end, 'unstaged base.txt (line 2)')
+      eq(undone.message, 'vcssign: unstaged base.txt (line 2)')
       -- The index is bit-for-bit what HEAD holds again, and both edits are back
       -- among the worktree's own changes.
       eq(git_diff(dir, { '--cached' }), '', 'the index matches HEAD again')
@@ -331,10 +326,10 @@ return {
       local dir, bufnr = two_hunk_repo('actions-reset-hunk')
       put_cursor(bufnr, 2)
 
-      local seen = collect_until_answered(function()
+      local notification = answered(function()
         actions.reset_hunk(nil, { bufnr = bufnr })
-      end)
-      eq(seen[1].message, 'vcssign: discarded base.txt (line 2)')
+      end, 'discarded base.txt (line 2)')
+      eq(notification.message, 'vcssign: discarded base.txt (line 2)')
 
       local text = table.concat(vim.fn.readfile(dir .. '/base.txt'), '\n')
       ok(text:find('line 2', 1, true) ~= nil, 'the discarded hunk is back to its baseline')
@@ -357,10 +352,10 @@ return {
       vim.api.nvim_buf_set_lines(bufnr, 1, 2, false, { 'line 2 (edited)' })
       eq(vim.bo[bufnr].modified, true, 'the buffer is modified')
 
-      local seen = collect_until_answered(function()
+      local notification = answered(function()
         actions.reset_hunk(nil, { bufnr = bufnr, lnum = 2 })
-      end)
-      eq(seen[1].message, 'base.txt has unsaved changes: save or undo them first')
+      end, 'has unsaved changes')
+      eq(notification.message, 'base.txt has unsaved changes: save or undo them first')
       eq(vim.fn.readfile(dir .. '/base.txt')[2], 'LINE TWO', 'the file is untouched')
     end),
   },
@@ -371,11 +366,11 @@ return {
       local dir, bufnr = two_hunk_repo('actions-off-hunk')
       put_cursor(bufnr, 5)
 
-      local seen = collect_until_answered(function()
+      local notification = answered(function()
         actions.stage_hunk(nil, { bufnr = bufnr })
-      end)
-      eq(seen[1].level, vim.log.levels.ERROR)
-      eq(seen[1].message, 'vcssign: no change on line 5 of base.txt')
+      end, 'no change on line 5')
+      eq(notification.level, vim.log.levels.ERROR)
+      eq(notification.message, 'vcssign: no change on line 5 of base.txt')
       eq(git_diff(dir, { '--cached' }), '', 'nothing was staged')
     end),
   },
@@ -385,13 +380,13 @@ return {
       reset()
       local _, dir = modified_repo('actions-not-open')
 
-      local seen = collect_until_answered(function()
+      local notification = answered(function()
         actions.stage_hunk(dir .. '/base.txt')
-      end)
-      eq(seen[1].level, vim.log.levels.ERROR)
+      end, 'is not open in a buffer')
+      eq(notification.level, vim.log.levels.ERROR)
       ok(
-        seen[1].message:find('is not open in a buffer', 1, true) ~= nil,
-        'it says the buffer is missing: ' .. seen[1].message
+        notification.message:find('is not open in a buffer', 1, true) ~= nil,
+        'it says the buffer is missing: ' .. notification.message
       )
       eq(git_diff(dir, { '--cached' }), '', 'nothing was staged')
     end),
@@ -402,10 +397,10 @@ return {
       reset()
       local dir, bufnr = two_hunk_repo('actions-keymap-hs')
       put_cursor(bufnr, 2)
-      local seen = collect_until_answered(function()
+      local notification = answered(function()
         keymap.dispatch('stage_hunk', { bufnr = bufnr })
-      end)
-      eq(seen[1].message, 'vcssign: staged base.txt (line 2)')
+      end, 'staged base.txt (line 2)')
+      eq(notification.message, 'vcssign: staged base.txt (line 2)')
       helpers.wait_for(function()
         return git_diff(dir, { '--cached' }) ~= ''
       end, 'the index to change')
@@ -420,10 +415,10 @@ return {
       reset()
       local dir, bufnr = two_hunk_repo('actions-stage-buffer')
 
-      local seen = collect_until_answered(function()
+      local notification = answered(function()
         actions.stage_buffer(nil, { bufnr = bufnr })
-      end)
-      eq(seen[1].message, 'vcssign: staged base.txt')
+      end, 'staged base.txt')
+      eq(notification.message, 'vcssign: staged base.txt')
       eq(git_diff(dir, { '--cached' }), 'base.txt')
       eq(git_diff(dir), '', 'the worktree matches the index again')
     end),
@@ -434,10 +429,10 @@ return {
       reset()
       local dir, bufnr = two_hunk_repo('actions-reset-buffer')
 
-      local seen = collect_until_answered(function()
+      local notification = answered(function()
         actions.reset_buffer(nil, { bufnr = bufnr })
-      end)
-      eq(seen[1].message, 'vcssign: discarded changes in base.txt')
+      end, 'discarded changes in base.txt')
+      eq(notification.message, 'vcssign: discarded changes in base.txt')
       eq(git_diff(dir), '', 'no worktree change is left')
       eq(vim.fn.readfile(dir .. '/base.txt')[2], 'line 2')
       helpers.wait_for(function()
@@ -455,11 +450,11 @@ return {
       local bufnr = open_attached(path)
       put_cursor(bufnr, 1)
 
-      local seen = collect_until_answered(function()
+      local notification = answered(function()
         actions.stage_hunk(nil, { bufnr = bufnr })
-      end)
-      eq(seen[1].message, 'svn: no staging area')
-      eq(seen[1].level, vim.log.levels.INFO, 'a missing capability is not an error')
+      end, 'no staging area')
+      eq(notification.message, 'svn: no staging area')
+      eq(notification.level, vim.log.levels.INFO, 'a missing capability is not an error')
       eq(svn_status(path):sub(1, 1), 'M', 'svn still reports a local modification')
     end),
   },
@@ -474,10 +469,10 @@ return {
       eq(#attach.hunks(bufnr), 1, 'one hunk, replacing line 1 with two lines')
       put_cursor(bufnr, 1)
 
-      local seen = collect_until_answered(function()
+      local notification = answered(function()
         actions.reset_hunk(nil, { bufnr = bufnr })
-      end)
-      eq(seen[1].message, 'vcssign: discarded base.txt (line 1)')
+      end, 'discarded base.txt (line 1)')
+      eq(notification.message, 'vcssign: discarded base.txt (line 1)')
       eq(table.concat(vim.fn.readfile(path), '\n'), 'base', 'the file is back at BASE')
       eq(svn_status(path), '', 'and svn calls it clean')
     end),
@@ -488,9 +483,9 @@ return {
       reset()
       local _, dir = modified_repo('actions-stage')
 
-      local seen = stage_quietly(dir, 'base.txt')
-      eq(seen[1].message, 'vcssign: staged base.txt')
-      eq(seen[1].level, vim.log.levels.INFO)
+      local notification = stage_quietly(dir, 'base.txt')
+      eq(notification.message, 'vcssign: staged base.txt')
+      eq(notification.level, vim.log.levels.INFO)
       -- The VCS agrees, and the worktree side is gone (staged *and* modified
       -- would mean the file was touched again after staging).
       eq(git_diff(dir, { '--cached' }), 'base.txt')
@@ -504,12 +499,10 @@ return {
       local repo, dir = modified_repo('actions-unstage')
       stage_quietly(dir, 'base.txt')
 
-      local seen = collect(function()
+      local notification = answered(function()
         actions.unstage(file(repo, 'base.txt'))
-      end, function(s)
-        return #s > 0
-      end)
-      eq(seen[1].message, 'vcssign: unstaged base.txt')
+      end, 'unstaged base.txt')
+      eq(notification.message, 'vcssign: unstaged base.txt')
       eq(git_diff(dir, { '--cached' }), '')
       eq(git_diff(dir), 'base.txt', 'the change is back in the worktree')
     end),
@@ -526,12 +519,16 @@ return {
       local seen = collect(function()
         actions.stage(file(repo, 'base.txt'))
         actions.unstage(file(repo, 'base.txt'))
+      end, function(s)
+        return #helpers.select_notifications(s, 'no staging area') >= 2
       end)
       -- System-scoped phrasing, no `vcssign:` prefix: the same sentence the
       -- capability gate uses.
-      eq(seen[1].message, 'svn: no staging area')
-      eq(seen[2].message, 'svn: no staging area')
-      eq(seen[1].level, vim.log.levels.INFO, 'a missing capability is not an error')
+      local refusals = helpers.select_notifications(seen, 'no staging area')
+      eq(#refusals, 2, 'both commands answered')
+      eq(refusals[1].message, 'svn: no staging area')
+      eq(refusals[2].message, 'svn: no staging area')
+      eq(refusals[1].level, vim.log.levels.INFO, 'a missing capability is not an error')
       -- And nothing ran: the file is still just modified.
       eq(svn_status(file(repo, 'base.txt')):sub(1, 1), 'M')
     end),
@@ -544,14 +541,12 @@ return {
       -- A held index lock is the one failure that is easy to produce on every
       -- platform and still says something diagnostic.
       helpers.write(dir .. '/.git/index.lock', '')
-      local seen = collect(function()
+      local notification = answered(function()
         actions.stage(file(repo, 'base.txt'))
-      end, function(s)
-        return #s > 0
-      end)
-      eq(seen[1].level, vim.log.levels.ERROR)
-      ok(seen[1].message:find('vcssign: ', 1, true) == 1, seen[1].message)
-      ok(seen[1].message:lower():find('index.lock', 1, true), seen[1].message)
+      end, 'index.lock')
+      eq(notification.level, vim.log.levels.ERROR)
+      ok(notification.message:find('vcssign: ', 1, true) == 1, notification.message)
+      ok(notification.message:lower():find('index.lock', 1, true), notification.message)
     end),
   },
   {
@@ -561,19 +556,17 @@ return {
       local repo, dir = modified_repo('actions-commit')
       stage_quietly(dir, 'base.txt')
 
-      local seen
+      local notification
       with_input('feat: change base', function()
-        seen = collect(function()
+        notification = answered(function()
           actions.commit(file(repo, 'base.txt'))
-        end, function(s)
-          return #s > 0
-        end)
+        end, 'committed base.txt')
       end)
       eq(
         helpers.sh({ 'git', '-C', dir, 'log', '-1', '--format=%s' }):gsub('%s+$', ''),
         'feat: change base'
       )
-      ok(seen[1].message:find('committed base.txt', 1, true), seen[1].message)
+      ok(notification.message:find('committed base.txt', 1, true), notification.message)
       -- Nothing is left over: the index matches the new HEAD, and so does the
       -- worktree.
       eq(git_diff(dir, { '--cached' }), '', 'the index is clean again')
@@ -587,15 +580,13 @@ return {
       local repo = modified_repo('actions-commit-unstaged')
       local before = head(repo)
 
-      local seen
+      local notification
       with_input('nope', function()
-        seen = collect(function()
+        notification = answered(function()
           actions.commit(file(repo, 'base.txt'))
-        end, function(s)
-          return #s > 0
-        end)
+        end, 'not staged yet')
       end)
-      ok(seen[1].message:find('not staged yet', 1, true), seen[1].message)
+      ok(notification.message:find('not staged yet', 1, true), notification.message)
       eq(head(repo), before, 'nothing was committed')
     end),
   },
@@ -619,7 +610,11 @@ return {
           end, 'the commit prompt')
         end)
       end)
-      eq(#cancelled, 0, 'cancelling says nothing at all')
+      eq(
+        #cancelled,
+        0,
+        'cancelling says nothing at all: ' .. helpers.describe_notifications(cancelled)
+      )
 
       local empty
       with_input('   ', function(asked)
@@ -630,7 +625,9 @@ return {
           end, 'the commit prompt')
         end)
       end)
-      ok(empty[1].message:find('empty commit message', 1, true), empty[1].message)
+      local empty_answers = helpers.select_notifications(empty, 'empty commit message')
+      eq(#empty_answers, 1, 'the empty message is reported once')
+      ok(empty_answers[1].message:find('empty commit message', 1, true), empty_answers[1].message)
       eq(head(repo), before)
     end),
   },
@@ -643,13 +640,11 @@ return {
       local repo = attach_ready('spec:actions-svn-commit', dir)
       eq(svn_status(file(repo, 'base.txt')):sub(1, 1), 'M', 'the fixture starts modified')
 
-      local seen
+      local notification
       with_input('svn: edit base', function()
-        seen = collect(function()
+        notification = answered(function()
           actions.commit(file(repo, 'base.txt'))
-        end, function(s)
-          return #s > 0
-        end)
+        end, 'committed base.txt')
       end)
       -- Log the *URL*: `svn log` on a working copy stops at the BASE revision
       -- (still r1 here), so it would not show the commit that was just made.
@@ -657,8 +652,8 @@ return {
       ok(log:find('svn: edit base', 1, true), log)
       ok(log:find('r2', 1, true), 'a second revision exists:\n' .. log)
       -- The revision svn prints is part of the answer, not just "ok".
-      ok(seen[1].message:find('committed base.txt', 1, true), seen[1].message)
-      ok(seen[1].message:find('Committed revision', 1, true), seen[1].message)
+      ok(notification.message:find('committed base.txt', 1, true), notification.message)
+      ok(notification.message:find('Committed revision', 1, true), notification.message)
       eq(svn_status(file(repo, 'base.txt')), '', 'and the working copy is clean')
     end),
   },
@@ -749,12 +744,10 @@ return {
       -- A path target, so nothing but the adapter is involved: the file is
       -- clean, and a diff against the index prints nothing at all.
       local windows = #vim.api.nvim_tabpage_list_wins(0)
-      local seen = collect(function()
+      local notification = answered(function()
         actions.diff(repo.root .. '/sub/nested.txt')
-      end, function(s)
-        return #s > 0
-      end)
-      ok(seen[1].message:find('no changes to show', 1, true), seen[1].message)
+      end, 'no changes to show')
+      ok(notification.message:find('no changes to show', 1, true), notification.message)
       eq(#vim.api.nvim_tabpage_list_wins(0), windows, 'no window was opened')
     end),
   },
@@ -835,13 +828,11 @@ return {
       eq(svn_status(file(repo, 'loose.txt')):sub(1, 1), '?', 'the fixture is unversioned')
 
       local windows = #vim.api.nvim_tabpage_list_wins(0)
-      local seen = collect(function()
+      local notification = answered(function()
         actions.diff(file(repo, 'loose.txt'))
-      end, function(s)
-        return #s > 0
-      end)
-      eq(seen[1].level, vim.log.levels.ERROR)
-      ok(seen[1].message:find('vcssign: ', 1, true) == 1, seen[1].message)
+      end, 'vcssign: ')
+      eq(notification.level, vim.log.levels.ERROR)
+      ok(notification.message:find('vcssign: ', 1, true) == 1, notification.message)
       eq(#vim.api.nvim_tabpage_list_wins(0), windows, 'and no empty diff window was left behind')
     end),
   },
@@ -859,13 +850,13 @@ return {
       local repo = attach_ready('spec:actions-commit-dir', dir)
       eq(svn_status(file(repo, 'newdir')):sub(1, 1), 'A', 'svn schedules the new directory')
 
-      local seen
+      local notification
       with_input('should not happen', function()
-        seen = collect(function()
+        notification = answered(function()
           actions.commit(file(repo, 'newdir'))
-        end)
+        end, 'is not a file')
       end)
-      ok(seen[1].message:find('is not a file', 1, true), seen[1].message)
+      ok(notification.message:find('is not a file', 1, true), notification.message)
       -- Nothing was committed.
       ok(helpers.sh({ 'svn', 'log', '-l', '1', dir }):find('r1', 1, true), 'still at r1')
     end),
@@ -884,17 +875,14 @@ return {
           seen = collect(function()
             actions.commit(file(repo, 'base.txt'))
           end, function(s)
-            for _, notification in ipairs(s) do
-              if notification.message:find('committed', 1, true) then
-                return true
-              end
-            end
-            return false
+            return #helpers.select_notifications(s, 'committed') > 0
           end)
         end)
         -- The warning about the unimplemented mode, then the normal answer.
-        ok(seen[1].message:find('not implemented', 1, true), seen[1].message)
-        eq(seen[1].level, vim.log.levels.WARN)
+        local warned = helpers.select_notifications(seen, 'not implemented')
+        eq(#warned, 1, 'the unimplemented mode warns once')
+        ok(warned[1].message:find('not implemented', 1, true), warned[1].message)
+        eq(warned[1].level, vim.log.levels.WARN)
         eq(
           helpers.sh({ 'git', '-C', dir, 'log', '-1', '--format=%s' }):gsub('%s+$', ''),
           'fallback still works'
@@ -908,11 +896,11 @@ return {
       reset()
       local dir = vim.fn.tempname()
       vim.fn.mkdir(dir, 'p')
-      local seen = collect(function()
+      local notification = answered(function()
         actions.stage(dir .. '/whatever.txt')
-      end)
-      ok(seen[1].message:find('no repository', 1, true), seen[1].message)
-      eq(seen[1].level, vim.log.levels.ERROR, 'the user asked for something impossible')
+      end, 'no repository')
+      ok(notification.message:find('no repository', 1, true), notification.message)
+      eq(notification.level, vim.log.levels.ERROR, 'the user asked for something impossible')
       vim.fn.delete(dir, 'rf')
     end),
   },
@@ -938,10 +926,10 @@ return {
         return #attach.hunks(bufnr) == 1
       end, 'the deletion to be seen')
       put_cursor(bufnr, 1)
-      local seen = collect_until_answered(function()
+      local notification = answered(function()
         actions.reset_hunk(nil, { bufnr = bufnr })
-      end)
-      eq(seen[1].message, 'vcssign: discarded base.txt (line 1)')
+      end, 'discarded base.txt (line 1)')
+      eq(notification.message, 'vcssign: discarded base.txt (line 1)')
 
       -- `readfile(..., 'b')` is the point: the restored file must end without a
       -- newline again, exactly as the index has it.
@@ -969,10 +957,10 @@ return {
         return #attach.hunks(bufnr) == 1
       end, 'the added line to be seen')
       put_cursor(bufnr, 1)
-      local seen = collect_until_answered(function()
+      local notification = answered(function()
         actions.stage_hunk(nil, { bufnr = bufnr })
-      end)
-      eq(seen[1].message, 'vcssign: staged empty.txt (line 1)')
+      end, 'staged empty.txt (line 1)')
+      eq(notification.message, 'vcssign: staged empty.txt (line 1)')
       eq(helpers.sh({ 'git', 'show', ':empty.txt' }, dir):gsub('%s+$', ''), 'first')
     end),
   },
