@@ -79,6 +79,8 @@ M.new(system, root) → Repo
 Repo:refresh(cb?)      # 走防抖窗口；cb(err) 在本轮结束时调用一次
 Repo:refresh_now(cb?)  # 跳过防抖（动作后强制刷新、`verified` 之外的首次绑定）；并重置退避计数
 Repo:mark_dirty()      # 只置脏 + 排队（FS 事件/autocmd 用）
+Repo:status(cb)        # 仓库级状态视图（M7 步骤 4）：cb(err, entries, trusted)
+Repo:has_status()      # 适配器是否提供 status 钩子（否则调用方走逐文件提问）
 Repo:on_update(fn)     # 一次存活探测成功 → fn(repo, changed)；返回 unsubscribe（M7 步骤 2）
 Repo:on_error(fn)      # 一次存活探测失败（超时/权限/EBUSY…）→ fn(err, repo)
 Repo:on_delete(fn)     # 明确否定（marker 消失 / 适配器判定「不是仓库」）→ fn(repo)
@@ -99,6 +101,20 @@ Repo:start()           # 开始监听（manager 建仓时调用）
 >
 > ⚠ `refresh*` 的回调由 `pcall` 隔离（见 §3.3），
 > 因此**回调里不要写断言**：测试要记录结果、在用例体内断言（spec 里已按此写）。
+
+> ⚠ **M7 步骤 4（08 P0-1）— `Repo:status(cb)` 的三态与「证据」**：
+> 一次 `system.status` 全仓查询，`cb(err, entries, trusted)`。`entries[abs_path]` 是
+> `vcssign.FileStatus`；**路径缺席 = 被跟踪且与基线同步**（干净文件因此一个基线命令都不用发）。
+> 第三个参数 `trusted` 回答的不是「新鲜吗」，而是「**别的程序会不会已经改了它没告诉我**」：
+> `trusted = 查询前后 baseline_stamp 相同`。不可信时调用方**不能**把 `staged = false` 当结论
+> （照旧读一次 `show HEAD`，多 1 个进程但不会出错的标志）。
+> - **失效是事件驱动的、零 TTL**：工作区事件把已知 tracked 条目的 `worktree` 置真（一次保存
+>   因此 0 进程），其余一律退缓存；metadata 事件（`.git/index`、`.svn/wc.db`）退全缓存。
+> - **查询期间存储自己动了**（`baseline_stamp` 变了）就**不缓存、不重查**，只投递这一次答案：
+>   重查会被「查询本身扰动了存储」喂成一个循环。
+> - 并发调用方由 `_status_waiters` 合并：二十个 buffer 同时 attach 只花一次查询。
+> - `attach` 侧还有一条语义（在 `attach.lua`）：当视图说文件干净时，**基线取 buffer 自己的
+>   文本**而不是读磁盘——磁盘可能已被外部改写而事件还没到，读它会把别人的编辑变成幻影 hunk。
 
 ### 3.2 FS 监听（自动发现变更）
 
@@ -222,7 +238,7 @@ M.on_repo_attached(fn) / M.on_repo_detached(fn)
 - 仓库消失（§3.2）→ `repo:on_delete` → manager 移除 + `dispose()` + 广播 detached。
 - 所有清理路径都汇到 `Repo:dispose()`：停 fs_event 句柄、关去抖/退避 timer、清订阅与 waiters。
 
-## 5. 验收标准（M6 Step 2 版，见 `test/repo_spec.lua`，20 用例；M7 步骤 2 后 24）
+## 5. 验收标准（M6 Step 2 版，见 `test/repo_spec.lua`，20 用例；M7 步骤 2 后 24、步骤 4 后 30）
 | # | 场景 | 用例 |
 |---|------|------|
 | 5.1 | 元数据事件到达订阅者**恰好一次** | 「a metadata change is announced exactly once」（`git add` 后 `on_update` 增量 == 1） |
@@ -245,6 +261,7 @@ M.on_repo_attached(fn) / M.on_repo_detached(fn)
 | 附加 | 首刷（attach）成功后 `has_loaded`/`is_dirty`/`error_count` 正确 | 「a root the detector resolved costs no second probe (M7 P0-5)」（`count_probes` == 1） |
 | 5.7（M7-3） | 交给 `Repo` 的 root 不再探测一次；但之后的显式刷新照旧探测（git 与 svn 各一份） | 「a later trigger still probes a repository that skipped its first one」「a working copy is resolved once too, not once per layer」 |
 | 附加 | `on_error` 订阅真会被调用 | 失败用例里 `eq(errors, 1)`, `eq(errors, 2)` |
+| 5.8（M7-4a） | 状态视图：一次查询服务全仓且被缓存 / 工作区事件打补丁 / metadata 事件退缓存 / 存储动过之后仍能看到 staged | 「one status query answers the whole repository, and it is cached」「a worktree event is folded into the cached view instead of retiring it」「a metadata change retires the view, because it can move everything」「a view taken before the store moved is never believed about staging」 |
 | 5.6（M7-2） | 变更通道三态：工作区事件指认文件 / 元数据事件不指认 / 无事件背后的探测给空集，git 与 svn 各一份 | 「a work tree event announces the file it touched」「a metadata change announces no path, because it moves every baseline」「a probe with no filesystem event behind it announces an empty set」「an svn metadata change announces no path either」 |
 
 ## 6. 实测与偏差记录（回写）

@@ -202,9 +202,23 @@ M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
       首刷进程 git 5 → 4、svn 4 → 3，**首标延迟 224–236 → 185–195 ms**（省的是 1 轮串行往返，
       进程计数只差 1 个——`_bind` 的缓存快路径本来就让同仓库后续 buffer 不再探测）。
       回归：`repo_spec` 改写 1 例 + 新增 2 例（后续触发仍探测、svn 版），全文 277 例通过。
-- [ ] 4. P0-1 仓库级状态缓存（跨 VCS：git `status --porcelain=v2 -z`、svn `status --xml`；
-      干净文件直接不取基线）+ P0-2 `cat-file --batch` 常驻（**仅 git**，svn 无 blob 批协议）
-      —— 可先落 S2 过渡步（多目标 `svn info` / `ls-files`）；先做 08 §7 的待验证探针
+- [x] 4a. P0-1 仓库级状态缓存（**已落地**，实测见 08 §2.7）：可选适配器钩子
+      `status(root, cb) -> cb(err, entries)`（git `status --porcelain=v2 -z --untracked-files=all
+      --ignored=traditional --no-renames`、svn `status --xml --no-ignore`），`Repo` 缓存并在
+      `Repo:status(cb)` 上投递三参 `(err, entries, trusted)`：`trusted` = 查询前后 `baseline_stamp`
+      相同（**不是「新鲜度」**——别的程序能赶在事件之前 stage 文件），不可信就不宣称 `staged`。
+      缓存失效锚 fs 事件：工作区事件给已知 tracked 条目打 `worktree = true` 补丁（一次保存 0 进程），
+      metadata 事件（`.git/index` / `.svn/wc.db`）全退；查询期间存储自己动了则不缓存不重查（防自循环）。
+      `attach` 侧：条目缺席 = 「与基线同步」→ 基线取 **buffer 自己的文本**（不读磁盘：磁盘可能已被
+      外部改写而事件未到，读它会把别人的编辑变成幻影 hunk）；代价是 `assume-unchanged`/`skip-worktree`
+      的文件不再显示标志（gitsigns 会显示）。实测：git 脏文件首标 232.3 → 183.8 ms、进程 4 → 3，
+      干净文件 152.9 → 105.6 ms、进程 4 → 2（0 个 `show`）；svn 脏 290.5 → 184.5 ms、4 → 3，
+      干净文件 2 进程 0 个 `cat`；20 文件 attach 进程 git 62 → 22、svn 14 → 8（08 §2.7）。
+      回归：`attach_spec` +4 例（含 `spawned()` 记 argv）、`repo_spec` +4 例，全文 285 例通过。
+      顺手修掉一个真 bug：`load_base_show` 被放在 `load_base_probe` **之后**定义 → 那次调用是全局访问，
+      「status 查询失败」这条回退路径此前没有断言覆盖，其实一直是坏的。
+- [ ] 4b. P0-2 `cat-file --batch` 常驻（**仅 git**，svn 无 blob 批协议）——§2.7 的 22 个进程里
+      20 个就是每文件那次 `show`；S2 的多目标过渡步已被 4a 取代（不再需要）
 - [ ] 5. P1 动作层三处（stage 双刷新二选一——svn 侧只核 revert/reset 路径 / `has_staged_change`
       改 `--cached --quiet`（仅 git）/ blame 带 `-L`（git）+ 按行缓存（两类都受益，svn 无 `-L`））
 - [ ] 6. A4 进程计数探针固化为回归 spec（08 §6 的验收断言表；**git/svn 各一套**）

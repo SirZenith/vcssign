@@ -100,15 +100,22 @@ M.default_sign_priority = { modified = 10, added = 20, deleted = 30, ... }
 -- svn: `.svn/wc.db`（update/switch/revert/add/commit 都会重写它）。
 ---@field baseline_stamp? fun(root: string): string?
 
--- 拉取状态，归一化为 FileStatus 表。
--- 注意: 必须以 root 为基准拼绝对路径（修正 vcs-helper 的 getcwd 缺陷）。
----@param root string
----@param callback fun(err: string?, entries: vcssign.StatusEntry[]?)
+-- 仓库级状态视图（可选，M7 P0-1）：一次查询回答「哪些路径与基线不同」。
+-- 缺席的路径 = **被跟踪且与基线同步**（这是本条的全部价值：干净文件因此不用取基线）。
+-- 键是 base.normalize(root .. '/' .. rel) 后的绝对路径，值只有三个布尔位 + 两个修饰位。
+-- git: `status --porcelain=v2 -z --untracked-files=all --ignored=traditional --no-renames`
+--   （传统模式下被忽略的**目录**折叠成一条 `! dir/` 记录 → `dir = true`，不是每个文件一条）；
+-- svn: `status --xml --no-ignore`（`--no-ignore` 是保真需要：被忽略文件若缺席会被读成「同步」，
+--   于是未跟踪标志会静默消失；`normal`/`none`/`external` 不入表；未跟踪条目要再 stat 一次置 `dir`）。
+-- 没有这个钩子的适配器行为与以前完全一致（`Repo:has_status()` 为假 → 逐文件提问）。
+---@field status? fun(root: string, cb: fun(err: string?, entries: table<string, vcssign.FileStatus>?))
 
----@class vcssign.StatusEntry
----@field path string             # 绝对路径, vim.fs.normalize 后
----@field rel_path string         # 相对 root
----@field status vcssign.FileStatus
+---@class vcssign.FileStatus
+---@field tracked boolean   # 在版本控制里（svn: 非 unversioned/ignored）
+---@field staged boolean    # git: index 与 HEAD 不同（svn 恒 false——没有暂存区）
+---@field worktree boolean  # 工作区与 index/BASE 不同
+---@field ignored? boolean  # 被 .gitignore / svn:ignore 命中
+---@field dir? boolean      # 这条记录代表一个目录（忽略目录折叠、svn 的未跟踪目录）
 ```
 
 git / svn 各自再实现动作方法（能力见 04，git 最多）：
@@ -131,9 +138,18 @@ commit(root, files, msg, cb)  -> cb(err, info)           -- info: 提交摘要
 > 因此 M2 的「调用后再置 `is_updating` / `is_dirty`」写法会被同步回调打穿，
 > 要么先置标志再调用，要么统一用 `vim.schedule` 延后回调。
 
-> **M7 追加**：`baseline_stamp(root)` 与 `metadata_dir(root)` 都是**可选**钩子，都不进 `capabilities`
-> ——它们的语义是「能回答就回答」，不是「支持/不支持某个动作」：`metadata_dir` 服务 fs 监听（D20），
-> `baseline_stamp` 服务渲染短路（08 P0-4）。拿不到就不回答，上层自然退回旧行为。
+> **M7 追加**：`baseline_stamp(root)`、`metadata_dir(root)`、`status(root, cb)` 都是**可选**钩子，
+> 都不进 `capabilities`——它们的语义是「能回答就回答」，不是「支持/不支持某个动作」：
+> `metadata_dir` 服务 fs 监听（D20），`baseline_stamp` 服务渲染短路（08 P0-4），
+> `status` 服务仓库级状态缓存（08 P0-1）。拿不到就不回答，上层自然退回旧行为。
+>
+> **`status` 与「文件状态列表」不是一回事**（后者在 §2 已退役）：退役的是「把每个文件的三态
+> 归一化成一张要维护的表」，这里要的是**一次查询的答案**——`Repo` 只把它当缓存，用 fs 事件
+> 失效，并且**按「证据」而非「新鲜度」**决定能不能相信它的 `staged` 位（见 02 §3.1 的 `trusted`）。
+> 换句话说：退役的是「自己维护状态」，不是「问一次」。
+>
+> 顺带记一对名字易混的东西：`is_tracked(root, rel, cb)` 仍然是**单文件**提问（未跟踪判断、
+> 回退路径），`status` 是**全仓**提问；两者语义重叠但成本差 20 倍，别把 `is_tracked` 放进热路径。
 
 **base.lua 里同时写死「能力接口默认实现」**：不支持的调用返回 `"capability unsupported: <name>"` 错误，防止子模块漏实现导致 nil 调用。
 
