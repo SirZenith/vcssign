@@ -108,6 +108,16 @@ local NORMALIZE_OPTS = { expand_env = false }
 --- a *file* whose `gitdir:` target (outside the worktree) holds the real index —
 --- the only place a staging change can be observed.
 ---@field metadata_dir? fun(root: string): string?
+
+-- Whether `metadata_dir` has to be watched *recursively* to see every baseline
+-- change.  Defaults to true: git keeps its index, `HEAD` and `refs/` spread
+-- across the git directory, and a worktree's `logs/` moves independently.  An
+-- adapter whose baseline store is a single file directly inside `metadata_dir`
+-- sets this to false -- svn's `.svn/wc.db` is one file, and on a big working
+-- copy the tree under `.svn/pristine/` holds thousands of files whose events
+-- nothing reads (measured: 3135 callbacks for a 300-file `svn commit` recursive,
+-- 1225 non-recursive, `wc.db` alone 1; see 08 §3.5 S1).
+---@field metadata_recursive? boolean
 --- A free (no subprocess) change-detection key for the baseline store — the
 --- entries `show(rev, rel)` answers from — or nil when the adapter cannot
 --- produce a trustworthy one.

@@ -423,6 +423,14 @@ return {
       -- directory itself never reports that directory going away.
       ok(repo.watch_paths[repo.metadata_path], 'the metadata directory must be watched')
       ok(repo.watch_paths[vim.fs.normalize(dir)], 'the root must be watched for liveness')
+      -- git spreads its store over the git directory (index, HEAD, refs), so
+      -- the metadata watch is recursive wherever libuv can do that
+      -- (08 §3.5 S1).
+      eq(
+        repo.watch_recursive[repo.metadata_path],
+        vim.uv.os_uname().sysname ~= 'Linux',
+        'git needs the recursive watch, svn does not'
+      )
 
       -- Renaming the metadata directory away is what a deleted worktree looks
       -- like from the outside, and it is what Windows allows while a handle is
