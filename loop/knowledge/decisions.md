@@ -1,7 +1,8 @@
-# 架构决策记录（D1–D48 摘要索引）
+# 架构决策记录（D1–D50 摘要索引）
 
 > 知识文档（`loop/knowledge/`）。来源：`loop/archive/bootstrap/2026-10-16T20-52-42-master-plan.md` §4（D1–D37）与
-> `loop/archive/signs/2026-10-16T23-24-18-line-signs-in-signcolumn.md` §2（D38–D48）。原文抽取，未做改写。
+> `loop/archive/signs/2026-10-16T23-24-18-line-signs-in-signcolumn.md` §2（D38–D48）与
+> `loop/workspace/signs/2026-10-19T23-53-14-large-repo-status-freeze.md`（D49–D50）。原文抽取，未做改写。
 
 **要点**：D1–D37 定下 M0–M5 的骨架——回调链而非 async 框架、`Repo` 只在主循环操作、引用计数、
 不新增依赖、`lua/vcssign/vcs/<name>.lua` 适配器 + registry、侧边栏退役前的 UI 契约等。
@@ -9,6 +10,7 @@ D38–D48 是 M6 行级 sign 的决策：`Repo` 降级为「仓库会话」（D3
 hunk 类型与 gitsigns 对齐 + 双命名空间（D40）、patch 走 stdin（D41）、基线 = `rev`（D42）、
 行尾统一（D43）、键位与 gitsigns 同形（D44）、reset 保护未保存改动（D45）、不引入 async 框架（D46）、
 `culhl` 用原生 `cursorline_hl_group`（D47）、`setup()` 补扫窗口缓冲区（D48）。
+D49–D50 定下 ignored 路径与仓库级 status 的契约：被忽略路径不画 sign，也不进入 status view（D49/D50）。
 
 流水线（M6 Step 12 之后）**代码即事实**：本表只解释「为什么」，不描述现状；现状看 `lua/vcssign/`。
 
@@ -60,9 +62,9 @@ hunk 类型与 gitsigns 对齐 + 双命名空间（D40）、patch 走 stdin（D4
 
 ---
 
-*来源：`loop/archive/signs/2026-10-16T23-24-18-line-signs-in-signcolumn.md`，原文 `## §2 关键决策（D38–D48）`*（标题层级已下移一级）
+*来源：`loop/archive/signs/2026-10-16T23-24-18-line-signs-in-signcolumn.md`，原文 `## §2 关键决策（D38–D48）`；D49–D50 来自 `loop/workspace/signs/2026-10-19T23-53-14-large-repo-status-freeze.md`（标题层级已下移一级）*
 
-### §2 关键决策（D38–D48）
+### §2 关键决策（D38–D50）
 
 | 决策 | 内容 | 理由（为什么） |
 |---|---|---|
@@ -78,3 +80,4 @@ hunk 类型与 gitsigns 对齐 + 双命名空间（D40）、patch 走 stdin（D4
 | **D47** | `signs.culhl` 用 Neovim 原生的 extmark 选项 `cursorline_hl_group`（与 gitsigns 同款），不建 `CursorMoved` 刷新链路，也不把它写进 `place` 的早退条件 | 原生机制只作用于带 `'cursorline'` 的光标行上的 sign 格，而 `signcolumn = false` 时没有 sign 文本也就没有那个格，自建刷新链只会白跑；gitsigns 的 guard 同样不含 `culhl` |
 | **D48** | `setup()` 结束前扫一次**窗口里的缓冲区**（`nvim_list_wins` 去重 → `attach.attach`），资格判断仍全部在 `attach.attach` 内 | 懒加载触发挂在 `BufEnter` 上时，插件是在该事件**之后**才配置的，当前文件不会再收到任何事件；只扫可见的窗口而不是全部已加载缓冲区（gitsigns 做的是后者：`"Attach to all open buffers"`），免得为会话里的历史缓冲区白挂仓库；隐藏缓冲区靠自己的 `BufEnter` 补上，不会漏 |
 | **D49** | 被忽略的文件（git `!` / svn `I`）一律不画 VCS 状态：`load_base_status` 见到 `entry.ignored` 就置 `base_text = nil`，与 `attach_to_untracked` 无关；`FileStatus.ignored` 因此有了第一个消费者 | 被忽略是「未跟踪」的**子集**而不是同义词 —— `attach_to_untracked` 回答的是「我还没 `git add` 的文件也让我看到改动」，不是「我明确排除的文件也来报」；gitsigns 的 `ls-files --others --exclude-standard` 同样不给被忽略文件标志 |
+| **D50** | 仓库级 status 不再请求忽略路径：git 去掉 `--ignored=traditional`（显式写 `--ignored=no`），svn 去掉 `--no-ignore`；被忽略路径在 view 中缺席，`load_base_status` 把缺席当 clean，因此仍不画 sign（D49 的行为不变）。新增 `max_status_bytes`（默认 4 MiB）在 `parse_status` 之前拒绝超大输出，并按 baseline stamp 缓存该确定性错误；超限时回落到逐文件 `ls-files`/`show`。 | `git status --porcelain=v2 -uall --ignored=traditional` 会把忽略目录展开成每个文件一条记录：样例仓库 221,955 个文件中 221,385 个被忽略，输出约 17 MB；`parse_status` 在主循环逐条 normalize/建表，直接冻结 Neovim。忽略路径与 clean 路径都不画 sign（D49），所以不需要它们出现在 view 里；需要 `FileStatus.ignored` 的动作应改为按需 `git check-ignore`，而不是让每个 buffer 为 22 万条记录买单。 |
