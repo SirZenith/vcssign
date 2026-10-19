@@ -704,4 +704,116 @@ return {
       repo_manager.detach('spec:active')
     end),
   },
+
+  {
+    name = 'a work tree event announces the file it touched',
+    fn = guarded(function()
+      local dir = helpers.git_repo('runtime-changed-path')
+      helpers.with_repo('spec:changed-path', dir, function(repo)
+        vim.wait(300, function()
+          return false
+        end)
+        local announced = {}
+        repo:on_update(function(_, changed)
+          announced[#announced + 1] = changed
+        end)
+        -- The root watch is non-recursive, which is the one place libuv hands
+        -- us a filename (08 P0-3).  The metadata watch never does: the index /
+        -- wc.db is one store for every file in the repository.
+        helpers.write(dir .. '/base.txt', 'edited on disk\n')
+        helpers.wait_for(function()
+          return #announced > 0
+        end, 'the work tree event')
+        vim.wait(400, function()
+          return false
+        end)
+
+        local named, saw_all = {}, false
+        for _, changed in ipairs(announced) do
+          if changed == nil then
+            saw_all = true
+          else
+            for path in pairs(changed) do
+              named[path] = true
+            end
+          end
+        end
+        eq(saw_all, false, 'a work tree event names a path, it does not shrug')
+        eq(named[vim.fs.normalize(dir .. '/base.txt')], true, 'the file the event named')
+        eq(vim.tbl_count(named), 1, 'and no other file')
+      end)
+    end),
+  },
+  {
+    name = 'a metadata change announces no path, because it moves every baseline',
+    fn = guarded(function()
+      local dir = helpers.git_repo('runtime-changed-meta')
+      helpers.with_repo('spec:changed-meta', dir, function(repo)
+        vim.wait(300, function()
+          return false
+        end)
+        local saw_all = false
+        repo:on_update(function(_, changed)
+          saw_all = saw_all or changed == nil
+        end)
+        -- `git add` rewrites `.git/index`.  The write before it names a path,
+        -- the staging does not — and the staging is the one every buffer has to
+        -- react to.
+        helpers.write(dir .. '/base.txt', 'edited\n')
+        helpers.sh({ 'git', '-C', dir, 'add', 'base.txt' })
+        helpers.wait_for(function()
+          return saw_all
+        end, 'the metadata event')
+        eq(saw_all, true, 'the index is one store for the whole repository')
+      end)
+    end),
+  },
+  {
+    name = 'a probe with no filesystem event behind it announces an empty set',
+    fn = guarded(function()
+      local dir = helpers.git_repo('runtime-changed-none')
+      helpers.with_repo('spec:changed-none', dir, function(repo)
+        vim.wait(300, function()
+          return false
+        end)
+        local answered, changed_at = false, nil
+        repo:on_update(function(_, changed)
+          answered, changed_at = true, changed
+        end)
+        -- `FocusGained`, `:Vcssign refresh`, an action's post-step: all of them
+        -- ask "look again" without claiming anything moved.  An empty set is
+        -- how that is said, so the sign layer can skip every buffer.
+        repo:refresh()
+        helpers.wait_for(function()
+          return answered
+        end, 'the announcement')
+        eq(type(changed_at), 'table', 'nothing moved must not mean "assume everything"')
+        eq(next(changed_at), nil, 'an empty set of paths')
+      end)
+    end),
+  },
+  {
+    name = 'an svn metadata change announces no path either',
+    fn = guarded(function()
+      local dir = helpers.svn_repo('runtime-changed-svn')
+      helpers.with_repo('spec:changed-svn', dir, function(repo)
+        eq(repo.system.name, 'svn')
+        vim.wait(400, function()
+          return false
+        end)
+        local saw_all = false
+        repo:on_update(function(_, changed)
+          saw_all = saw_all or changed == nil
+        end)
+        -- A commit rewrites `.svn/wc.db`, the file BASE is read through — the
+        -- svn anchor of the same rule (08 §3.5).
+        helpers.write(dir .. '/base.txt', 'committed\n')
+        helpers.sh({ 'svn', 'commit', '-q', '-m', 'changed', dir .. '/base.txt' })
+        helpers.wait_for(function()
+          return saw_all
+        end, 'the svn metadata event')
+        eq(saw_all, true)
+      end)
+    end),
+  },
 }

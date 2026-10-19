@@ -134,6 +134,25 @@ local function count_procs(fn)
   return calls
 end
 
+--- Start counting `attach._render` entries per buffer, until `stop()`.
+---
+--- *Entries*, not draws: the short-circuit (08 P0-4) returns from inside
+--- `_render`, so an entry means "this buffer was told something moved" — which
+--- is exactly what the changed-path channel (08 P0-3) decides.
+---@return table<integer, integer> seen
+---@return fun() stop
+local function watch_renders()
+  local real = attach._render
+  local seen = {}
+  attach._render = function(st, force)
+    seen[st.bufnr] = (seen[st.bufnr] or 0) + 1
+    return real(st, force)
+  end
+  return seen, function()
+    attach._render = real
+  end
+end
+
 return {
   {
     name = 'attach draws a sign on the modified line',
@@ -683,4 +702,108 @@ return {
     end),
   },
 
+  -- ▏ the changed-path channel (08 P0-3) ─────────────────────────────────────
+
+  {
+    name = 'a work tree event enters only the buffer it names',
+    fn = guarded(function()
+      local dir = helpers.git_repo('attach-changed-path')
+      helpers.write(dir .. '/base.txt', 'base\n')
+      local first = open(dir .. '/base.txt')
+      attach_now(first)
+      local second = open(dir .. '/sub/nested.txt')
+      attach_now(second)
+      eq(attach.count(), 2)
+
+      -- Another program writes one of the two files.  The root watch is
+      -- non-recursive, so libuv names the file, and the buffer that file
+      -- belongs to is the only one with anything to do (08 P0-3).
+      local renders, stop = watch_renders()
+      local ran, err = pcall(function()
+        helpers.write(dir .. '/base.txt', 'base\nreplaced on disk\n')
+        helpers.wait_for(function()
+          return (renders[first] or 0) > 0
+        end, 'the event to reach the buffer')
+        vim.wait(400, function()
+          return false
+        end)
+      end)
+      stop()
+      if not ran then
+        error(err, 0)
+      end
+      ok((renders[first] or 0) >= 1, 'the named buffer is entered')
+      eq(renders[second], nil, 'the buffer the event did not name is left alone')
+    end),
+  },
+
+  {
+    name = 'a probe with nothing behind it enters no buffer at all',
+    fn = guarded(function()
+      local dir = helpers.git_repo('attach-changed-path-none')
+      helpers.write(dir .. '/base.txt', 'base\nnew\n')
+      local bufnr = open(dir .. '/base.txt')
+      local st = attach_now(bufnr)
+      eq(#st.hunks, 1)
+
+      local updates = 0
+      st.repo:on_update(function()
+        updates = updates + 1
+      end)
+      local renders, stop = watch_renders()
+      local ran, err = pcall(function()
+        -- This is `FocusGained` in one line: the liveness probe every focus
+        -- gain runs.  It is the only thing that notices a repository that went
+        -- away, so it stays — but with no filesystem event behind it there is
+        -- nothing for any buffer to do (08 P0-3).
+        st.repo:refresh()
+        helpers.wait_for(function()
+          return updates > 0
+        end, 'the probe to announce')
+        vim.wait(300, function()
+          return false
+        end)
+      end)
+      stop()
+      if not ran then
+        error(err, 0)
+      end
+      ok(updates >= 1, 'the probe still announces itself')
+      eq(next(renders), nil, 'and no buffer is told to do anything')
+      eq(#st.hunks, 1, 'the signs are what they were')
+    end),
+  },
+
+  {
+    name = 'a metadata change enters every buffer, because it names no path',
+    fn = guarded(function()
+      -- The other half of the rule: a staging change moves the baseline of the
+      -- whole repository, so the announcement carries no path at all and every
+      -- buffer re-reads.
+      local dir = helpers.git_repo('attach-changed-path-index')
+      helpers.write(dir .. '/base.txt', 'base\nnew\n')
+      local first = open(dir .. '/base.txt')
+      attach_now(first)
+      helpers.write(dir .. '/sub/nested.txt', 'nested\nmore\n')
+      local second = open(dir .. '/sub/nested.txt')
+      attach_now(second)
+      -- Let the work tree events of the two writes above drain first, so the
+      -- window below can only see what `git add` causes.
+      vim.wait(400, function()
+        return false
+      end)
+
+      local renders, stop = watch_renders()
+      local ran, err = pcall(function()
+        helpers.sh({ 'git', '-C', dir, 'add', 'base.txt' })
+        helpers.wait_for(function()
+          return (renders[first] or 0) > 0 and (renders[second] or 0) > 0
+        end, 'both buffers to be re-read')
+      end)
+      stop()
+      if not ran then
+        error(err, 0)
+      end
+    end),
+  },
 }
