@@ -332,4 +332,49 @@ return {
       vim.fn.delete(dir, 'rf')
     end,
   },
+  {
+    name = 'open_blob_reader answers every revision through one process',
+    fn = function()
+      -- 08 P0-2: the whole point is process *arithmetic*, so this case counts
+      -- spawns as well as asserting the text, and it pins the two edges that
+      -- matter to callers: a missing object is an error, and a closed reader
+      -- refuses to read (the caller then falls back to `show`).
+      local dir = repo_named('git-reader')
+      local exec = require('vcssign.exec')
+      local real_stream = exec.stream
+      local spawns = 0
+      exec.stream = function(cmd, opts, on_stdout, on_exit)
+        spawns = spawns + 1
+        return real_stream(cmd, opts, on_stdout, on_exit)
+      end
+      local ok_call, err = pcall(function()
+        local reader = git.open_blob_reader(dir)
+        local _, head = helpers.wait(function(cb)
+          reader:read('HEAD', 'base.txt', cb)
+        end)
+        eq(head, 'base\n', 'the committed text')
+        local _, index = helpers.wait(function(cb)
+          reader:read('index', 'base.txt', cb)
+        end)
+        eq(index, 'base\n', 'and the staged text, from the same child')
+        local missing = helpers.wait(function(cb)
+          reader:read('HEAD', 'nope.txt', cb)
+        end)
+        ok(
+          missing and missing:find('missing', 1, true),
+          'a missing blob is an error: ' .. tostring(missing)
+        )
+        eq(spawns, 1, 'one process for all of it')
+        reader:close()
+        local after = helpers.wait(function(cb)
+          reader:read('HEAD', 'base.txt', cb)
+        end)
+        ok(after and after:find('not running', 1, true), 'a closed reader refuses to read')
+      end)
+      exec.stream = real_stream
+      if not ok_call then
+        error(err, 0)
+      end
+    end,
+  },
 }

@@ -107,16 +107,20 @@ end
 ---@param cmd string[]
 ---@param opts vcssign.ExecOpts
 ---@param cb fun(err: string?, res: vcssign.ExecResult?)
-function M.run(cmd, opts, cb)
+--- The environment every child gets.
+---
+--- Force C locale so that command output is never localised into something our
+--- parsers do not expect; on Windows stop MSYS2/Cygwin from rewriting arguments
+--- that look like paths.  `opts.env` is merged over it.
+---@param opts { env?: table<string,string> }
+---@return table<string,string>
+local function build_env(opts)
   local env = {
-    -- Force C locale so that command output is never localised into
-    -- something our parsers do not expect.
     LC_ALL = 'C',
     LANG = 'C',
     LANGUAGE = 'C',
   }
   if M.is_windows then
-    -- Stop MSYS2/Cygwin from rewriting arguments that look like paths.
     env.MSYS = 'noglob'
     env.CYGWIN = 'noglob'
   end
@@ -125,7 +129,11 @@ function M.run(cmd, opts, cb)
       env[k] = v
     end
   end
+  return env
+end
 
+function M.run(cmd, opts, cb)
+  local env = build_env(opts)
   local finished = false
   ---@type uv.uv_timer_t?
   local timer
@@ -217,6 +225,78 @@ function M.run(cmd, opts, cb)
     finish('spawn failed: ' .. tostring(started), nil)
     return
   end
+end
+
+---@class vcssign.StreamOpts
+---@field cwd string
+---@field env? table<string,string>
+---@field on_stderr? fun(data: string)  called with every stderr chunk, if given
+
+--- Spawn a long-lived child and stream its stdout (M7 P0-2).
+---
+--- Same environment hardening as `run`, but the other way round: the child
+--- outlives the call, the caller consumes stdout as it arrives, and **there is
+--- no timeout** — a reader that lives for the whole session has no single
+--- deadline.  Whoever calls this owns the lifetime and the deadline (see
+--- `vcs/git.lua`'s `CatFile`).
+---
+--- Both callbacks are invoked **on the main loop**: `vim.system`'s streaming
+--- callbacks are fast events (same measurement as `run`), and a reader that
+--- answers with file contents has to be able to reach buffer APIs.
+---
+--- Spawn failure returns `nil, err` instead of raising, because a missing
+--- `cat-file` must degrade to the per-call command, not to an error in a
+--- callback nobody sees.
+---@param cmd string[]
+---@param opts vcssign.StreamOpts
+---@param on_stdout fun(err: string?, data: string?)
+---@param on_exit fun(res: vcssign.ExecResult)
+---@return vim.SystemObj? proc
+---@return string? err
+function M.stream(cmd, opts, on_stdout, on_exit)
+  local ok, proc = pcall(vim.system, cmd, {
+    cwd = opts.cwd,
+    -- `text` keeps the chunks as byte strings; a reader that delimits replies
+    -- by a byte count (cat-file) must not have newlines split or joined for it.
+    text = true,
+    -- The whole point of a stream is that the caller can talk back: `write` is
+    -- only available when stdin is a pipe opened for writing.
+    stdin = true,
+    env = build_env(opts),
+    stdout = function(err, data)
+      if err or not data or data == '' then
+        return
+      end
+      vim.schedule(function()
+        on_stdout(nil, data)
+      end)
+    end,
+    stderr = function(err, data)
+      -- `data` is nil (not merely empty) on the final call of some builds, so an
+      -- emptiness check alone would still hand nil downstream.
+      local sink = opts.on_stderr
+      if err or not sink or not data or data == '' then
+        return
+      end
+      vim.schedule(function()
+        sink(data)
+      end)
+    end,
+  }, function(res)
+    vim.schedule(function()
+      on_exit({
+        cmd = cmd,
+        code = res.code,
+        signal = res.signal or 0,
+        stdout = res.stdout or '',
+        stderr = res.stderr or '',
+      })
+    end)
+  end)
+  if not ok then
+    return nil, 'spawn failed: ' .. tostring(proc)
+  end
+  return proc
 end
 
 return M

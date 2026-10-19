@@ -58,6 +58,8 @@ M.__index = M
 ---@field changed_all boolean  an event moved something that names no file (index / wc.db):
 ---                            every baseline may be stale
 ---@field status_cache table<string, vcssign.FileStatus>?  the repository's status view, or nil
+---@field _reader vcssign.BlobReader?  the batch reader, once some baseline was read through it
+---@field _reader_stamp string?  the baseline stamp that reader was started on (see `read_blob`)
 ---                            when it has to be asked again (08 P0-1).  Absence of a
 ---                            path means "tracked and in sync with its baseline".
 
@@ -103,6 +105,8 @@ function M.new(system, root, opts)
   self.changed_all = false
   self.status_cache = nil
   self.status_stamp = nil
+  self._reader = nil
+  self._reader_stamp = nil
   self._status_waiters = {}
   self._status_generation = 0
   self._waiters = {}
@@ -272,6 +276,77 @@ end
 -- ▏ refresh pipeline ──────────────────────────────────────────────────────────
 
 --- Note a change and coalesce a refresh behind the debounce window.
+-- ▏ blob reads ──────────────────────────────────────────────────────────────
+
+--- Read `rel` as of `rev` through the repository's batch reader, when its
+--- adapter has one (08 P0-2).
+---
+--- Why: a per-file `show` costs a process each (~45 ms of start-up for a reply of
+--- a few kilobytes), while one `cat-file --batch` child answers every file of
+--- this repository for the price of a single spawn.  The reader is created on
+--- first use and lives as long as the repository does.
+---
+--- A read that fails on a **closed** reader drops it and retries once through the
+--- plain command: a dead child must degrade to the slow path, never to "no
+--- signs".  A read that fails while the reader is still open is a real error and
+--- is reported as one.
+---@param rev string
+---@param rel string
+---@param cb fun(err: string?, text: string?)
+function M:read_blob(rev, rel, cb)
+  local open = self.system.open_blob_reader
+  if not open then
+    return self.system.show(self.root, rev, rel, cb)
+  end
+  local stamp = self:_stamp()
+  if rev == 'index' and stamp == nil then
+    -- The child resolves `:<path>` against the index it read when it started, so
+    -- without a way to tell that the index moved, a staged baseline could be
+    -- answered from a stale one.  One command is the honest answer then.
+    return self.system.show(self.root, rev, rel, cb)
+  end
+  local reader = self._reader
+  if reader and not reader.closed and stamp ~= self._reader_stamp then
+    -- Measured: after `git apply --cached` the same `cat-file --batch` child
+    -- keeps answering with the *previous* index blob, because git reads the
+    -- index once per process.  So a reader only outlives a store that is not
+    -- moving; when it moves, this next read pays for a fresh one.
+    self:_close_reader()
+    reader = nil
+  end
+  if not reader or reader.closed then
+    reader = open(self.root)
+    if reader.closed then
+      -- Could not start at all (no VCS on PATH?): the plain command is all that
+      -- is left, and it is what the caller would have used without this hook.
+      self._reader = nil
+      return self.system.show(self.root, rev, rel, cb)
+    end
+    self._reader = reader
+    self._reader_stamp = stamp
+  end
+  reader:read(rev, rel, function(err, text)
+    if err and reader.closed then
+      if self._reader == reader then
+        self._reader = nil
+      end
+      return self.system.show(self.root, rev, rel, cb)
+    end
+    cb(err, text)
+  end)
+end
+
+---@private
+function M:_close_reader()
+  local reader = self._reader
+  self._reader = nil
+  self._reader_stamp = nil
+  local close = reader and reader.close
+  if close then
+    pcall(close, reader)
+  end
+end
+
 function M:mark_dirty()
   if self.is_deleted then
     return
@@ -744,6 +819,9 @@ end
 --- about it (and `_remove` is idempotent).
 function M:dispose()
   self:_mark_deleted()
+  -- Before the waiter list is cleared: a pending read is answered with an error
+  -- and retried through the plain command by whoever asked.
+  self:_close_reader()
   self._waiters = {}
   self._on_update = {}
   self._on_error = {}
