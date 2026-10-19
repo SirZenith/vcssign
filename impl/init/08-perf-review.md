@@ -30,7 +30,7 @@ git/svn 适用矩阵**，并把三条 git-only 的结论（P0-2 / P1-2 / P1-3 �
 | 环境 | Windows 11 · NVIM v0.12.4（Release，LuaJIT 2.1.1774638290）· git 2.55.0.windows.2 · svn 1.14.5 |
 | 范围 | `lua/vcssign/` 全量（含 `vcs/` 子层）+ 生命周期（attach / autocmd / actions / repo / manager） |
 | 探针 fixture | git：`temp/bench-repo`（新建，20 个已跟踪文件、每个都有改动；用后已删）。svn：`temp/svn-repo`（`scripts/make_test_repos.sh` 生成的共享 fixture，6 个可读文件、1 个已修改） |
-| 探针形态 | 见下；探针是一次性脚本，用完删除，**复现方法以此文为准**。git 侧：`temp/bench.lua` / `bench2.lua` / `e2e.lua` / `e2e2.lua` / `e2e3.lua` / `proc.lua`；svn 侧：`temp/svnbench.lua`（单价）/ `temp/svne2e.lua`（计数）。**例外：`temp/probe_p04.lua`、`temp/probe_lat.lua`、`temp/probe_clean.lua` 保留**——前者服务 §2.4–§2.6 的进程/渲染对比（`nvim --headless -u NONE -l temp/probe_p04.lua git|svn`），后两者只量「打开一个文件到画出第一个 sign」的延迟与进程构成（`-l temp/probe_lat.lua git|svn` 量脏文件、`-l temp/probe_clean.lua git|svn` 量干净文件，各连跑 5 次取中位）。两者都一次只跑一类 VCS |
+| 探针形态 | 见下；探针是一次性脚本，用完删除，**复现方法以此文为准**。git 侧：`temp/bench.lua` / `bench2.lua` / `e2e.lua` / `e2e2.lua` / `e2e3.lua` / `proc.lua`；svn 侧：`temp/svnbench.lua`（单价）/ `temp/svne2e.lua`（计数）。**例外：`temp/probe_p04.lua`、`temp/probe_lat.lua`、`temp/probe_clean.lua` 保留**——前者服务 §2.4–§2.6 的进程/渲染对比（`nvim --headless -u NONE -l temp/probe_p04.lua git|svn`），后两者只量「打开一个文件到画出第一个 sign」的延迟与进程构成（`-l temp/probe_lat.lua git|svn` 量脏文件、`-l temp/probe_clean.lua git|svn` 量干净文件，各连跑 5 次取中位）。两者都一次只跑一类 VCS；**M7 步骤 4b 起两者都同时统计 `exec.run` 与 `exec.stream`**（后者是 `cat-file --batch` 的 spawn，只数前者会把「每仓库 1 个进程」看成 0） |
 
 进程/渲染计数探针的核心形态（M7 落地时应固化为回归测试，见 A4）：
 
@@ -298,6 +298,54 @@ M7 步骤 1 落地后重跑 §2.2 的两个场景。探针按 VCS 分进程跑�
 `load_base_probe` 里那次调用编译成了**全局访问**——只有在 status 查询失败或 buffer 没有 repo
 时才会走到的回退路径，此前没有断言覆盖，一直是坏的。新加的「status 查询失败」用例把它暴露了。
 
+### §2.8 P0-2 修复后复测（`cat-file --batch` 常驻：git 的每文件一次 `show` 消失）
+
+§2.7 之后 git 的 22 个进程里 20 个是**每文件**一次 `show`。P0-2 把这 20 次换成**每仓库**一次
+`git cat-file --batch`：进程单价 47 ms（§2.1）、此后每个 blob 请求 0 spawn，代价只是一个长驻
+子进程与一个请求队列（`lua/vcssign/exec.lua` 新增 `M.stream`，`lua/vcssign/vcs/git.lua` 的
+`CatFile`，`Repo:read_blob` 持有它）。
+
+| 指标 | git 前（§2.7） | git 后 | svn 前（§2.7） | svn 后 |
+|------|---------------|--------|---------------|--------|
+| attach 总进程（20 个已改文件 / 6 个） | 22 | **3** | 8 | 8（不变） |
+| attach 墙钟（到静默） | 1661 ms | **759 ms** | 1130 ms | 1276 ms |
+| 脏文件首标 / 进程 | 140.7 ms / 3 | 142.0 ms / 3（第 3 个换成 `cat-file`） | 184.5 ms / 3 | 287.7 ms / 3 |
+| 干净文件首标 / 进程 | 105.6 ms / 2 | 96.6 ms / 2 | 117.0 ms / 2 | 不变 |
+| `FocusGained` / 外部改写 1 文件 | 1 / 1 进程 | 1 / 1 | 1 / 1 | 1 / 1 |
+
+读法与三条结论：
+
+- **3 = `rev-parse` + `status` + `cat-file --batch`，与文件数无关**：20 个脏文件从 22 个进程降到
+  3 个（墙钟 1661 → 759 ms），第二个 buffer 起**零进程**（`_bind` 快路径 + status 缓存命中 + 已开的
+  reader）。单文件首标延迟几乎不动，因为这本来就是**批量**优化：只有一个文件时，`cat-file` 的
+  47 ms 启动与 `show` 的 47 ms 等价，省下的是第二、第三个文件。
+- **svn 一个进程都没少，这是设计不是遗漏**：`svn cat` 没有批协议（多目标直接拼接、无分隔符），
+  所以 svn 适配器不实现 `open_blob_reader`，`Repo:read_blob` 原样走 `show`；svn 的收益全部来自
+  P0-1 的「干净文件不取基线」。
+- **读到的仍是「VCS 自己给的字节」**：`cat-file` 返回原始 blob，而 `show`（经 `exec.run`，
+  `text = true`）返回去掉 CRLF 的文本，所以 reader 在投递前做同样的 `gsub('\r\n', '\n')`——否则同一个
+  文件会因为「从哪条路读」而得到两份不同的基线，渲染短路的键也会跟着抖动。
+
+**两个坑，是这个补丁里最贵的部分**：
+
+1. **`vim.system` 的 stdin 默认不是可写管道**：`M.stream` 漏掉 `stdin = true` 时 `proc:write` 直接
+   失败（被 `pcall` 吞掉），于是每个请求都要等 reader 超时才回退到 `show`——进程数看着正常，延迟
+   却翻倍。探针里 `show` 与 `cat-file` 的 spawn 同时出现就是信号。
+2. **`git cat-file --batch` 每个进程只读一次 index**：`git apply --cached` 之后同一个子进程仍然
+   回答**旧**的 index blob（实测同一个 sha 在 stage 前后不变）。于是 stage 一个 hunk 后 staged 层
+   恒为空，`test/actions_spec` 的两例「the sign layers to split」超时——**重构前的代码是绿的**，
+   是这条新路径带进来的。修法是让 reader 的生命周期绑在**基线指纹**上：`Repo:read_blob` 发现
+   `baseline_stamp` 变了就关掉旧 reader，下一个读开新的（存储不动的批量场景仍是 1 个进程）；
+   没有指纹可比（`stamp == nil`）的适配器对 `index` 读取直接走 `show`——宁可多一个进程，也不能
+   回答过期的基线。
+
+回归口径：`test/attach_spec.lua` 新增 2 例（同仓两个脏文件合计 3 命令；死掉的 reader 被丢弃且
+staged 层仍然出现），三个计数辅助（`count_probes` / `count_procs` / `spawned`）改为同时拦
+`exec.run` 与 `exec.stream`（只数前者会让「每仓库 1 个进程」看起来像「没有进程」）；
+`test/repo_spec.lua` 新增 2 例（reader 服务多次读取并在 `dispose` 时关闭；index 动过之后不采信旧
+reader）；`test/vcs_git_spec.lua` 新增 1 例（一个进程回答 `HEAD` 与 `index`、缺失对象报错、关闭后
+拒绝读取）。全文 290 例通过。
+
 ## §3 发现清单（按影响降序）
 
 ### P0 · 进程数量（性能的主要来源）
@@ -323,6 +371,13 @@ svn：`info` + `cat -r BASE`——无 staged 层，见 §3.5）。
 不可用作 blob 读取；`lua/vcssign/vcs/svn.lua:122` 的 `M.show` 只能逐文件（进程单价 62 ms）。
 svn 侧的对应收益全部来自 P0-1 的 status 缓存：**干净文件不取基线**，比省一个进程更彻底。
 注意这是**长驻 `vim.system` 进程**，不违反「不新增依赖」（§8），但 git 侧才需要它。
+
+> **状态：已修（M7 步骤 4b），前/后实测见 §2.8**：接口落成了可选钩子
+> `open_blob_reader(root) -> vcssign.BlobReader`（`read` / `close` / `closed`），`Repo:read_blob`
+> 持有每仓库一个 reader 并在 `dispose` 时关闭；适配器没有这个钩子就退回 `show`，所以 svn 一行没改。
+> 实测 git 20 个脏文件的 attach 从 22 进程降到 **3**（墙钟 1661 → 759 ms）。两个陷阱值得记住：
+> `vim.system` 的 stdin 要显式 `stdin = true` 才能 `write`；`cat-file --batch` **每个进程只读一次
+> index**，所以 reader 的生命周期必须绑在基线指纹上（否则 stage 之后仍在回答旧 blob）。
 
 **P0-3 fs_event 收下了 `filename` 却丢掉了它 → 任何变化全员刷新**。
 `lua/vcssign/repo.lua:454` 的 `_on_fs_event(watch_path, err, filename, events)` 拿到 `filename`，
@@ -418,7 +473,7 @@ svn 侧的对应收益全部来自 P0-1 的 status 缓存：**干净文件不取
 | 发现 | git | svn | 差异要点 |
 |------|-----|-----|----------|
 | P0-1 每渲染固定进程 | ✅ **已修**：脏文件 3 → `rev-parse`+`status`+`show`，干净文件 2（0 个 `show`） | ✅ **已修**：脏文件 3 → `info`+`status`+`cat`，干净文件 2（0 个 `cat`） | 同一修法；svn 因单价高（§2.2）得的绝对收益更大（290.5 → 184.5 ms） |
-| P0-2 常驻 blob 进程 | ✅ `cat-file --batch` | ❌ 无等价协议（`svn cat` 多目标无分隔符） | svn 的收益改由「干净文件不取基线」实现 |
+| P0-2 常驻 blob 进程 | ✅ **已修** `cat-file --batch`（20 文件 22 → 3 进程，§2.8） | ❌ 无等价协议（`svn cat` 多目标无分隔符） | svn 的收益改由「干净文件不取基线」实现 |
 | P0-3 `changed_paths` | ✅ **已修** | ✅ **已修** | 锚点不同（`.git/index`+HEAD / `.svn/wc.db`），代码同一条；实测外部改写一个文件 git 20→1、svn 6→1 个 buffer（§2.5）；svn 的 watch 落点见 S1 |
 | P0-4 渲染短路 | ✅ **已修** | ✅ **已修** | 同一代码路径，**双收益**；实测 git 121→1 进程、svn 25→1（§2.4） |
 | P0-5 首次 attach 去重 root | ✅ **已修** `rev-parse`×2 → ×1（首标 −40 ms） | ✅ **已修** `info`×3 → ×2（同样 2 次问的是同一件事，§2.6） | 同一条修法（`Repo.new` 的 `verified`） |
@@ -520,7 +575,8 @@ staged 变更由批量 `status` 缓存（失效面小：只在索引/HEAD 变动
 - [x] **4a. P0-1 状态缓存（跨 VCS）**——已落地（§2.7）：可选适配器钩子 `status(root, cb)`，
       `Repo` 缓存并三参投递 `(err, entries, trusted)`，`attach` 侧干净文件的基线取 buffer 文本。
       git 20 文件 62 → 22 进程、干净文件 0 `show`；svn 14 → 8、干净文件 0 `cat`。
-- [ ] **4b. P0-2 `read_blobs`（仅 git）**——`git cat-file --batch` 常驻替掉每文件那次 `show`
+- [x] **4b. P0-2 `read_blobs`（仅 git）**——`git cat-file --batch` 常驻替掉每文件那次 `show`
+      （落成可选钩子 `open_blob_reader`，实测 20 文件 22 → 3 进程、1661 → 759 ms；见 §2.8）
       （§2.7 的 22 进程里 20 个是它）。svn 无等价协议（见 §3.5），不做。
 - [ ] **5. P1 动作层三处**——stage 双刷新二选一（先做 §7-5 的探针；svn 侧只核 revert/reset 路径）、
       `has_staged_change` 改 `--cached --quiet`（仅 git）、blame 带 `-L`（git）+ 按行缓存（两类都受益）。
@@ -530,7 +586,7 @@ staged 变更由批量 `status` 缓存（失效面小：只在索引/HEAD 变动
 **验收断言建议**（A4 固化时用计数写，不写毫秒）：
 
 ```
-打开同仓库 20 个文件   ≤ 30 进程（当前 git 22）→ ✅（§2.7：原始 141、步骤 3 后 62、步骤 4 后 22）
+打开同仓库 20 个文件   ≤ 30 进程（当前 git 3）→ ✅（原始 141、步骤 3 后 62、4a 后 22、4b 后 3，§2.8）
 FocusGained（磁盘不变） 0 进程（当前 git 120 / svn 13）→ ✅ 已达到下限「每仓库 1」（§2.4：git 1 / svn 1）
 FocusGained 渲染进入次数     ≤ buffer 数（原 git 40 / svn 12）→ ✅ git 20 / svn 6（§2.5）
 外部改写 1 个文件             1 个 buffer / ≤ 2 进程（原 git 20 buffer、61 进程）→ ✅ 1 / 1（§2.5）

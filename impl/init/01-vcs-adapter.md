@@ -110,6 +110,17 @@ M.default_sign_priority = { modified = 10, added = 20, deleted = 30, ... }
 -- 没有这个钩子的适配器行为与以前完全一致（`Repo:has_status()` 为假 → 逐文件提问）。
 ---@field status? fun(root: string, cb: fun(err: string?, entries: table<string, vcssign.FileStatus>?))
 
+-- blob 批读取（可选，M7 P0-2）：一个长驻子进程服务「所有」show 请求。
+-- 只有 git 实现（`cat-file --batch`）；svn 没有等价协议（`svn cat` 多目标直接拼接、无分隔符），
+-- 所以不实现，`Repo:read_blob` 原样退回 `show`。返回值永不为 nil：起不来的 reader 以
+-- `closed = true` 返回，对调用方等价于「没有这个钩子」。
+---@field open_blob_reader? fun(root: string): vcssign.BlobReader
+
+---@class vcssign.BlobReader
+---@field closed boolean  # 子进程已退出/已关闭：调用方必须丢弃它，不要再通过它读
+---@field read fun(self: vcssign.BlobReader, rev: string, rel: string, cb: fun(err: string?, text: string?))
+---@field close fun(self: vcssign.BlobReader)  # 关掉子进程；可重复调用
+
 ---@class vcssign.FileStatus
 ---@field tracked boolean   # 在版本控制里（svn: 非 unversioned/ignored）
 ---@field staged boolean    # git: index 与 HEAD 不同（svn 恒 false——没有暂存区）
@@ -150,6 +161,16 @@ commit(root, files, msg, cb)  -> cb(err, info)           -- info: 提交摘要
 >
 > 顺带记一对名字易混的东西：`is_tracked(root, rel, cb)` 仍然是**单文件**提问（未跟踪判断、
 > 回退路径），`status` 是**全仓**提问；两者语义重叠但成本差 20 倍，别把 `is_tracked` 放进热路径。
+>
+> **`open_blob_reader` 的三条硬约束**（M7 步骤 4b 实测出来的）：
+> 1. **它读的是「启动时的 index」**。`git cat-file --batch` 每个进程只解析一次 index，所以
+>    `git apply --cached` 之后同一个子进程仍回答**旧**的 `:<rel>`（实测 stage 前后 sha 不变）。
+>    因此 reader 的寿命由**基线指纹**决定，`Repo:read_blob` 一发现 `baseline_stamp` 变了就换新
+>    reader；适配器若没有 `baseline_stamp`，`index` 读取不走 reader（宁可多一个进程，也不能
+>    回答过期基线）。适配器自己不要缓存「index 内容」，那正是这条要避开的错。
+> 2. **投递的文本必须与 `show` 逐字节一致**（`show` 走 `exec.run`、`text = true`，已去掉 CRLF），
+>    否则同一个文件会因为「从哪条路读」得到两份基线，渲染短路的键会跟着抖动。
+> 3. **关闭时要把在途请求答完**（以错误回答，不是静默丢弃）：上层据此回退到 `show`。
 
 **base.lua 里同时写死「能力接口默认实现」**：不支持的调用返回 `"capability unsupported: <name>"` 错误，防止子模块漏实现导致 nil 调用。
 

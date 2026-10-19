@@ -217,8 +217,24 @@ M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
       回归：`attach_spec` +4 例（含 `spawned()` 记 argv）、`repo_spec` +4 例，全文 285 例通过。
       顺手修掉一个真 bug：`load_base_show` 被放在 `load_base_probe` **之后**定义 → 那次调用是全局访问，
       「status 查询失败」这条回退路径此前没有断言覆盖，其实一直是坏的。
-- [ ] 4b. P0-2 `cat-file --batch` 常驻（**仅 git**，svn 无 blob 批协议）——§2.7 的 22 个进程里
-      20 个就是每文件那次 `show`；S2 的多目标过渡步已被 4a 取代（不再需要）
+- [x] 4b. P0-2 `cat-file --batch` 常驻（**仅 git**，svn 无 blob 批协议；**已落地**，实测见 08 §2.8）：
+      `exec.lua` 新增 `M.stream`（长驻 `vim.system` + `stdin = true` + 调度回主循环），
+      `vcs/git.lua` 新增 `CatFile`（`--batch` 协议：`<sha> <type> <size>` + 内容按字节数切分、
+      `
+`→`
+` 与 `show` 对齐、请求队列 + 超时自杀），适配器钩子
+      `open_blob_reader(root) -> vcssign.BlobReader`（`read` / `close` / `closed`），
+      `Repo:read_blob` 每仓库懒开一个、`dispose` 关闭、reader 死掉则丢弃并重试一次 `system.show`。
+      实测：20 个脏文件的 attach **22 → 3 进程**（`rev-parse` + `status` + `cat-file`，与文件数无关）、
+      墙钟 1661 → 759 ms；单文件首标不变（142.0 ms / 3 进程，第 3 个换成 `cat-file`）——
+      这本来就是批量优化。svn 一个进程没少（无批协议，走 P0-1 的干净文件捷径）。
+      回归：`attach_spec` +2 例、`repo_spec` +2 例、`vcs_git_spec` +1 例，三个计数辅助改为同时拦
+      `exec.run` 与 `exec.stream`，全文 290 例通过。
+      两个坑记一笔：① `vim.system` 不给 `stdin = true` 时 `proc:write` 静默失败（被 pcall 吞），
+      每个请求要等超时才回退，进程数正常而延迟翻倍；② `cat-file --batch` **每个进程只读一次
+      index**，`git apply --cached` 后仍回答旧 blob（sha 不变）→ stage 一个 hunk 后 staged 层恒空，
+      `actions_spec` 两例超时。修法：reader 寿命绑 `baseline_stamp`（变了就换新），
+      没有指纹的适配器对 `index` 读取直接走 `show`。
 - [ ] 5. P1 动作层三处（stage 双刷新二选一——svn 侧只核 revert/reset 路径 / `has_staged_change`
       改 `--cached --quiet`（仅 git）/ blame 带 `-L`（git）+ 按行缓存（两类都受益，svn 无 `-L`））
 - [ ] 6. A4 进程计数探针固化为回归 spec（08 §6 的验收断言表；**git/svn 各一套**）
