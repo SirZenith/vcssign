@@ -304,6 +304,10 @@ Summary of conflicts:
 - **一个窗口里有多条答案时用 `helpers.select_notifications(captured, needle)`**，再断言「几条、各是什么」，
   不要靠下标区分到达顺序（`svn` 的 stage+unstage 同窗口、`message_input = 'buffer'` 先 WARN 后 INFO
   这两处都是这个形状）。谓词里要等的那条也从它算：`#select_notifications(s, 'no staging area') >= 2`。
+  同一条也管「按内容断言全部捕获项」的用例：`attach_spec` 的「不关于这个文件的别管」先
+  `select_notifications(seen, vim.fs.basename(file))` 再逐条断言级别。
+- 这套写法现在 `test/` 下**全部** spec 一致（cli / actions / autocmds / blame / nav / revdiff /
+  worddiff / attach），一个提交一次性收口；新写的用例照抄即可，不必再自己写 `captured[1]`。
 
 ### M5 之后的实况（174 用例）
 

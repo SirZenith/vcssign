@@ -177,11 +177,11 @@ return {
       end, 'the buffer to attach')
 
       eq(#marks(bufnr), 0, 'off by default')
-      local seen = helpers.capture_notify(function()
+      local notification = helpers.capture_notify_one(function()
         keymap.dispatch('toggle_word_diff', { bufnr = bufnr })
-      end)
+      end, 'word diff on')
       eq(config.get().word_diff, true)
-      ok(#seen > 0 and seen[1].message:find('word diff on', 1, true) ~= nil, 'the switch says so')
+      ok(notification.message:find('word diff on', 1, true) ~= nil, 'the switch says so')
 
       -- The switch re-renders every attached buffer, which re-reads the
       -- baseline first: the ranges arrive with that answer.
