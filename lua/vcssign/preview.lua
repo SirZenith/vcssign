@@ -27,7 +27,7 @@ end
 ---@type integer?
 M._ns = nil
 
---- The namespace the deleted-line preview lives in (`vcssign_preview`, 07 §4).
+--- The namespace the deleted-line preview lives in (`vcssign_preview`, signs §4).
 ---@return integer
 function M.namespace()
   if not M._ns then

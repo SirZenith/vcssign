@@ -1,6 +1,6 @@
 --- Documentation spec: the help file and the code have to agree.
 ---
---- `doc/vcssign.txt` is hand written (M5, 05 §5) — there is no generator — so
+--- `doc/vcssign.txt` is hand written (M5, testing §5) — there is no generator — so
 --- nothing but a test stops it from drifting away from `config.lua` and
 --- `cli.lua`.  Each case pins one of those links.
 ---

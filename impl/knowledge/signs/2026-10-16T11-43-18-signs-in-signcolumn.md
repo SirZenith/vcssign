@@ -1,11 +1,13 @@
-# 07 · M6 行级 sign（signcolumn）：设计与前置探针实测（M6）
+# M6 行级 sign（signcolumn）：设计与前置探针实测（signs）
+
+> **模块** `signs`（`impl/knowledge/signs/`）· **状态** 已实现（M6 Step 2–14）· **原编号** 07
 
 > **为什么写这份文档**：M6 把插件从「文件级状态侧边栏」整体转向「行级 hunk sign」——
 > 这是目标层面的转向，不是一个新功能。转向的理由（`git status` 是 O(树) 而 sign 只需要
 > 基线文本）、随之冻结的接口与配置面（`VcsCaps`、适配器 `show/blame/apply_patch`、
 > `signs/rev/diff` 段）、以及「必须先测后写」的若干反直觉约束（`:e!` 走 `on_detach`、
 > `svn patch` 冲突仍退 0、`histogram` 慢 10 倍……），如果只留在临时探针报告里，
-> Step 2 之后的每一步实现都要重新踩一遍。这里把它们固化下来，作为 03 / 04 的 M6 继任文档
+> Step 2 之后的每一步实现都要重新踩一遍。这里把它们固化下来，作为 sidebar / actions 的 M6 继任文档
 > 与 Step 2–14 的唯一设计与实测依据。
 >
 > **来源**：`.pi/plans/2026-10-16T11-23-05-m6-signs-in-signcolumn.md`（计划）
@@ -50,7 +52,7 @@ git 与 svn 同时交付（基线 git=index、svn=BASE），能力差异用 `Vcs
 | `lua/vcssign/config.lua` | 改配置面 | 删 `sidebar`；新增 `signs/signs_staged/signcolumn/max_file_length/attach_to_untracked/rev/keymaps/word_diff/deleted_preview/current_line_blame/update_debounce_ms` |
 | 新增 `hunk/diff/attach/signs/nav/worddiff/preview/blame/revdiff/keymap.lua` | 新增 | 见 §3 |
 | `plugin/vcssign.vim` | 微调 | 只注册 `:Vcssign`（保持懒 `require`） |
-| `doc/vcssign.txt` + `impl/init/*` | 回写 | 本文即其中一份 |
+| `doc/vcssign.txt` + `impl/**` 各篇 | 回写 | 本文即其中一份 |
 
 **已在本仓库 runtime 核对的可用原语（无需外部依赖）**
 - `vim.text.diff(a, b, opts)`（0.11+ 名字，`vim.diff` 为兼容别名）：`result_type='indices'` → 1 基
@@ -350,7 +352,7 @@ commit = { message_input = 'input' },
 | 9 | hunk 级动作（`stage_hunk`/`unstage_hunk`/`reset_hunk`/`stage_buffer`/`reset_buffer`）+ CLI；`actions_spec` 19→30 | ✅ **已完成**（`a5e544a`，202 → **213** 用例，全绿；`preview_hunk` 挪到 Step 10，见 §6.1） |
 | 10 | `worddiff.lua`（成对行按段 diff）+ `preview.lua`（`virt_lines` 删除预览 / hunk 浮窗） | ✅ **已完成**（`1317890`，213 → **229** 用例，全绿；`worddiff_spec` 9 + `preview_spec` 7） |
 | 11 | `blame.lua`（`current_line_blame` + `blame_line` 浮窗）+ `revdiff.lua`（`diffthis [rev]`）；各约 6 | ✅ **已完成**（`22ad24a`，229 → **244** 用例，全绿；`blame_spec` 8 + `revdiff_spec` 7） |
-| 12 | 文档与帮助回写（`00`–`06`、`doc/vcssign.txt`、`doc_spec`） | ✅ **已完成**（`a4b3551`，用例数仍 **244**，全绿；`doc_spec` 6/6 单跑） |
+| 12 | 文档与帮助回写（`overview`–`milestones`、`doc/vcssign.txt`、`doc_spec`） | ✅ **已完成**（`a4b3551`，用例数仍 **244**，全绿；`doc_spec` 6/6 单跑） |
 | 13 | 独立审查（`code-reviewer` 审 M6 起点..HEAD）+ 修复 | ✅ **已完成**（审查 runId `del_mvas87sc_mefj`，完整报告 `temp/m6_review.md`；修复 `c2990be`，244 → **250** 用例，全绿） |
 | 14 | 终验（全量两遍幂等、stderr 合同、`git diff --check` 干净、逐 SHA 复跑） | ✅ **已完成**（`a3e41fd`；M6 收尾，**250/250** 两遍全绿、stderr 只剩 retry 那一行、逐 SHA 复跑见 §6.1） |
 
@@ -364,12 +366,12 @@ commit = { message_input = 'input' },
 | SHA | 提交 | 验证（`make test`） |
 |---|---|---|
 | `080379c` | M6 起点：退役侧边栏，留最小 sign 骨架 | 174 → **125**，全绿 |
-| `9b4eb90` | 07 设计与探针实测（纯文档） | — |
+| `9b4eb90` | signs 设计与探针实测（纯文档） | — |
 | `3ecbdd7` | Step 2：`Repo` 降级为元数据会话 + `exec` 支持 `stdin` | **128**，其中 2 个 repo_spec 用例红（见下） |
 | `5e8e485` | Step 3：`hunk.lua` + `diff.lua` | 125 → **158** |
 | `7acc713` | Step 4：适配器换血（`show` / `is_tracked` / `blame` / `apply_patch` / `revert`） | **150**（重写 vcs_git/vcs_svn 用例，158 → 150） |
 | `f1d1735` | `fix(repo)`：根目录加非递归 watch（修 Step 2 的回归） | **150**；`FILTER=repo_spec` 连跑两次均 20/20 |
-| `e6c4f1b` | `fix(vcs)`：svn 追踪判定改用 `svn info` + 07 两处实测更正 | **151** |
+| `e6c4f1b` | `fix(vcs)`：svn 追踪判定改用 `svn info` + signs 两处实测更正 | **151** |
 | `6eaef2b` | Step 5：`signs.lua` + `attach.lua` | 150 → **178** |
 | `e4142b0` | 本文档：Step 1–5 标完成 + §6.1–§6.4 交接说明（纯文档） | — |
 | `2193802` | Step 6：自动触发、生命周期与逐缓冲开关（`autocmds` / `cli` / `init` 接到 `attach`） | 178 → **184**，全绿；本步动到的三个 spec 单跑 **41/41** |
@@ -379,14 +381,14 @@ commit = { message_input = 'input' },
 | `5942dd9` | `fix(test)`：`repo_spec` 的探针计数限定到被测仓库（Step 10 全量首跑的 flake） | 用例数不变，只让全量运行稳定 |
 | `1317890` | Step 10：词级 diff 与 hunk 预览（`worddiff.lua` + `preview.lua` + 渲染出口 `clear_layers` + CLI / keymap 接线） | 213 → **229**，全绿；`worddiff_spec` 9 + `preview_spec` 7 单跑 **16/16** |
 | `22ad24a` | Step 11：当前行 blame 与 `diffthis [rev]`（`blame.lua` + `revdiff.lua` + `preview.M.open`） | 229 → **244**，全绿；`blame_spec` 8 + `revdiff_spec` 7 单跑 **15/15** |
-| `a4b3551` | Step 12：文档与帮助回写（`00`–`05` 加 M6 标记、05 补实况表、07 §5.3 / §11 更正、`doc/vcssign.txt` 三处措辞） | 用例数仍 **244**，全绿；`doc_spec` 6/6 |
+| `a4b3551` | Step 12：文档与帮助回写（`overview`–`testing` 加 M6 标记、testing 补实况表、signs §5.3 / §11 更正、`doc/vcssign.txt` 三处措辞） | 用例数仍 **244**，全绿；`doc_spec` 6/6 |
 
 **工程门（`a4b3551` 实测）**：`make test` **244/244**（同一棵树上空闲连跑两次都是 `244 tests, 0 failed`）、
 `make format-check` 零输出、`make lint` → `0 warnings / 0 errors in 46 files`。
 
 **Step 12 回读全文时更正的两处过时说法**（漂移的来源：旧文档把「当时的实现」写成了「设计要求」）：
-① 07 §5.3 / §11 第 2 条曾写「`svn patch --strip 0` 不吃 git 风格头」——被 Step 9 的实测推翻（见 §6.3）；
-② 04 的 `autocmds._attached`（「每个缓冲区只 attach 一次」的记忆表）已在 Step 6（`2193802`）删除，
+① signs §5.3 / §11 第 2 条曾写「`svn patch --strip 0` 不吃 git 风格头」——被 Step 9 的实测推翻（见 §6.3）；
+② actions 的 `autocmds._attached`（「每个缓冲区只 attach 一次」的记忆表）已在 Step 6（`2193802`）删除，
 「只 attach 一次」现在由 `attach.lua` 按路径去重实现。**以后做这类回写要逐段核对代码，不能只加新章节。**
 
 **Step 2 引入的回归（交接要点，别再踩）**：Step 2 把监听集收敛成「只监听 metadata 目录」（D38），
@@ -482,7 +484,7 @@ rename 事件（3 events）。于是工作副本被删后 `Repo` 不会自杀，
 **Step 11 的三个决定（交接时别改回去）**：
 
 1. ~~**blame 的缓存键是 `changedtick`，不是时间**~~ —— **M7 步骤 5 扩成了三元组**
-   `changedtick + 选项 + 基线指纹`，并且**按行**缓存（08 §2.9）。原设计的两条后果都被改掉：
+   `changedtick + 选项 + 基线指纹`，并且**按行**缓存（perf §2.9）。原设计的两条后果都被改掉：
    「只移动光标零子进程」不再全成立——移到**没看过**的行要一个进程（`-L l,l`，回头免费），
    换来 2000 行文件首次看一行 211 → 63 ms；「外部 commit 后缓存不失效」也被修掉（只比
    `changedtick` 时，别人 `git add`/commit 改了一行的归属而缓冲区没动，那行会永远显示
@@ -524,7 +526,7 @@ window is not run twice` 只在全量里红（`repo_spec` 单跑 20/20）。原�
    并给 `doc_spec` 加了一条**语义**断言：默认键位的每个动作要么在 `M.ACTIONS` 里，要么在
    `PLACEHOLDERS` 里，且 `PLACEHOLDERS` 里不能有已实现的动作。
 3. 其余就地修的小项：`set_signcolumn` 在 `signcolumn = false` 且全局是 `no` / `number` 时给一次性告警
-   （07 §8 的承诺，此前从未实现），并新增 `M.reapply_signcolumn` + `autocmds` 的 `WinEnter` 订阅
+   （signs §8 的承诺，此前从未实现），并新增 `M.reapply_signcolumn` + `autocmds` 的 `WinEnter` 订阅
    （`attach` 跑在 `BufReadPost`，那时缓冲区可能还没有窗口，`:split` 出来的新窗口会留在全局值上）；
    `keymap.detach` 只删自己装过的键（值不是字符串的 lhs 是用户自己的）；`vcs/svn.lua` 的
    `apply_patch` 注释改回实测结论（旧注释还在说「git 风格头会被拒」）。
@@ -702,10 +704,10 @@ sign 就开列）。这样 noice 那类崩溃不是靠「先比后写」绕开�
 `blame_line`，注意 `diffthis` 的参数是 **rev 而不是路径**）；`keymap.ACTIONS` 里只剩
 `setqflist` / `setqflist_all` 是占位提示。
 
-**Step 12 已完成**（`a4b3551`）：`impl/init/00`–`05` 加上了 M6 的「已退役 / M6 起已变」标记与 05 的实况表
-（逐 spec 用例数与所需命令、`FILTER` 子集判据、两个要会解读的现象），07 §5.3 / §11 的 svn 结论与
+**Step 12 已完成**（`a4b3551`）：`overview`–`testing` 各篇加上了 M6 的「已退役 / M6 起已变」标记与 testing 的实况表
+（逐 spec 用例数与所需命令、`FILTER` 子集判据、两个要会解读的现象），signs §5.3 / §11 的 svn 结论与
 `doc/vcssign.txt` 的三处措辞（`watch` / `retry_*` / `debug`）一并更正；用例数不变，`doc_spec` 6/6。
-**`impl/init/06` 与 `07` 的 §6 / §6.1 保持逐 SHA 记录，不当作「设计要求」读。**
+**`milestones` 与 `signs` 的 §6 / §6.1 保持逐 SHA 记录，不当作「设计要求」读。**
 
 **Step 14（终验 = M6 收尾，`a3e41fd`）**：五条判据全部落地。
 
@@ -714,7 +716,7 @@ sign 就开列）。这样 noice 那类崩溃不是靠「先比后写」绕开�
    `nav` 13 / `preview` 7 / `repo` 20 / `revdiff` 7 / `signs` 14 / `vcs_git` 14 / `vcs_registry` 8 / `vcs_svn` 13 /
    `worddiff` 9 / `blame` 8 / `cli` 13。
 2. **stderr 合同**：stdout / stderr 分开重定向后，两次运行的 stderr **都只剩 `repo_spec` retry 用例那一行**
-   （`exec_timeout_ms = 1` 的超时告警，无结尾换行，`wc -l` = 0）—— 就是 `05-testing-infra.md` 记的「0 或 1 行」。
+   （`exec_timeout_ms = 1` 的超时告警，无结尾换行，`wc -l` = 0）—— 就是 `impl/knowledge/testing/2026-10-15T15-07-15-testing-infrastructure.md` 记的「0 或 1 行」。
    为此先清掉了 4 行测试自造噪音（`hs` 用例没包 `collect` 的通知、裸 `:write` 的文件名回显两行、
    `signcolumn = false` 的一次性告警、以及「删掉目录后留下文件已不存在的修改中缓冲区」导致的 `E211`），
    四个都改成了断言或显式清理（`a3e41fd`）。
@@ -728,7 +730,7 @@ sign 就开列）。这样 noice 那类崩溃不是靠「先比后写」绕开�
 | `5e8e485` | 158 | **❌ 2 failed** | feat(diff): hunk 模型与内置 diff 引擎（M6 Step |
 | `7acc713` | 150 | **❌ 2 failed** | feat(vcs)!: 适配器改为基线文本 / 跟踪判定 / blame / |
 | `f1d1735` | 150 | ✅ | fix(repo): 根目录加非递归 watch，工作副本被删时才可能发现 |
-| `e6c4f1b` | 151 | ✅ | fix(vcs): svn 追踪判定改用 svn info，并更正 07 的 |
+| `e6c4f1b` | 151 | ✅ | fix(vcs): svn 追踪判定改用 svn info，并更正 signs 的 |
 | `6eaef2b` | 178 | ✅ | feat(attach): sign 渲染与逐缓冲 attach 管线（M6 |
 | `2193802` | 184 | ✅ | feat(attach): 自动触发、生命周期与逐缓冲开关（M6 Step  |
 | `4bfe0ce` | 189 | ✅ | feat(signs): git 暂存态双层 sign（M6 Step 7） |
@@ -784,7 +786,7 @@ svn hunk 级丢弃的替代、`patch_of` 的基线新鲜度、`guarded` 收进 h
 8. `<leader>hb` 显示当前行 blame；`current_line_blame` 打开后随光标显示虚文本。
 9. `:Vcssign diffthis [rev]` 与任意 rev 比对。
 10. 以上交互都在 headless 测试里被断言（含屏幕单元格）；`make test lint format-check` 全绿；
-    `doc/vcssign.txt` 与 `impl/init/07-*.md` 与实现一致。
+    `doc/vcssign.txt` 与 `impl/knowledge/signs/` 与实现一致。
 
 ---
 
@@ -797,7 +799,7 @@ svn hunk 级丢弃的替代、`patch_of` 的基线新鲜度、`guarded` 收进 h
 - **`signcolumn=no` 的缓冲区看不见 sign** → 用户自己把 `'signcolumn'` 设成会显示的值（Neovim 默认 `auto` 就行）；插件不代设窗口选项（M6 之后对齐 gitsigns，见 §6.1 末条）。
 - **大文件/超长行** → `max_file_length` 拒绝 + 计数上限；word-diff 只在 hunk 行内做（§5.6 有耗时数据）。
 - **CRLF / autocrlf** → `exec` 的 `text=true` 归一 + `ignore_cr_at_eol`；专门用例（Step 3）覆盖。
-- **`Repo` 收敛会挪动 spec 计数与 stderr 合同** → Step 2 内同步改 `05-testing-infra.md` 与 `02-repo-runtime.md` 的计数/stderr 声明。
+- **`Repo` 收敛会挪动 spec 计数与 stderr 合同** → Step 2 内同步改 `impl/knowledge/testing/2026-10-15T15-07-15-testing-infrastructure.md` 与 `impl/knowledge/runtime/2026-10-15T15-07-15-repo-runtime.md` 的计数/stderr 声明。
 - **减法步骤（Step 1）面较大** → 它的判据就是「删干净 + 全绿 + 文档/`doc_spec` 同步」。
 
 ---

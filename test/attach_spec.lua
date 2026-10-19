@@ -98,7 +98,7 @@ end
 ---@return integer
 --- Patch both spawn paths for the duration of `fn`.
 ---
---- A command that runs and returns is `exec.run`; the batch reader (08 P0-2) is
+--- A command that runs and returns is `exec.run`; the batch reader (perf P0-2) is
 --- `exec.stream`, a child that outlives the call.  Counting only the first would
 --- make "one process per repository" look like "no process at all".
 ---@param record fun(cmd: string[])
@@ -136,7 +136,7 @@ end
 
 --- Count how many subprocesses `fn` spawns.  No filtering, unlike
 --- `count_probes`: this is the "costs nothing" assertion of the render
---- short-circuit (08 P0-4), where one stray `show` already fails it.
+--- short-circuit (perf P0-4), where one stray `show` already fails it.
 ---@param fn fun()
 ---@return integer
 local function count_procs(fn)
@@ -174,9 +174,9 @@ end
 
 --- Start counting `attach._render` entries per buffer, until `stop()`.
 ---
---- *Entries*, not draws: the short-circuit (08 P0-4) returns from inside
+--- *Entries*, not draws: the short-circuit (perf P0-4) returns from inside
 --- `_render`, so an entry means "this buffer was told something moved" — which
---- is exactly what the changed-path channel (08 P0-3) decides.
+--- is exactly what the changed-path channel (perf P0-3) decides.
 ---@return table<integer, integer> seen
 ---@return fun() stop
 local function watch_renders()
@@ -321,7 +321,7 @@ return {
       -- written at all.  vcssign never touches the window's `'signcolumn'` --
       -- writing that option from a `WinEnter` handler fires `OptionSet` even for
       -- the value the window already has, which is how `:Noice history` broke
-      -- (07 §6.3).
+      -- (signs §6.3).
       config.setup({ signcolumn = false })
       local dir = helpers.git_repo('attach-signcolumn-off')
       helpers.write(dir .. '/base.txt', 'base\nnew\n')
@@ -656,7 +656,7 @@ return {
     end),
   },
 
-  -- ▏ the render short-circuit (08 P0-4) ──────────────────────────────────────
+  -- ▏ the render short-circuit (perf P0-4) ──────────────────────────────────────
 
   {
     name = 'an edit with no disk change spawns nothing to re-render',
@@ -744,7 +744,7 @@ return {
     end),
   },
 
-  -- ▏ the changed-path channel (08 P0-3) ─────────────────────────────────────
+  -- ▏ the changed-path channel (perf P0-3) ─────────────────────────────────────
 
   {
     name = 'a work tree event enters only the buffer it names',
@@ -759,7 +759,7 @@ return {
 
       -- Another program writes one of the two files.  The root watch is
       -- non-recursive, so libuv names the file, and the buffer that file
-      -- belongs to is the only one with anything to do (08 P0-3).
+      -- belongs to is the only one with anything to do (perf P0-3).
       local renders, stop = watch_renders()
       local ran, err = pcall(function()
         helpers.write(dir .. '/base.txt', 'base\nreplaced on disk\n')
@@ -797,7 +797,7 @@ return {
         -- This is `FocusGained` in one line: the liveness probe every focus
         -- gain runs.  It is the only thing that notices a repository that went
         -- away, so it stays — but with no filesystem event behind it there is
-        -- nothing for any buffer to do (08 P0-3).
+        -- nothing for any buffer to do (perf P0-3).
         st.repo:refresh()
         helpers.wait_for(function()
           return updates > 0
@@ -895,7 +895,7 @@ return {
       local argv = spawned(function()
         attach_now(bufnr)
       end)
-      -- rev-parse + status + one spawn of the batch reader (08 P0-2); HEAD is
+      -- rev-parse + status + one spawn of the batch reader (perf P0-2); HEAD is
       -- not read because the view says the index matches it.
       eq(#argv, 3, 'three commands: ' .. table.concat(argv, ' | '))
       ok(argv[3]:find('cat-file', 1, true), 'the baseline comes through the reader: ' .. argv[3])
@@ -955,7 +955,7 @@ return {
   {
     name = 'two dirty files in one repository cost one baseline process between them',
     fn = guarded(function()
-      -- The arithmetic 08 P0-2 is about: the first buffer pays for the reader,
+      -- The arithmetic perf P0-2 is about: the first buffer pays for the reader,
       -- the second one pays for nothing at all.
       local dir = helpers.git_repo('attach-batch-shared')
       helpers.write(dir .. '/base.txt', 'base\nnew\n')

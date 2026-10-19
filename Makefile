@@ -1,4 +1,4 @@
-# vcssign developer tasks (impl/init/05-testing-infra.md §4).
+# vcssign developer tasks (impl/knowledge/testing/ §4).
 #
 # On Linux/macOS use `make`.  git-bash on Windows usually has no make, so
 # the scripts are the real entry points (`sh scripts/run_tests.sh`) — this

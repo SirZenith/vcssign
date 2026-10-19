@@ -55,7 +55,7 @@ local M = {}
 ---@field base_stamp string?   the adapter's baseline key when `base_text` was read
 ---@field render_key? { tick: integer, base: string?, head: string?, shown: boolean, conf: string }
 ---                             what the last render was made from (`M._render`'s
----                             short-circuit, 08 P0-4); nil = never rendered
+---                             short-circuit, perf P0-4); nil = never rendered
 ---@field hunks vcssign.Hunk[]             worktree layer (index -> buffer)
 ---@field hunks_staged vcssign.Hunk[]      staged layer (HEAD -> buffer), git only
 ---@field tracked boolean?
@@ -166,7 +166,7 @@ end
 --- Every trigger that reaches the debounce means "ask again", not "the index
 --- moved": a buffer edit cannot touch the baseline at all, and an fs event or
 --- the probe behind `FocusGained` usually reports the same baseline as before.
---- The fingerprint is what tells the two apart without a subprocess (08 P0-4).
+--- The fingerprint is what tells the two apart without a subprocess (perf P0-4).
 ---
 --- Either side being unknown answers `true`: a redundant re-read costs a few
 --- tens of milliseconds, a stale sign is a bug.
@@ -205,7 +205,7 @@ end
 
 local function load_head(st, done, staged)
   -- `staged == false` is the status view saying the index matches `HEAD`, so the
-  -- second layer has nothing to show and reading it would be pure cost (08 P0-1).
+  -- second layer has nothing to show and reading it would be pure cost (perf P0-1).
   if staged == false or not wants_staged(st) then
     st.head_text = nil
     return done()
@@ -259,7 +259,7 @@ end
 --- Read both baselines through the adapter's per-file questions, then call
 --- `done()`.
 ---
---- This is the path the status view replaced (08 P0-1), kept because it is the
+--- This is the path the status view replaced (perf P0-1), kept because it is the
 --- only one a VCS without the primitive — or a failed query — has.
 ---
 --- Failure chain: an error from `is_tracked` is "no signs" (and no warning —
@@ -312,7 +312,7 @@ local function status_entry(entries, path)
   return nil
 end
 
---- Both baselines from the repository's status view (08 P0-1), then `done()`.
+--- Both baselines from the repository's status view (perf P0-1), then `done()`.
 ---
 --- The saving is not just "one query instead of three per buffer": a path the
 --- view does not mention is in sync with its index/BASE, and for such a file
@@ -446,7 +446,7 @@ function M._render(st, force)
   then
     -- Nothing this render reads has moved: no `nvim_buf_get_lines`, no diff,
     -- no extmark churn.  This is what makes a `FocusGained` sweep and a sweep
-    -- after an fs event cost nothing (08 P0-4).  `changedtick` is the buffer
+    -- after an fs event cost nothing (perf P0-4).  `changedtick` is the buffer
     -- half and it is bumped by every change, including `:e!`.
     return
   end
@@ -468,7 +468,7 @@ function M._render(st, force)
     return
   end
   -- The signs and both previews read the same baseline: normalise it once and
-  -- split it once (08 P2-3: `diff.normalize` used to run twice per render).
+  -- split it once (perf P2-3: `diff.normalize` used to run twice per render).
   local base_text = diff.normalize(st.base_text)
   local base_lines = diff.split(base_text)
   if st.untracked then
@@ -582,7 +582,7 @@ function M.attach(bufnr)
     -- cannot have touched the baseline, and the repository saying "something
     -- moved on disk" (an fs event, or the probe behind `FocusGained`).  Only
     -- the second may need a new baseline, and only when the adapter's
-    -- fingerprint moved — the render short-circuit covers the rest (08 P0-4).
+    -- fingerprint moved — the render short-circuit covers the rest (perf P0-4).
     if baseline_moved(st) then
       M.refresh(bufnr)
     else
@@ -632,7 +632,7 @@ function M.attach(bufnr)
     st.unsubscribe = {
       repo:on_update(function(_, changed)
         -- `changed` is the channel the repository announces what the
-        -- filesystem said moved (08 P0-3): a path set when the events named
+        -- filesystem said moved (perf P0-3): a path set when the events named
         -- files, `nil` when something moved that names no file (the index /
         -- wc.db — every baseline may be stale), and empty when the probe found
         -- nothing moved at all (a `FocusGained` sweep, an explicit refresh).
@@ -679,7 +679,7 @@ end
 ---
 --- This is deliberately the *cheap* answer: the callback decides whether a
 --- baseline re-read is needed at all (`baseline_moved`), so an edit made with
---- the index untouched costs no subprocess (08 P0-4).
+--- the index untouched costs no subprocess (perf P0-4).
 ---@param bufnr integer
 function M.mark_dirty(bufnr)
   local st = M._bufs[bufnr]
@@ -879,7 +879,7 @@ end
 ---
 --- The sweep runs on every focus gain, so it must be free when nothing moved:
 --- a buffer whose baseline fingerprint is unchanged is only re-rendered, which
---- the render short-circuit turns into a `changedtick` comparison (08 P0-4).
+--- the render short-circuit turns into a `changedtick` comparison (perf P0-4).
 function M.refresh_all()
   for _, bufnr in ipairs(M.buffers()) do
     local st = M._bufs[bufnr]

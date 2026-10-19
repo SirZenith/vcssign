@@ -13,7 +13,7 @@
 ---   Copyright (c) 2020 Lewis Russell
 ---   https://github.com/lewis6991/gitsigns.nvim
 ---
---- See impl/init/07-signs-in-signcolumn.md for the design (D40).
+--- See impl/knowledge/signs/ for the design (D40).
 ---
 --- `vim.text.diff(..., { result_type = 'indices' })` returns one group of four
 --- numbers per hunk, in *1-based* line numbers:
@@ -23,7 +23,7 @@
 --- where `count_a`/`count_b` are the number of lines removed/added.  A pure
 --- insertion therefore has `count_a == 0` and a `start_a` that may be 0 ("before
 --- the first line"); a pure deletion has `count_b == 0`.  (Verified by hand on
---- nvim 0.12.4; see impl/init/05-testing-infra.md.)
+--- nvim 0.12.4; see impl/knowledge/testing/.)
 
 --- A node of a hunk: a 1-based start line and a line count.  `start` is only
 --- meaningful when `count > 0`, and for an insertion `removed.start` is the

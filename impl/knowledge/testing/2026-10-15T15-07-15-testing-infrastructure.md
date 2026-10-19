@@ -1,4 +1,6 @@
-# 05 · 测试仓库（temp/）、测试脚手架、lint / CI / 文档（P4，与 01–03 并行推进）
+# 测试仓库（`temp/`）、测试脚手架、lint / CI / 文档（testing）
+
+> **模块** `testing`（`impl/knowledge/testing/`）· **状态** 长期维护 · **原编号** 05
 
 > 用户已指定：测试用的 git / svn 仓库放在**当前项目目录下的 `temp/`**。
 > **落地状态**：`scripts/make_test_repos.sh` 已实现并实测——从零 `rm -rf temp` 重建、连续跑两次（幂等）、
@@ -23,17 +25,17 @@
 | `test/run.lua` | 轻量 runner（TAP 输出 + 非 0 退出码 + svn 缺失 SKIP） | ✅（取代原计划的 `test/preload.lua`） |
 | `test/helpers.lua` | fixture 路径 / 断言 / 异步阻塞等待 / 通知捕获 / 屏幕单元格读取 | ✅ |
 | `test/status_type_spec.lua`、`config_spec.lua` | 枚举与配置不变量 | ✅ |
-| `test/vcs_git_spec.lua`、`vcs_svn_spec.lua`、`vcs_registry_spec.lua` | 01 的验收 spec | ✅（42 用例全绿） |
-| `test/repo_spec.lua` | 02 的验收 spec（元数据会话：监听/去抖/存活探测/句柄清场） | ✅（20 用例全绿，M6 Step 2 版） |
+| `test/vcs_git_spec.lua`、`vcs_svn_spec.lua`、`vcs_registry_spec.lua` | vcs 的验收 spec | ✅（42 用例全绿） |
+| `test/repo_spec.lua` | runtime 的验收 spec（元数据会话：监听/去抖/存活探测/句柄清场） | ✅（20 用例全绿，M6 Step 2 版） |
 | `test/exec_spec.lua` | `exec.run` 契约（**回调上下文**/错误结构/超时/spawn 失败/**stdin**） | ✅（13 用例全绿，M6 Step 2 加 4 个 stdin 用例） |
-| `test/renderer_spec.lua` | 03 的行模型 spec（纯函数，无仓库/无二进制） | ✅（15 用例全绿） |
-| `test/sidebar_spec.lua` | 03 的窗口/按键 spec（真实仓库 + 真实屏幕） | ✅（18 用例全绿） |
-| `test/actions_spec.lua` | 04 的动作 spec（真实仓库 + VCS 自身核对 + 桩 `vim.ui.input`） | ✅（24 用例全绿） |
-| `test/cli_spec.lua` | 04 的 `:Vcssign` spec（命令分派/补全/目标解析/公共 API/`plugin/` 薄壳） | ✅（17 用例全绿） |
-| `test/autocmds_spec.lua` | 04 的生命周期 spec（attach/detach/清理/钩子隔离） | ✅（10 用例全绿） |
-| `test/proc_budget_spec.lua` | **进程预算**（08 §6.1）：每 VCS 一套计数断言，一例一个场景 | ✅（7 用例全绿，M7 步骤 6） |
+| `test/renderer_spec.lua` | sidebar 的行模型 spec（纯函数，无仓库/无二进制） | ✅（15 用例全绿） |
+| `test/sidebar_spec.lua` | sidebar 的窗口/按键 spec（真实仓库 + 真实屏幕） | ✅（18 用例全绿） |
+| `test/actions_spec.lua` | actions 的动作 spec（真实仓库 + VCS 自身核对 + 桩 `vim.ui.input`） | ✅（24 用例全绿） |
+| `test/cli_spec.lua` | actions 的 `:Vcssign` spec（命令分派/补全/目标解析/公共 API/`plugin/` 薄壳） | ✅（17 用例全绿） |
+| `test/autocmds_spec.lua` | actions 的生命周期 spec（attach/detach/清理/钩子隔离） | ✅（10 用例全绿） |
+| `test/proc_budget_spec.lua` | **进程预算**（perf §6.1）：每 VCS 一套计数断言，一例一个场景 | ✅（7 用例全绿，M7 步骤 6） |
 | `scripts/tools.sh` | 钉版本把 stylua / luacheck 下到 `deps/`（幂等） | ✅（stylua 2.3.1 / luacheck 1.2.0） |
-| `stylua.toml` / `.luacheckrc` / `Makefile` | 工程工具链（gitsigns 同款） | ✅（05 §4，实测 `make 4.4.1`） |
+| `stylua.toml` / `.luacheckrc` / `Makefile` | 工程工具链（gitsigns 同款） | ✅（testing §4，实测 `make 4.4.1`） |
 | `doc/vcssign.txt` + `test/doc_spec.lua` | 手写帮助文件 + 「文档与代码不许漂移」的断言 | ✅（7 用例，无外部二进制） |
 
 ## 2. temp/ 测试仓库（scripts/make_test_repos.sh）
@@ -71,7 +73,7 @@ rm old.txt                              # worktree D
 | `index R`（rename + orig_path） | `git mv` |
 | `?? untracked`（含空格/中文路径） | 未 add 的新文件 |
 | `U conflicted`（UU） | `git merge` 制造冲突（单独一个 `temp/git-repo-conflict`，避免主 fixture 污染） |
-| worktree root 检测 | `git worktree add ../git-worktree -b wt`（01 §7 回归点） |
+| worktree root 检测 | `git worktree add ../git-worktree -b wt`（vcs §7 回归点） |
 
 > **实测校正**：
 > - 首版计划把「staged modify」用 `git add base.txt` 造，结果它与「worktree M」互相覆盖；
@@ -134,7 +136,7 @@ Summary of conflicts:
 
 ### 2.5 `temp/nested`（嵌套用例）
 
-`temp/nested` 为 git 仓库，其中 `inner/` checkout 了上面的 svn server（git 里 ignore 掉 `inner`）→ 01 §7.4 的系统切换用例。
+`temp/nested` 为 git 仓库，其中 `inner/` checkout 了上面的 svn server（git 里 ignore 掉 `inner`）→ vcs §7.4 的系统切换用例。
 
 ### 2.6 退出码矩阵
 
@@ -166,29 +168,29 @@ Summary of conflicts:
   `helpers.cleanup()` 在 runner 末尾删除整个 `temp/_spec`。
   **共享 fixture 仍是只读的**：M1 spec 断言它们精确的状态矩阵，若在 `temp/git-repo` 里
   `git add` 一次，下一次跑套件就会失败。
-- **uv 句柄计数**：`helpers.uv_count('fs_event'|'timer')` 遍历 `vim.uv.walk`——02 §5.4 的
+- **uv 句柄计数**：`helpers.uv_count('fs_event'|'timer')` 遍历 `vim.uv.walk`——runtime §5.4 的
   「dispose 后句柄清零」就是用它断言前后相等（比只查内部字段更接近真实泄漏）。
 - **进程计数**（M7 步骤 6）：`helpers.spawns(fn) -> string[]` 在 `fn` 执行期间临时替换
   `exec.run` **与** `exec.stream`，返回每条 argv 拼成的一个字符串（不筛命令）；
   `helpers.running(calls, sub)` 再按 `' <sub> '` 过滤，于是 `cat-file` 与 `cat` 不会互相误伤。
   两个通道都要拦：常驻进程（`git cat-file --batch`）走 `exec.stream`，只打桩 `exec.run`
-  会把「每仓库一个 reader」看成 0。数「一次场景花了几个进程」见 08 §6.1 的预算表。
+  会把「每仓库一个 reader」看成 0。数「一次场景花了几个进程」见 perf §6.1 的预算表。
 - **要断言 sweep 类场景时，autocmd 必须真的装上**：`vim.api.nvim_exec_autocmds('FocusGained', {})`
   在没有 `autocmds.setup()` 的会话里是空操作，用例会「通过」得毫无意义（实测预算写 0 也过）。
   `proc_budget_spec` 因此在 `guarded` 里 `autocmds.setup()`、收尾 `autocmds.disable()`。
-- **回调里不要断言**：管线的 waiters/订阅者由 `pcall` 隔离（02 §3.3），断言会被当作
+- **回调里不要断言**：管线的 waiters/订阅者由 `pcall` 隔离（runtime §3.3），断言会被当作
   “callback failed” 记日志而**不会**让用例失败。spec 把结果写进变量、在用例体内断言。
 - spec 清单（对应各计划文件的验收标准，✅ = 已落地）：
   - ✅ `status_type_spec`：枚举三件套不变量、未知状态的降级
   - ✅ `config_spec`：list 整体替换（含嵌套层）、空表按 dict 合并、不污染 defaults
-  - ✅ `vcs_git_spec`：01 §7.1 + §7.3 + `-z` 解析（空格/中文/rename orig_path/缺 orig 容错）
+  - ✅ `vcs_git_spec`：vcs §7.1 + §7.3 + `-z` 解析（空格/中文/rename orig_path/缺 orig 容错）
         + **stale marker 不当 root**（空 `.git` 目录、指向不存在 gitdir 的 `.git` 文件）
-  - ✅ `vcs_svn_spec`：01 §7.2 + §7.5 + 固定列解析（空格/中文路径真实输出、CRLF/孤立 CR、
+  - ✅ `vcs_svn_spec`：vcs §7.2 + §7.5 + 固定列解析（空格/中文路径真实输出、CRLF/孤立 CR、
         **真实 tree conflict 的列 7 + 续行 + Summary 尾行**、**真实 switched 的列 5**）
-  - ✅ `vcs_registry_spec`：01 §7.4 嵌套切换、命令优先于 marker、
+  - ✅ `vcs_registry_spec`：vcs §7.4 嵌套切换、命令优先于 marker、
         **无 marker 时逐系统探测的回落链（用 stub 模块真正走到 step 循环）**、最后错误透传、
         确定性否定不被 marker 复活、config.systems 顺序
-  - ✅ `repo_spec`（20 用例，M6 Step 2 版）：02 §5.1–5.5 + §4 + 二轮回归 —— 「一次元数据事件只广播一次」、
+  - ✅ `repo_spec`（20 用例，M6 Step 2 版）：runtime §5.1–5.5 + §4 + 二轮回归 —— 「一次元数据事件只广播一次」、
         事件风暴/同窗口多次请求只探测一轮、防抖窗口内手动刷新不双跑、
         `git add`（含 linked worktree）→ 广播、marker 消失 → dispose + `uv_count` 前后相等、
         探测失败不回退 + 单次 warn + 指数退避 + 重试自动恢复（含 `on_error`）、明确否定 → `on_delete`、
@@ -239,7 +241,7 @@ Summary of conflicts:
         `BufDelete` 释放引用并关监听、`FocusGained` 拉取外部修改、`DirChanged` 换仓库、`on_attach`/`on_detach`
         钩子与抛异常隔离、`VimLeavePre` 后无仓库/侧边栏/`fs_event`/`timer`、`disable()` 幂等。
         ⚠️ `VimLeavePre` 用例要**先等首次 status 落地**再断言句柄数：`exec` 的定时器属于在飞的命令，
-        退出清理不负责杀它（04 §7.1）。：stage/unstage/commit 全链路（**必须**在副本仓库上真实跑命令）
+        退出清理不负责杀它（actions §7.1）。：stage/unstage/commit 全链路（**必须**在副本仓库上真实跑命令）
 
 ## 4. lint / format / CI
 
@@ -295,7 +297,7 @@ Summary of conflicts:
 | actions / cli | 24 + 17 | git, svn, **svnadmin** |
 | autocmds | 10 | git |
 
-- `svnadmin` 是 M4 新增依赖（`helpers.svn_repo` 现造服务器，见 04 §7.2）；缺它时这两个 spec 会 SKIP 而不是失败。
+- `svnadmin` 是 M4 新增依赖（`helpers.svn_repo` 现造服务器，见 actions §7.2）；缺它时这两个 spec 会 SKIP 而不是失败。
 - 全量跑两遍结果一致（幂等）；**stderr 只应有 1 行**（`runtime-retry` 用例那条预期超时告警）。
   用例若制造了额外噪音要主动消掉：用内部消息的动作结果（stage/commit）在用例里用
   「吞掉通知的包装」跑，`vim.ui.input` 一律打桩。
@@ -412,7 +414,7 @@ Summary of conflicts:
   （`exec_timeout_ms = 1`）的 `log.warn`，是否出现取决于命令有没有在 1ms 内跑完，用例本身不断言它。
   **别再按「恰好 1 行」写验收** —— Step 14 要么断言 0–1 行，要么把该用例的告警主动捕获掉。
 - **`FILTER=<spec> make test` 也必须绿**（这是本节新增的判据）。Step 2 引入的回归
-  （工作副本被删后 `Repo` 不自杀，见 07 §6.1）在 `3ecbdd7` / `5e8e485` / `7acc713` 上让
+  （工作副本被删后 `Repo` 不自杀，见 signs §6.1）在 `3ecbdd7` / `5e8e485` / `7acc713` 上让
   `FILTER=repo_spec` **稳定 2/20 红**、全量运行**间歇红**；`f1d1735`（root 上的非递归存活 watch）
   修好后连跑两次 20/20 绿。**全量绿 ≠ 该 spec 单独跑绿**，两者都要测。
 - `hunk_spec` / `signs_spec` 是纯函数与放置规则 spec（读 extmark details，不依赖屏幕渲染）；

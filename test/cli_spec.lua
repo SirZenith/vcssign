@@ -4,8 +4,8 @@
 --- answered, so the cases below are mostly about *targeting*: the current
 --- buffer's file, the path argument, and what the user is told when none of
 --- them apply.
---- See impl/init/04-commands-actions.md §3, §6 and
---- impl/init/07-signs-in-signcolumn.md §6.
+--- See impl/archive/actions/ §3, §6 and
+--- impl/knowledge/signs/ §6.
 local attach = require('vcssign.attach')
 local autocmds = require('vcssign.autocmds')
 local cli = require('vcssign.cli')
@@ -99,7 +99,7 @@ return {
         return st ~= nil and st.attached
       end, 'the buffer to attach')
 
-      -- No argument at all means the current buffer's file (04 §3).
+      -- No argument at all means the current buffer's file (actions §3).
       cli.run({})
       -- D29: the command pins *the repository* for the session — one reference
       -- per repository, no matter how many commands (or how many files) name it.

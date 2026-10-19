@@ -1,5 +1,5 @@
 --- M6 Step 5–7: the sign layer's placement rules and highlight groups.
---- See impl/init/07-signs-in-signcolumn.md §3.2 / §4 (D40).
+--- See impl/knowledge/signs/ §3.2 / §4 (D40).
 ---
 --- No repository and no VCS binary: `signs.lua` maps `vcssign.Hunk[]` onto
 --- extmarks, so a scratch buffer pins every rule (which line a hunk anchors on,
@@ -325,7 +325,7 @@ return {
     fn = guarded(function()
       -- One hunk covering the whole file, the way an untracked file arrives.
       -- 5000 lines used to mean 5000 extmarks (3.8 ms and the memory that goes
-      -- with them, 08 P2-1).
+      -- with them, perf P2-1).
       local lines = {}
       for i = 1, 5000 do
         lines[i] = 'line ' .. i
@@ -345,7 +345,7 @@ return {
     fn = guarded(function()
       signs.define_highlights()
       -- The groups are a fixed set that only a colorscheme change can remove,
-      -- so the per-attach call must be free (08 P2-4).
+      -- so the per-attach call must be free (perf P2-4).
       local real = api.nvim_set_hl
       local calls = 0
       api.nvim_set_hl = function(...)

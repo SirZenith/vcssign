@@ -1,6 +1,6 @@
 --- git adapter.
 ---
---- See impl/init/01-vcs-adapter.md §4.  Three things differ from the
+--- See impl/knowledge/vcs/ §4.  Three things differ from the
 --- vcs-helper.nvim reference implementation on purpose:
 ---   1. root detection asks git itself (worktrees and submodules, where `.git`
 ---      is a *file*, cannot be found by a pure marker scan);
@@ -126,7 +126,7 @@ function M.metadata_dir(root)
   return gitdir_at(base.normalize(root))
 end
 
---- A free change-detection key for git's baseline store (08 P0-4 / §7-6).
+--- A free change-detection key for git's baseline store (perf P0-4 / §7-6).
 ---
 --- `show(rev, rel)` answers from exactly two places: the index (`rev ==
 --- 'index'`, D42) and `HEAD`.  So the key is the stat of both, plus
@@ -214,7 +214,7 @@ end
 --- A `git cat-file --batch` child, kept for as long as its repository lives.
 ---
 --- `show` costs one process per file — some 45 ms of start-up for a reply of a
---- few kilobytes (08 §2.1) — and this protocol exists to avoid exactly that:
+--- few kilobytes (perf §2.1) — and this protocol exists to avoid exactly that:
 --- `<rev>:<path>` in, `<sha> <type> <size>` + content out.  The byte count in
 --- the header delimits a reply, so the reader never has to guess where a file
 --- ends, and any content (binary included) parses as long as the count is right.
@@ -408,7 +408,7 @@ function CatFile:close()
   end
 end
 
---- Open a reader for `root` (08 P0-2).  Never fails: an unrunnable child comes
+--- Open a reader for `root` (perf P0-2).  Never fails: an unrunnable child comes
 --- back as a reader whose every read errors, and the caller falls back.
 ---@param root string
 ---@return vcssign.BlobReader
@@ -442,7 +442,7 @@ function M.is_tracked(root, rel, cb)
 end
 
 --- Parse `git status --porcelain=v2 -z` output into
---- `{[abspath] = vcssign.FileStatus}` (08 P0-1).
+--- `{[abspath] = vcssign.FileStatus}` (perf P0-1).
 ---
 --- Record shapes with `-z --no-renames`: `1 <XY> <sub> <mH> <mI> <mW> <hH> <hI>
 --- <path>`, `u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>`, `? <path>`
@@ -496,7 +496,7 @@ function M.parse_status(stdout, root)
   return entries
 end
 
---- One status query for the whole repository (08 P0-1).
+--- One status query for the whole repository (perf P0-1).
 ---
 --- `--untracked-files=all` because the per-file question it replaces was "is
 --- *this* path tracked", which a collapsed `dir/` record cannot answer;

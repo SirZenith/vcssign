@@ -1,7 +1,7 @@
 --- M1 acceptance: svn adapter.
---- Covers impl/init/01-vcs-adapter.md §7.2 (`wc-root` detection) and §7.5
+--- Covers impl/knowledge/vcs/ §7.2 (`wc-root` detection) and §7.5
 --- (capability errors), plus the M6 sign primitives of
---- impl/init/07-signs-in-signcolumn.md §3.1 / §5.3.
+--- impl/knowledge/signs/ §3.1 / §5.3.
 local helpers = require('helpers')
 
 local svn = require('vcssign.vcs.svn')
@@ -44,7 +44,7 @@ return {
       -- Every baseline-moving operation rewrites `.svn/wc.db`; the pristine
       -- store under `.svn/pristine/` is written by the same operations but no
       -- baseline read looks at it, so recursing buys nothing but events
-      -- (08 §3.5 S1).
+      -- (perf §3.5 S1).
       eq(svn.metadata_dir(repo), vim.fs.joinpath(vim.fs.normalize(repo), '.svn'))
       eq(svn.metadata_recursive, false)
     end,

@@ -1,4 +1,4 @@
---- What changed *inside* a modified line (`config.word_diff`, 07 §4 / §6 Step 10).
+--- What changed *inside* a modified line (`config.word_diff`, signs §4 / §6 Step 10).
 ---
 --- A `change` hunk replaces whole lines, and the buffer already tints them with
 --- the `Ln` highlight group; the word diff narrows that down to the tokens that
@@ -31,7 +31,7 @@ end
 ---@type integer?
 M._ns = nil
 
---- The namespace the inline ranges live in (`vcssign_worddiff`, 07 §4).
+--- The namespace the inline ranges live in (`vcssign_worddiff`, signs §4).
 ---@return integer
 function M.namespace()
   if not M._ns then

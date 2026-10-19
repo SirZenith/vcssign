@@ -1,6 +1,6 @@
 --- M1 acceptance: git adapter.
---- Covers impl/init/01-vcs-adapter.md §7.3 (linked worktree root detection) and
---- the M6 sign primitives of impl/init/07-signs-in-signcolumn.md §3.1 /
+--- Covers impl/knowledge/vcs/ §7.3 (linked worktree root detection) and
+--- the M6 sign primitives of impl/knowledge/signs/ §3.1 /
 --- §5.2 (baseline text, trackedness, blame, hunk patches, revert).
 local helpers = require('helpers')
 
@@ -271,7 +271,7 @@ return {
     fn = function()
       local dir = repo_named('vcs-git-patch-eol')
       -- The patch arrives on stdin as one string; git needs the final `\n` to
-      -- tell the last line from a truncated stream (B4 in 07 §8).
+      -- tell the last line from a truncated stream (B4 in signs §8).
       local err = helpers.wait(function(cb)
         git.apply_patch(dir, PATCH:sub(1, -2), {}, cb)
       end)
@@ -335,7 +335,7 @@ return {
   {
     name = 'open_blob_reader answers every revision through one process',
     fn = function()
-      -- 08 P0-2: the whole point is process *arithmetic*, so this case counts
+      -- perf P0-2: the whole point is process *arithmetic*, so this case counts
       -- spawns as well as asserting the text, and it pins the two edges that
       -- matter to callers: a missing object is an error, and a closed reader
       -- refuses to read (the caller then falls back to `show`).

@@ -2,7 +2,7 @@
 ---
 --- Every VCS command in the plugin goes through here so that the environment
 --- hardening and the error shape are defined in exactly one place.
---- See impl/init/02-repo-runtime.md §2.
+--- See impl/knowledge/runtime/ §2.
 local config = require('vcssign.config')
 
 local M = {}
