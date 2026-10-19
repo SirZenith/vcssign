@@ -1,12 +1,14 @@
-# 04 · 用户命令、动作、autocmd 生命周期（P3）
+# 用户命令、动作与 autocmd 生命周期（actions）
+
+> **模块** `actions`（`impl/archive/actions/`）· **状态** 已实现（M7 步骤 5 修订过动作层）· **原编号** 04
 
 > **⚠ M6 起交付物表与子命令集已变**：侧边栏退役后 `:Vcssign` 只剩 13 个子命令（`toggle` /
 > `refresh` / `stage_hunk` / `undo_stage_hunk` / `reset_hunk` / `stage_buffer` / `reset_buffer` /
 > `preview_hunk` / `diff` / `diffthis` / `blame_line` / `commit` / `debug`），autocmd 从「按仓库挂载」改成
 > 「按缓冲区 attach」，动作层的落点也从「状态行」变成「缓冲区里的 hunk」。`open` / `close` / `get_status` /
-> `get_entries` 与 §2 的键位表是 M4 的记录；当前实现与验收见 `07-signs-in-signcolumn.md`。
+> `get_entries` 与 §2 的键位表是 M4 的记录；当前实现与验收见 `impl/knowledge/signs/2026-10-16T11-43-18-signs-in-signcolumn.md`。
 
-> UI 就绪后的最后一层能力：把 01–03 的模块串成「一键可用」的入口
+> UI 就绪后的最后一层能力：把 `vcs` / `runtime` / `sidebar` 的模块串成「一键可用」的入口
 > （`:Vcssign` 命令族、自动 attach、动作分发）。
 
 ## 1. 交付物
@@ -21,7 +23,7 @@
 
 ## 2. 动作层（actions.lua）—— 按 VCS 能力分派
 
-能力声明（01 的 base 接口）：
+能力声明（vcs 的 base 接口）：
 
 ```lua
 ---@class vcssign.VcsCaps
@@ -44,13 +46,13 @@ actions.refresh()            # Repo:refresh
 
 完成后的统一收尾：动作成功 → 触发 `Repo:refresh()`（强制拉新，staging 会翻转状态）；失败 → `vim.notify(err, ERROR)`。
 
-> **M7 步骤 5 修正（08 P1-1/§2.9）**：**hunk 级**的 `stage_hunk` / `unstage_hunk` 只留
+> **M7 步骤 5 修正（perf P1-1/§2.9）**：**hunk 级**的 `stage_hunk` / `unstage_hunk` 只留
 > `attach.refresh(bufnr)`，不再同时 `repo:refresh_now()`——索引写自身会产生 fs 事件，去抖之后
 > 那次探测就够了；两条路径并存等于一次动作两次刷新（实测应答时进程 4 → 3，`hs` 后立刻 `hu`
 > 仍作用于刚更新的层）。`commit` / `stage` / `unstage`（整文件）**仍用 `refresh_now`**：它们没有
 > 「下一个动作要读屏幕上的层」这个约束，也没有索引事件之外的刷新手段。
 > 另：`has_staged_change` 改成先问仓库的 status 视图（`Repo:status` 的 `trusted` 为真时），
-> 视图不可信才回退两次整文件 `show`（commit 一个已 stage 文件 5 → 3 进程、`show` 2 → 0）。**所有动作走 02 的 exec 封装**，UI 层（03 keymap）只调 actions，层次干净。
+> 视图不可信才回退两次整文件 `show`（commit 一个已 stage 文件 5 → 3 进程、`show` 2 → 0）。**所有动作走 runtime 的 exec 封装**，UI 层（sidebar keymap）只调 actions，层次干净。
 
 ### 2.1 diff 展示
 
@@ -88,7 +90,7 @@ diff 灌进一个 nofile 缓冲区、`filetype=diff` 交给内置语法上色：
 
 | 子命令 | 效果 |
 |--------|------|
-| `:Vcssign toggle`（默认，无参） | 侧边栏 toggle（03 §2 语义） |
+| `:Vcssign toggle`（默认，无参） | 侧边栏 toggle（sidebar §2 语义） |
 | `:Vcssign open [path]` | 打开 path（默认当前文件/cwd）所属 repo 侧边栏 |
 | `:Vcssign close` | 关闭 |
 | `:Vcssign refresh` | 强制刷新当前 repo |
@@ -112,11 +114,11 @@ diff 灌进一个 nofile 缓冲区、`filetype=diff` 交给内置语法上色：
 
 | 事件 | 处理 |
 |------|------|
-| `BufReadPost` / `BufEnter`（filetype 非 vcssign 的普通文件） | `repo_manager.attach(expand("<afile>:p"))`（02 会话内幂等） |
+| `BufReadPost` / `BufEnter`（filetype 非 vcssign 的普通文件） | `repo_manager.attach(expand("<afile>:p"))`（runtime 会话内幂等） |
 | `DirChanged`（global/cwd） | 重新探测 cwd 的 repo；attach（当前文件 repo 不变则无事） |
 | `FocusGained` | `Repo:refresh()`（兜底：外部编辑器/终端改文件，Windows 上的可靠兜底） |
-| `VimLeavePre` | 全 repo `dispose()`（02 §4 清理路径） |
-| `OptionSet signcolumn`（可选） | 不处理（窗口内强制 `signcolumn=yes:2`，见 03 §2） |
+| `VimLeavePre` | 全 repo `dispose()`（runtime §4 清理路径） |
+| `OptionSet signcolumn`（可选） | 不处理（窗口内强制 `signcolumn=yes:2`，见 sidebar §2） |
 
 `setup()` 时创建 group；`config.on_attach` / `on_detach` 回调钩子（gitsigns config 同款命名），给用户集成点。
 
@@ -149,7 +151,7 @@ require("vcssign").get_entries([path])  # 该仓库的全部条目（侧边栏�
   所以嵌套仓库不会被父仓库的缓存冒充。
 - 「没有仓库」这一句由 `vcssign.cli.report_no_repo` 统一发出：命令层与公共 API 的措辞、级别完全一致。
 
-`get_status` 保证「不在仓库返回 nil，仓库存在但未刷新不阻塞」（直接返回缓存，nil 时后台触发 attach+refresh）——供 oil-vcs-status 这类集成未来消费（backlog，见 00 非目标）。
+`get_status` 保证「不在仓库返回 nil，仓库存在但未刷新不阻塞」（直接返回缓存，nil 时后台触发 attach+refresh）——供 oil-vcs-status 这类集成未来消费（backlog，见 overview 非目标）。
 
 ## 6. 验收标准与实测结果（M4 完成）
 

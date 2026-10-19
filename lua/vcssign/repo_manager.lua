@@ -4,7 +4,7 @@
 --- A repository lives as long as at least one reference holds it, so several
 --- buffers inside the same repository share one runtime and one watcher, and
 --- only the last release disposes it.
---- See impl/init/02-repo-runtime.md §4.
+--- See impl/knowledge/runtime/ §4.
 local log = require('vcssign.log')
 local util = require('vcssign.util')
 local Repo = require('vcssign.repo')
@@ -207,7 +207,7 @@ function M.attach(ref, path, cb)
       -- `root` is not a guess: `detect_async` asked this system's own command for it
       -- (a marker scan only decided *which* system to ask).  So the first liveness
       -- probe would repeat the command that just ran, and `_bind` may hand the repo
-      -- back without spawning anything (08 P0-5).  A working copy whose marker is
+      -- back without spawning anything (perf P0-5).  A working copy whose marker is
       -- stale still ends up deleted: the watcher notices, and the next probe after
       -- any real trigger answers it too.
       repo = Repo.new(system, root, { verified = true })

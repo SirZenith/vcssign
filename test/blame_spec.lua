@@ -136,7 +136,7 @@ local function count_blames(fn)
   return calls
 end
 
---- Every `blame` command `fn` runs, as argv strings (08 P1-3).
+--- Every `blame` command `fn` runs, as argv strings (perf P1-3).
 ---
 --- `count_blames` above answers "how many"; this answers "which window", which
 --- is the claim that matters: a look at one line must not blame the file.
@@ -402,7 +402,7 @@ return {
       end, 'the first decoration')
 
       -- Line 2 has not been asked about yet: the cache is per line, so this is
-      -- one process (08 P1-3 asks for `-L l,l`, not the whole file).
+      -- one process (perf P1-3 asks for `-L l,l`, not the whole file).
       local calls = count_blames(function()
         move_to(bufnr, 2)
         helpers.wait_for(function()
@@ -468,7 +468,7 @@ return {
       end, 'the not-committed annotation')
 
       -- The buffer's text does not move: only the store does, so the
-      -- `changedtick` in the cache key cannot see this (08 P1-3).
+      -- `changedtick` in the cache key cannot see this (perf P1-3).
       helpers.sh({ 'git', '-C', dir, 'add', '-A' })
       helpers.sh({ 'git', '-C', dir, 'commit', '-qm', 'second' })
       local calls = count_blames(function()

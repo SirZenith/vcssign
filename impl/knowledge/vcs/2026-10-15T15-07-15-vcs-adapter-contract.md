@@ -1,8 +1,10 @@
-# 01 · VCS 抽象层与 git / svn 适配器（P0）
+# VCS 抽象层与 git / svn 适配器（vcs）
+
+> **模块** `vcs`（`impl/knowledge/vcs/`）· **状态** 长期维护（契约随适配器扩展）· **原编号** 01
 
 > **⚠ M6 起部分内容已过时**：`status_type.lua`（§2 的统一状态枚举）在 M6 Step 1（`080379c`）随侧边栏
 > 一起退役 —— 现在没有「文件状态列表」这一层，适配器只提供五个**交互原语**（`show` / `is_tracked` /
-> `blame` / `apply_patch` / `revert` + `VcsCaps`，接口见 `07-signs-in-signcolumn.md` §3.1）。§2–§5 的枚举与
+> `blame` / `apply_patch` / `revert` + `VcsCaps`，接口见 `impl/knowledge/signs/2026-10-16T11-43-18-signs-in-signcolumn.md` §3.1）。§2–§5 的枚举与
 > `status` 解析链保留为 M1 的记录；§6 的适配器契约（错误优先回调、回调在主循环）仍然有效。
 
 > 优先级最高的原因：一切上层能力（缓存、侧边栏、动作）都建立在
@@ -82,7 +84,7 @@ M.default_sign_priority = { modified = 10, added = 20, deleted = 30, ... }
 ---@class vcssign.VcsSystem
 ---@field name string
 ---@field keyfile string                     # 兜底探测用: ".git" / ".svn"
----@field capabilities vcssign.VcsCaps        # 见 04 的能力声明
+---@field capabilities vcssign.VcsCaps        # 见 actions 的能力声明
 
 -- 探测 root。优先命令（异步权威值），同步兜底为关键字扫描。
 -- 同步兜底要求: .git 为目录、或 .git 为文件(worktree, 内含 "gitdir: ...") 时都要认出。
@@ -130,7 +132,7 @@ M.default_sign_priority = { modified = 10, added = 20, deleted = 30, ... }
 ---@field dir? boolean      # 这条记录代表一个目录（忽略目录折叠、svn 的未跟踪目录）
 ```
 
-git / svn 各自再实现动作方法（能力见 04，git 最多）：
+git / svn 各自再实现动作方法（能力见 actions，git 最多）：
 
 ```
 stage(root, files, cb) / unstage(root, files, cb)        -- git only
@@ -152,12 +154,12 @@ commit(root, files, msg, cb)  -> cb(err, info)           -- info: 提交摘要
 
 > **M7 追加**：`baseline_stamp(root)`、`metadata_dir(root)`、`status(root, cb)` 都是**可选**钩子，
 > 都不进 `capabilities`——它们的语义是「能回答就回答」，不是「支持/不支持某个动作」：
-> `metadata_dir` 服务 fs 监听（D20），`baseline_stamp` 服务渲染短路（08 P0-4），
-> `status` 服务仓库级状态缓存（08 P0-1）。拿不到就不回答，上层自然退回旧行为。
+> `metadata_dir` 服务 fs 监听（D20），`baseline_stamp` 服务渲染短路（perf P0-4），
+> `status` 服务仓库级状态缓存（perf P0-1）。拿不到就不回答，上层自然退回旧行为。
 >
 > **`status` 与「文件状态列表」不是一回事**（后者在 §2 已退役）：退役的是「把每个文件的三态
 > 归一化成一张要维护的表」，这里要的是**一次查询的答案**——`Repo` 只把它当缓存，用 fs 事件
-> 失效，并且**按「证据」而非「新鲜度」**决定能不能相信它的 `staged` 位（见 02 §3.1 的 `trusted`）。
+> 失效，并且**按「证据」而非「新鲜度」**决定能不能相信它的 `staged` 位（见 runtime §3.1 的 `trusted`）。
 > 换句话说：退役的是「自己维护状态」，不是「问一次」。
 >
 > 顺带记一对名字易混的东西：`is_tracked(root, rel, cb)` 仍然是**单文件**提问（未跟踪判断、
@@ -215,7 +217,7 @@ X/Y 字符 → `StatusType` 映射表（参考 oil-vcs-status `systems/git.lua` 
 
 > **实测校正**：在 `temp/git-repo` 上用 `-z` 抓到的真实字节流已验证上述全部假设：
 > rename 确实是「新路径 + orig_path」两段相邻记录；`-z` 下**不会**出现引号转义（因此完全不需要解码）；
-> 中文字节直接原样传输。样本见 `impl/init/06-todo.md` 附录 A1。
+> 中文字节直接原样传输。样本见 `impl/archive/milestones/2026-10-15T19-25-37-milestone-tracker.md` 附录 A1。
 > 另：`--literal-pathspecs` 也用在 stage/unstage/commit 上，避免文件名里的 glob 元字符被展开。
 
 ### 4.3 stage / unstage / commit
@@ -286,7 +288,7 @@ X/Y 字符 → `StatusType` 映射表（参考 oil-vcs-status `systems/git.lua` 
 | 列2 `C` | conflicted（属性冲突） |
 | 列5 `S`（其它均为空） | switched（降级为兼底标记） |
 
-- svn 无暂存区 → `index = nil`（永远只有 worktree 域；侧边栏 git 双列 / svn 单列，见 03）。
+- svn 无暂存区 → `index = nil`（永远只有 worktree 域；侧边栏 git 双列 / svn 单列，见 sidebar）。
 - 列 3 `L`（加锁）/ 列 4 `+`（带历史）/ 列 6 `K` 等不产生条目，仅作为列 1 的补充信息忽略。
 
 ### 5.3 svn 动作能力
@@ -316,7 +318,7 @@ function M.detect_async(path, cb)
   「暂态/环境问题」（如 `safe.directory`、超时、命令缺失）才用 marker 结果兼底；
   若错误是**确定性否定**（`not a git repository` / `is not a working copy` / `E155007`），
   则必须如实报告「不是仓库」，否则会把 stale marker 复活成幽灵仓库。
-- `setup()` 支持用户 `systems = { "git", "svn" }` 重排序 / 禁用某系统（config schema 字段，见 00 §3 config.lua）；
+- `setup()` 支持用户 `systems = { "git", "svn" }` 重排序 / 禁用某系统（config schema 字段，见 overview §3 config.lua）；
   `get_systems()` 每次读 config，改配置立即生效（不做启动时快照）。
 - 新增 VCS = 新写一个模块实现 base 接口 + 注册到列表，**不改任何上层代码**（本层验收的唯一硬指标）。
 

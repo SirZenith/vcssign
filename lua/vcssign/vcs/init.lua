@@ -2,7 +2,7 @@
 ---
 --- Adding a VCS means writing one module against the `vcssign.VcsSystem`
 --- interface and adding it to `MODULES`/`config.systems` — no layer above this
---- one changes.  See impl/init/01-vcs-adapter.md §6.
+--- one changes.  See impl/knowledge/vcs/ §6.
 local config = require('vcssign.config')
 
 local M = {}

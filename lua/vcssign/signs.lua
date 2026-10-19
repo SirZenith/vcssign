@@ -1,5 +1,5 @@
 --- Extmark signs: the two namespaces, the highlight groups and the placement
---- rules of impl/init/07-signs-in-signcolumn.md §3.2 / §4.
+--- rules of impl/knowledge/signs/ §3.2 / §4.
 ---
 --- The sign layer is deliberately repository-free: it maps `vcssign.Hunk[]` onto
 --- extmarks and knows nothing about git, svn or buffers' contents.  That keeps
@@ -18,7 +18,7 @@ local NS = {
   staged = 'vcssign_signs_staged',
 }
 
---- gitsigns' default `sign_priority`.  Deliberately *not* a config key: 07 §4
+--- gitsigns' default `sign_priority`.  Deliberately *not* a config key: signs §4
 --- lists no `signs.priority`, and the task forbids new keys.
 M.PRIORITY = 6
 
@@ -42,7 +42,7 @@ function M.namespace(staged)
 end
 
 --- 'changedelete' -> 'ChangeDelete'.  The two-word types are spelled out in
---- CamelCase by 07 §4 (`VcssignTopDelete` / `VcssignChangeDelete`).
+--- CamelCase by signs §4 (`VcssignTopDelete` / `VcssignChangeDelete`).
 ---@type table<string, string>
 local CAMEL = {
   add = 'Add',
@@ -59,7 +59,7 @@ local CAMEL = {
 ---   'add' + staged=false + 'Nr'  -> 'VcssignAddNr'
 ---   'add' + staged=true  + 'Nr'  -> 'VcssignAddStagedNr'
 ---
---- The staged suffix form is 07 §4's (`VcssignAddStaged`), not gitsigns' prefix
+--- The staged suffix form is signs §4's (`VcssignAddStaged`), not gitsigns' prefix
 --- form (`GitSignsStagedAdd`).
 ---@param ty string
 ---@param staged? boolean
@@ -106,7 +106,7 @@ local ORDER = { 'add', 'change', 'delete', 'topdelete', 'changedelete', 'untrack
 
 --- The staged layer is the *worktree* colour faded toward the background: an
 --- already-indexed line should read as "done" instead of competing with the
---- change still sitting in the buffer (07 §4: Staged 用更暗的链接).  Halfway
+--- change still sitting in the buffer (signs §4: Staged 用更暗的链接).  Halfway
 --- stays legible on both dark and light themes and needs no config key.
 local STAGED_FADE = 0.5
 
@@ -157,7 +157,7 @@ end
 --- reading every group back with `nvim_get_hl` would cost what the definition
 --- costs.  What can remove the groups behind our back is a colorscheme, and that
 --- is exactly what `ColorScheme` is for: `autocmds.setup` calls back with
---- `force` (08 P2-4).
+--- `force` (perf P2-4).
 local defined = false
 
 --- Define every group with `default = true` so a user theme can override, and
@@ -165,7 +165,7 @@ local defined = false
 ---
 --- The work (~30 `nvim_set_hl`, plus `nvim_get_hl` on `Normal` and the worktree
 --- groups and the fade arithmetic) used to run on every attach — 0.17 ms each
---- time for a set of groups that only a colorscheme change can move (08 P2-4).
+--- time for a set of groups that only a colorscheme change can move (perf P2-4).
 ---@param force? boolean  define again even though `defined` says otherwise
 function M.define_highlights(force)
   if defined and not force then
@@ -190,7 +190,7 @@ function M.define_highlights(force)
   end
 
   -- The staged layer: the same shapes as the worktree layer, one shade closer
-  -- to the background (07 §4).  Defined after the plain groups because each
+  -- to the background (signs §4).  Defined after the plain groups because each
   -- one is derived from its worktree counterpart's resolved colour.
   for _, ty in ipairs(ORDER) do
     link_staged(ty)
@@ -234,7 +234,7 @@ end
 ---
 --- An untracked file is *one* hunk covering every line, and this layer writes
 --- one mark per line: a 5000-line new file meant 5000 extmarks (3.8 ms plus the
---- memory that goes with it — 08 P2-1).  Past this many lines the block is
+--- memory that goes with it — perf P2-1).  Past this many lines the block is
 --- uniform anyway, so the layer says the same thing ("the whole file is new")
 --- with two marks: the first line and the last one.
 local UNTRACKED_MARK_LIMIT = 2000
@@ -251,7 +251,7 @@ function M.place(bufnr, hunks, opts)
   opts = opts or {}
   local staged = opts.staged == true
   local ns = M.namespace(staged)
-  -- One read of the config for the whole placement (08 P2-2: it used to be
+  -- One read of the config for the whole placement (perf P2-2: it used to be
   -- eight `config.get()` calls, one per field).
   local conf = config.get()
   -- The staged layer only exists for git, whose `signs_staged` has no

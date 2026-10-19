@@ -1,4 +1,4 @@
---- The `<specifier>` formatter of the inline blame (07 §4, aligned with
+--- The `<specifier>` formatter of the inline blame (signs §4, aligned with
 --- gitsigns' `current_line_blame_formatter`).
 ---
 --- Nothing here touches a repository, a buffer or a process: the cases pin down

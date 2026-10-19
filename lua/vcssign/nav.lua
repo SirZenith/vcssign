@@ -10,7 +10,7 @@
 --- staged column) and `]c` must still find it.
 ---
 --- The shape follows gitsigns (`nav_hunk`): a *direction*, a *count* and
---- wraparound at the ends.  Wrap is not a config key — 07 §4 adds none, and
+--- wraparound at the ends.  Wrap is not a config key — signs §4 adds none, and
 --- gitsigns has none — it is the `opts.wrap` argument, default `true`.
 local api = vim.api
 

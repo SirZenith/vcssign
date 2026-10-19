@@ -2,7 +2,7 @@
 ---
 --- Specs are plain Lua modules returning a list of `{ name, fn }` cases; a
 --- failing assertion raises, and the runner (test/run.lua) turns that into a
---- `not ok` line.  See impl/init/05-testing-infra.md §3.
+--- `not ok` line.  See impl/knowledge/testing/ §3.
 local M = {}
 
 --- `vim.fs.normalize` is lexical and does not absolutise, so make sure the
@@ -70,7 +70,7 @@ end
 
 --- Every subprocess spawned while `fn` runs, as argv strings.
 ---
---- The budget assertions (08 §6 / A4) are about *processes*, and a process can
+--- The budget assertions (perf §6 / A4) are about *processes*, and a process can
 --- start through either door: `exec.run` for a one-shot command, `exec.stream`
 --- for the resident `cat-file --batch` reader (M7 4b).  Counting only the first
 --- would read "one process per repository" as zero.

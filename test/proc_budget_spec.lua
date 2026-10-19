@@ -1,8 +1,8 @@
---- A4: the process budget as a regression gate (08 §6 验收断言).
+--- A4: the process budget as a regression gate (perf §6 验收断言).
 ---
 --- Every case here pins a **count**, never a duration: a wall clock measures the
 --- machine, a process count measures the design.  The budgets come from the M7
---- measurements (08 §2.4–§2.9) with room for one debounced probe, and they are
+--- measurements (perf §2.4–§2.9) with room for one debounced probe, and they are
 --- set to catch the failure mode the review found — "cost per file" — not to be
 --- as tight as the current implementation happens to be:
 ---
@@ -343,7 +343,7 @@ return {
 
       -- One hunk action used to run two refreshes (the buffer's and the
       -- repository's); the budget is "the baseline read plus the probe its own
-      -- index write provokes", not two rounds (08 P1-1).
+      -- index write provokes", not two rounds (perf P1-1).
       local staged = helpers.spawns(function()
         helpers.capture_notify_one(function()
           actions.stage_hunk(nil, { bufnr = bufnr })
@@ -377,7 +377,7 @@ return {
         end
 
         -- "Is the index different from HEAD?" is answered by the status view, so
-        -- committing must not compare the file with itself twice (08 P1-2).
+        -- committing must not compare the file with itself twice (perf P1-2).
         local committed = helpers.spawns(function()
           with_input('feat: budget', function()
             actions.commit(path)

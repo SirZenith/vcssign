@@ -3,7 +3,7 @@
 ---
 --- The interface is intentionally documented as emmylua classes only — there is
 --- no runtime base object to inherit from, adapters are plain tables.  See
---- impl/init/01-vcs-adapter.md §3.
+--- impl/knowledge/vcs/ §3.
 local M = {}
 
 local is_windows = vim.uv.os_uname().sysname == 'Windows_NT'
@@ -76,7 +76,7 @@ local NORMALIZE_OPTS = { expand_env = false }
 ---@field dir boolean?      the entry is an ignored directory, not a file
 
 --- A long-lived child that answers `show`'s question without one process per
---- file (08 P0-2).
+--- file (perf P0-2).
 ---
 --- The protocol is the adapter's business; what callers may rely on is that a
 --- failed read reports an error rather than answering with something, and that
@@ -116,14 +116,14 @@ local NORMALIZE_OPTS = { expand_env = false }
 -- sets this to false -- svn's `.svn/wc.db` is one file, and on a big working
 -- copy the tree under `.svn/pristine/` holds thousands of files whose events
 -- nothing reads (measured: 3135 callbacks for a 300-file `svn commit` recursive,
--- 1225 non-recursive, `wc.db` alone 1; see 08 §3.5 S1).
+-- 1225 non-recursive, `wc.db` alone 1; see perf §3.5 S1).
 ---@field metadata_recursive? boolean
 --- A free (no subprocess) change-detection key for the baseline store — the
 --- entries `show(rev, rel)` answers from — or nil when the adapter cannot
 --- produce a trustworthy one.
 ---
 --- It is what lets a refresh skip re-reading a baseline that cannot have moved
---- (08 P0-4): `attach` compares it against the value recorded when the current
+--- (perf P0-4): `attach` compares it against the value recorded when the current
 --- `base_text` was read, and re-reads on any difference.  Returning nil is
 --- always safe — the caller then re-reads every time, which is the behaviour
 --- without a fingerprint — while a key that misses one of the inputs makes the
@@ -137,7 +137,7 @@ local NORMALIZE_OPTS = { expand_env = false }
 --- costs its own `is_tracked` + `show` (3 processes for git), while one answer
 --- covers the whole repository — and a path the answer stays silent about is
 --- by definition in sync with its baseline, so it needs no baseline read at
---- all (08 P0-1).
+--- all (perf P0-1).
 ---
 --- Keys of `entries` are absolute, normalised paths.  A path that is *absent*
 --- is "tracked and unmodified"; everything else says otherwise.  An entry whose
@@ -181,7 +181,7 @@ function M.normalize(path)
 end
 
 --- A cheap change-detection key for one filesystem entry, for the baseline
---- fingerprints in `attach.lua` (08 P0-4): a missing entry is `-`, and every
+--- fingerprints in `attach.lua` (perf P0-4): a missing entry is `-`, and every
 --- other answer carries inode, size and nanosecond mtime, so a rewrite that
 --- keeps the size still produces a different key.
 ---

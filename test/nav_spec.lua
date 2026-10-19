@@ -322,7 +322,7 @@ return {
     fn = guarded(function()
       local dir = helpers.git_repo('nav_todo')
       local bufnr = open(dir .. '/base.txt')
-      -- `setqflist` is the action 07 §10 keeps on the backlog, so this case
+      -- `setqflist` is the action signs §10 keeps on the backlog, so this case
       -- keeps its meaning for the rest of M6: whichever action is named here,
       -- pressing it twice must warn once and not blow up.
       local seen = helpers.capture_notify(function()

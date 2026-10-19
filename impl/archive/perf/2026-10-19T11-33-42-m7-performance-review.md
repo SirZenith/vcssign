@@ -1,4 +1,6 @@
-# 08 · 性能与架构审查（M6 后全量）：实测数据与优化路线（M7 候选）
+# 性能与架构审查（M6 后全量）：实测数据与优化路线（perf）
+
+> **模块** `perf`（`impl/archive/perf/`）· **状态** 已完成（M7 七步全部落地）· **原编号** 08
 
 > **为什么写这份文档**：用户要求审查当前代码「性能、架构上可优化的部分」（m00001）。方法不是静态猜测，
 > 而是先通读全部 `lua/vcssign/`（24 个模块，约 7000 行），再用 headless 探针实测：给 `exec.run` 打桩数
@@ -20,7 +22,7 @@ git/svn 适用矩阵**，并把三条 git-only 的结论（P0-2 / P1-2 / P1-3 �
 ## §0 编号说明
 
 本文的发现编号 `P0-x` / `P1-x` / `P2-x`（P = perf finding，按影响降序）、**svn 专属的 `S1–S3`**
-（S = svn finding）与架构结论 `A1–A5` 是**本文私有**编号，与 `07` §10 backlog 里引用的旧审查编号
+（S = svn finding）与架构结论 `A1–A5` 是**本文私有**编号，与 `signs` §10 backlog 里引用的旧审查编号
 （「审查 F5 / F9」）无关。逐条发现的 git/svn 适用性集中看 **§3.5 的矩阵表**。
 
 > **先看 §2.10**：M7 全部落地后的「M7 前后总表」，一页看完整体收益；逐条的复测在 §2.4–§2.9。
@@ -829,10 +831,10 @@ spec 只管进程条数（跨平台稳定）。两边都留。
 2. **`cat-file --batch` 在真实大仓库 + 并发请求下的行为**——本文只实测了启动（47 ms）；
    长驻进程的排队、`vim.system` 长驻对象的生命周期（`dispose` 时怎么收）要单独探。
 3. **`git status --porcelain=v2 -z` 解析成本**——v1 的 `-z` 双段解析 M1 做过
-   （`01-vcs-adapter.md` §4.2 / 06 附录 A1），v2 字段不同；复活旧解析比新写便宜，但要对表。
+   （`impl/knowledge/vcs/2026-10-15T15-07-15-vcs-adapter-contract.md` §4.2 / milestones 附录 A1），v2 字段不同；复活旧解析比新写便宜，但要对表。
 4. **svn `status --xml` 的冲突形态**——基本形态已实测（§2.1：`item="unversioned"` /
    `item="modified"`、1369 字节/6 文件），剩下是 tree conflict（列 7 C）/ switch（列 5 S）在 XML 里
-   长什么样：用 `temp/svn-conflict-a`、`temp/svn-switch` 两个既有 fixture 探（06 附录 A2 的固定列
+   长什么样：用 `temp/svn-conflict-a`、`temp/svn-switch` 两个既有 fixture 探（milestones 附录 A2 的固定列
    经验要平移成 XML 属性）。
 5. ~~**`attach.refresh` 与 `repo:refresh_now` 的双路径**~~——**已解决（M7 步骤 5）**：
    留 `attach.refresh`（同步满足 `actions.lua:367-369` 的「下一个动作要读屏幕上的层」），
@@ -851,7 +853,7 @@ spec 只管进程条数（跨平台稳定）。两边都留。
 8. **多目标合并的上限**（S2）——`svn info` / `git ls-files` 单次能安全带多少路径？
    Windows 的 argv 上限（约 32K 字符）在深层路径下可能几十个文件就碰到，需要分块策略。
 
-## §8 不做什么（约束沿用 D46 / 07 §12）
+## §8 不做什么（约束沿用 D46 / signs §12）
 
 - **不引入 async 框架**——P0-2 的常驻进程用「长驻 `vim.system` + 回调队列」实现，仍是回调链 +
   错误优先契约（D19 不动）。

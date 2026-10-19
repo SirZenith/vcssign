@@ -37,7 +37,7 @@ function M.emit(list, ...)
   -- Copy first: a listener is allowed to unsubscribe itself while being called.
   -- A shallow copy is what the job needs — the list is a fresh table of the same
   -- functions, and functions are copied by reference anyway, so `vim.deepcopy`
-  -- bought nothing but two table allocations per emit (08 P2-5).
+  -- bought nothing but two table allocations per emit (perf P2-5).
   local current = {}
   for i, fn in ipairs(list) do
     current[i] = fn

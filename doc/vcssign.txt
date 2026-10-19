@@ -12,7 +12,7 @@ tree (including nested ones) are supported, each resolved on its own.
   svn 1.14.5. The newest API used is |vim.system| (since 0.10); older
   Neovim versions are unverified.
   The implementation plan (decisions D1-D46, milestones M0-M6) lives in the
-  repository's `impl/init/*.md`.
+  repository's `impl/README.md`.
 
 ==============================================================================
 Contents                                                   *vcssign-contents*
@@ -416,7 +416,8 @@ off.)
 The library layers (`vcssign.vcs.*` / `vcssign.repo` / `vcssign.repo_manager`
 / `vcssign.actions`) are internal: their interfaces and callback conventions
 (errors first, `cb(err, ...)`; callbacks always back on the main loop) are
-documented in `impl/init/01-vcs-api.md` and `02-repo-runtime.md`.
+documented under `impl/knowledge/vcs/` and `impl/knowledge/runtime/`
+(one document per module dir; `impl/README.md` is the index).
 
 ==============================================================================
 6. Highlight groups                                       *vcssign-highlights*
@@ -490,7 +491,7 @@ Test scaffolding: `scripts/make_test_repos.sh` builds the fixtures,
 `scripts/run_tests.sh` runs the TAP suite in a headless nvim
 (`test/run.lua` + `test/*_spec.lua`); see the repository's `Makefile` for
 `make test` / `make lint` / `make format`. The detailed measurement logs and
-the reasoning behind each decision are in `impl/init/00-overview.md` ...
-`07-signs-in-signcolumn.md`.
+the reasoning behind each decision are in `impl/knowledge/overview/`
+and `impl/knowledge/signs/`.
 
  vim:tw=78:ts=8:noet:ft=help:norl:

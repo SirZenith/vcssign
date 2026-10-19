@@ -12,7 +12,7 @@
 --- file of the current buffer).  Status entries are gone with the sidebar (M5)
 --- and the repository no longer caches a file list (D38), so a target is always
 --- resolved from the path itself.
---- See impl/init/04-commands-actions.md §2.
+--- See impl/archive/actions/ §2.
 local attach = require('vcssign.attach')
 local blame = require('vcssign.blame')
 local config = require('vcssign.config')
@@ -368,9 +368,9 @@ function M.stage_hunk(target, opts)
       -- the layers on screen, so `hs` followed by `hu` must see the new split.
       -- The repository's own probe is left to the debounce — the index write
       -- already produced a filesystem event, and staging changed that store's
-      -- fingerprint, so the status view (and the blob reader, 08 P0-1/P0-2) are
+      -- fingerprint, so the status view (and the blob reader, perf P0-1/P0-2) are
       -- rebuilt on their own.  Asking for both paths here meant two refreshes
-      -- for one action (08 §7-5, §2.9).
+      -- for one action (perf §7-5, §2.9).
       attach.refresh(ctx.bufnr)
     end)
   end)
@@ -382,7 +382,7 @@ end
 --- index: the index returns to what `HEAD` holds there and the buffer keeps the
 --- change as an unstaged one.  (gitsigns' `undo_stage_hunk` replays a stack of
 --- the patches staged earlier in the session instead; ours acts on the hunk the
---- signs describe — 07 §9.)
+--- signs describe — signs §9.)
 ---@param target string|nil
 ---@param opts? { bufnr?: integer, lnum?: integer }
 function M.unstage_hunk(target, opts)
@@ -559,7 +559,7 @@ end
 
 --- Whether the index holds a change a commit would record.
 ---
---- The repository view already answers this for every path (08 P0-1): a staged
+--- The repository view already answers this for every path (perf P0-1): a staged
 --- change is `staged` on its entry, and a path the view does not mention is in
 --- sync with `HEAD`.  So the usual cost is zero — but the view is only believed
 --- when it was taken from the store as it is now; if the store moved after the
@@ -594,7 +594,7 @@ end
 ---
 --- git records what is in the *index*, so a file with nothing staged is refused
 --- with a pointer at the key that fixes it (the plan deliberately rules out
---- "commit the worktree as well" — 04 §2.2).  svn has no index: its working
+--- "commit the worktree as well" — actions §2.2).  svn has no index: its working
 --- copy is the thing being committed.
 ---@param target string|nil
 ---@param opts? { message?: string }  skips the prompt (used by the specs)

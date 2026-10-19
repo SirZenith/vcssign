@@ -12,7 +12,7 @@
 --- repository's status *view* (M7 4a) is fair game too, but it is a cache: an
 --- assertion that reads it is also asserting that its fingerprint still held,
 --- so the VCS stays the authority whenever the two could disagree.
---- See impl/init/04-commands-actions.md §2, §6.
+--- See impl/archive/actions/ §2, §6.
 local actions = require('vcssign.actions')
 local attach = require('vcssign.attach')
 local autocmds = require('vcssign.autocmds')
@@ -122,7 +122,7 @@ local function stage_quietly(dir, rel)
   end, 'staged ' .. rel)
 end
 
---- Every command `fn` spawns, as argv strings (08 P1-1/P1-2).
+--- Every command `fn` spawns, as argv strings (perf P1-1/P1-2).
 ---
 --- Both spawn paths are patched: `exec.stream` is how a resident reader starts,
 --- and a claim about "no `show` was run" must not be fooled by a process that
@@ -348,7 +348,7 @@ return {
 
       -- Two paths used to run for one action: `attach.refresh` here and
       -- `repo:refresh_now` right next to it.  The probe is what the second path
-      -- started, and it is countable (08 §7-5, §2.9).
+      -- started, and it is countable (perf §7-5, §2.9).
       local passes = helpers.count_refreshes(repo)
       answered(function()
         actions.stage_hunk(nil, { bufnr = bufnr })
@@ -661,7 +661,7 @@ return {
       -- "Is the index different from HEAD?" used to be two full-text reads of
       -- the file (`show :base.txt` and `show HEAD:base.txt`).  The repository's
       -- status view answers it, and a view it cannot vouch for falls back to the
-      -- old pair — which this asserts did not happen (08 P1-2).
+      -- old pair — which this asserts did not happen (perf P1-2).
       local commands
       with_input('feat: through the view', function()
         commands = spawned_commands(function()
@@ -884,7 +884,7 @@ return {
       local repo = modified_repo('actions-refresh-only')
       -- No target to resolve: an unnamed buffer and a cwd outside any
       -- repository.  There is exactly one repository, so `:Vcssign refresh`
-      -- means that one (04 §3).
+      -- means that one (actions §3).
       vim.cmd('enew')
       local elsewhere = vim.fn.tempname()
       vim.fn.mkdir(elsewhere, 'p')

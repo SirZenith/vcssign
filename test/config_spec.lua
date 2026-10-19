@@ -1,5 +1,5 @@
 --- M1: configuration merge semantics.
---- See impl/init/00-overview.md §3.
+--- See impl/knowledge/overview/ §3.
 local config = require('vcssign.config')
 
 return {

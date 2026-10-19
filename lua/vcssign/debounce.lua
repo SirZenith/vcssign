@@ -12,7 +12,7 @@
 ---   1. `debounce_trailing` also returns a `cancel` function.  gitsigns keeps
 ---      its pending timers in a closure-local table with no way to reach them,
 ---      which is fine for a buffer-local plugin but not here: `Repo:dispose()`
----      has to leave *zero* live handles behind (impl/init/02-repo-runtime.md
+---      has to leave *zero* live handles behind (impl/knowledge/runtime/
 ---      §5.4 asserts it), and a timer that outlives its repo would fire a
 ---      refresh against a disposed object.
 ---   2. The debounced call is dispatched with `vim.schedule`.  libuv timer

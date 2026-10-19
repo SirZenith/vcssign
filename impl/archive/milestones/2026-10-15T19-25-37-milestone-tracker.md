@@ -1,105 +1,107 @@
-# 06 · 总实施 TODO 清单
+# 总实施清单（milestones）
 
-> 本文是 `impl/init/` 系列的**执行总索引**：把 01–05 各计划文件的实现步骤
+> **模块** `milestones`（`impl/archive/milestones/`）· **状态** 已完成（M0–M7 全部勾选）· **原编号** 06
+
+> 本文是 2026-10-15 计划系列的**执行总索引**：把 `vcs` / `runtime` / `sidebar` / `actions` / `testing` 各计划文件的实现步骤
 > 汇总为一份可勾选的总清单。每项标注出处（计划文件 §节）。
 > 状态标记：`[ ]` 未开始 / `[~]` 进行中 / `[x]` 完成。
 
-## M0 · 环境与 fixture 准备（05 §0、§2）
+## M0 · 环境与 fixture 准备（testing §0、§2）
 
 - [x] `.gitignore` 追加 `/temp/`、`deps/`、`.nvimlog`（用户已完成，实测生效）
 - [x] `temp/` 目录就位（用户已手动创建）
 - [x] 环境确认：git 2.55.0.windows.2、svn 1.14.5（≥1.9，`--show-item wc-root` 实测可用，svnadmin 实测可用）
-- [x] `temp/git-repo`：状态矩阵（local M / local D / `??` 含空格+中文路径 / upstream A / upstream M+local M / upstream R rename）—— 05 §2.1，实测见附录 A1
-- [x] `temp/git-repo-conflict`：merge 冲突（`UU conflict.txt`）—— 05 §2.1，实测见附录 A1
-- [x] `temp/git-worktree`：`git worktree add` 成功；`git rev-parse --show-toplevel` 返回 `D:/...` 正斜杠路径（实现需 `vim.fs.normalize`，但无需格式转换）—— 05 §2.1
-- [x] `temp/svn-server` + `temp/svn-repo`：file:// checkout（`file:///D:/...` 三斜杠+盘符实测有效）；状态矩阵 `MM / ! / ? / D / A / R` 全部命中—— 05 §2.2，实测见附录 A2
-- [x] `temp/nested`：git 仓库（`inner/` 已 ignore）内嵌 svn checkout；`svn info --show-item wc-root` 对两处 wc 均返回正确 root —— 05 §2.3
-- [x] `temp/svn-conflict-a` + `temp/svn-conflict-b`：**真实 tree conflict**（列 7 C + `>` 续行 + `Summary of conflicts:` 尾行）—— 05 §2.3
-- [x] `temp/svn-switch`：**真实 switched 子目录**（列 5 S）—— 05 §2.4
+- [x] `temp/git-repo`：状态矩阵（local M / local D / `??` 含空格+中文路径 / upstream A / upstream M+local M / upstream R rename）—— testing §2.1，实测见附录 A1
+- [x] `temp/git-repo-conflict`：merge 冲突（`UU conflict.txt`）—— testing §2.1，实测见附录 A1
+- [x] `temp/git-worktree`：`git worktree add` 成功；`git rev-parse --show-toplevel` 返回 `D:/...` 正斜杠路径（实现需 `vim.fs.normalize`，但无需格式转换）—— testing §2.1
+- [x] `temp/svn-server` + `temp/svn-repo`：file:// checkout（`file:///D:/...` 三斜杠+盘符实测有效）；状态矩阵 `MM / ! / ? / D / A / R` 全部命中—— testing §2.2，实测见附录 A2
+- [x] `temp/nested`：git 仓库（`inner/` 已 ignore）内嵌 svn checkout；`svn info --show-item wc-root` 对两处 wc 均返回正确 root —— testing §2.3
+- [x] `temp/svn-conflict-a` + `temp/svn-conflict-b`：**真实 tree conflict**（列 7 C + `>` 续行 + `Summary of conflicts:` 尾行）—— testing §2.3
+- [x] `temp/svn-switch`：**真实 switched 子目录**（列 5 S）—— testing §2.4
 - [x] 实测捕获：见附录 A1/A2/A3
 
-## M1 · VCS 抽象层（01，P0）—— ✅ 已完成（53/53 spec 通过）
+## M1 · VCS 抽象层（vcs，P0）—— ✅ 已完成（53/53 spec 通过）
 
-- [x] `lua/vcssign/status_type.lua`：统一状态枚举 + 默认符号/高亮/优先级三件套（01 §2）
+- [x] `lua/vcssign/status_type.lua`：统一状态枚举 + 默认符号/高亮/优先级三件套（vcs §2）
       兼 `camel/symbol/sign_hl_group/hl_group/sign_priority` 查询函式
 - [x] `lua/vcssign/vcs/base.lua`：`VcsSystem` 接口 + emmylua 元类型 + `unsupported()` 能力兼底
-      兼共享工具 `normalize/dirname_of/abspath/relpath/find_root_upwards/make_entry`（01 §3）
+      兼共享工具 `normalize/dirname_of/abspath/relpath/find_root_upwards/make_entry`（vcs §3）
 - [x] `lua/vcssign/vcs/git.lua`：
-  - [x] root：`rev-parse --show-toplevel`（异步权威）+ `.git` 目录/文件同步兜底（01 §4.1）
-  - [x] status：`--porcelain=v1 -z --untracked-files=all`，NUL 解析 + rename 双段消费（01 §4.2）
-  - [x] stage/unstage/commit/diff 命令（unstage 自动回退 `reset HEAD --`）（01 §4.3）
+  - [x] root：`rev-parse --show-toplevel`（异步权威）+ `.git` 目录/文件同步兜底（vcs §4.1）
+  - [x] status：`--porcelain=v1 -z --untracked-files=all`，NUL 解析 + rename 双段消费（vcs §4.2）
+  - [x] stage/unstage/commit/diff 命令（unstage 自动回退 `reset HEAD --`）（vcs §4.3）
 - [x] `lua/vcssign/vcs/svn.lua`：
-  - [x] root：`svn info --show-item wc-root` + `.svn` 同步兜底 + `<1.9` 懒降级 warn（01 §5.1）
-  - [x] status：固定列解析（第 9 列起）+ 列7 tree conflict/列2 属性修改/续行跳过（01 §5.2）
-  - [x] capabilities：`stage=false`，commit/diff 命令（01 §5.3）
-- [x] `lua/vcssign/vcs/init.lua`：registry + `detect`/`detect_async`，嵌套仓库取更深 root（01 §6）
+  - [x] root：`svn info --show-item wc-root` + `.svn` 同步兜底 + `<1.9` 懒降级 warn（vcs §5.1）
+  - [x] status：固定列解析（第 9 列起）+ 列7 tree conflict/列2 属性修改/续行跳过（vcs §5.2）
+  - [x] capabilities：`stage=false`，commit/diff 命令（vcs §5.3）
+- [x] `lua/vcssign/vcs/init.lua`：registry + `detect`/`detect_async`，嵌套仓库取更深 root（vcs §6）
 - [x] **额外前置（原属 M2，因适配器依赖而提前）**：`lua/vcssign/exec.lua`（`vim.system` 封装）、
       `lua/vcssign/config.lua`（最小配置 + `merge`）
-- [x] 验收：01 §7.1–7.5 全部覆盖（`test/vcs_git_spec.lua` + `test/vcs_svn_spec.lua` +
+- [x] 验收：vcs §7.1–7.5 全部覆盖（`test/vcs_git_spec.lua` + `test/vcs_svn_spec.lua` +
       `test/vcs_registry_spec.lua` + `status_type_spec` + `config_spec` = **53 用例，全绿**）
 - [x] 代码审查（独立 code-reviewer 两轮）发现的问题已修复—— 见本文件附录 B
 
-## M2 · 仓库运行时（02，P1）—— ✅ 已完成（81/81 spec 通过；含二轮回归 3 例）
+## M2 · 仓库运行时（runtime，P1）—— ✅ 已完成（81/81 spec 通过；含二轮回归 3 例）
 
-- [x] `lua/vcssign/exec.lua`：`vim.system` 封装 + `LC_ALL=C`、MSYS noglob、超时、`split_nul/split_lines`（02 §2）
+- [x] `lua/vcssign/exec.lua`：`vim.system` 封装 + `LC_ALL=C`、MSYS noglob、超时、`split_nul/split_lines`（runtime §2）
       **已在 M1 落地**（适配器依赖）；`pcall` 包住 `vim.system`（命令不存在时会抛 ENOENT 而非回调，已实测）
       + **M2 审查后修正：回调统一切回主循环**（`vim.system` 的退出回调本身就在 fast-event，实测）
 - [x] `lua/vcssign/log.lua`：分级日志（debug/info/warn/error），全部 `vim.schedule` → `vim.notify`
       （uv 回调是 fast-event 上下文，直调 vim API 会报 E5560 —— 已实测）
 - [x] `lua/vcssign/util.lua`：`is_dir` / `subscribe` / `emit`（监听器异常隔离）
-- [x] `lua/vcssign/debounce.lua`：移植 gitsigns `debounce_trailing`（MIT 注明）+ `cancel()` + `vim.schedule` 修正（02 §6.5）
+- [x] `lua/vcssign/debounce.lua`：移植 gitsigns `debounce_trailing`（MIT 注明）+ `cancel()` + `vim.schedule` 修正（runtime §6.5）
 - [x] `lua/vcssign/repo.lua`：
-  - [x] 状态缓存 `status/status_map` + `get_entry/get_status/entries`（02 §3.1；路径键 Windows 大小写折叠）
-  - [x] fs 监听：root + 直接子目录（非递归）+ **`metadata_path`**（非 Linux 递归；worktree 的 gitdir 由 `metadata_dir` 解析），句柄池化，回调只置脏（02 §3.2）
-  - [x] 刷新管线：防抖 + 防重入补跑 + map 剪裁（首轮必通知）+ 失败指数退避（02 §3.3）
+  - [x] 状态缓存 `status/status_map` + `get_entry/get_status/entries`（runtime §3.1；路径键 Windows 大小写折叠）
+  - [x] fs 监听：root + 直接子目录（非递归）+ **`metadata_path`**（非 Linux 递归；worktree 的 gitdir 由 `metadata_dir` 解析），句柄池化，回调只置脏（runtime §3.2）
+  - [x] 刷新管线：防抖 + 防重入补跑 + map 剪裁（首轮必通知）+ 失败指数退避（runtime §3.3）
   - [x] `system.status` 调用本身 `pcall` + `done` 幂等闸（适配器抛异常不卡死管线）
   - [x] 完成回调先查 `is_deleted`（命令飞行中被 dispose → 不产生任何副作用）
   - [x] `dispose` 统一清理（句柄 stop+close，去抖/退避 timer 关闭，**在排 waiter 带 reason 释放**）
 - [x] `lua/vcssign/repo_manager.lua`：`attach(ref, path, cb)` / `detach(ref)` 引用计数、缓存快速路径、
-      `active/get_by_path`、`on_repo_attached/detached`、`dispose_all`（02 §4）
+      `active/get_by_path`、`on_repo_attached/detached`、`dispose_all`（runtime §4）
       + **per-ref 世代号**防 attach↔detach 竞态泄漏引用
-- [x] 验收：02 §5.1–5.5 + §4，共 **18 个用例**（`test/repo_spec.lua`），含 `vim.uv.walk` 句柄清零断言
+- [x] 验收：runtime §5.1–5.5 + §4，共 **18 个用例**（`test/repo_spec.lua`），含 `vim.uv.walk` 句柄清零断言
       —— 实测数据见本文件附录 C，审查修复见附录 D
 
-## M3 · 侧边栏 UI（03，P2）—— ✅ 已完成（114/114 spec 通过，含审查修复）
+## M3 · 侧边栏 UI（sidebar，P2）—— ✅ 已完成（114/114 spec 通过，含审查修复）
 
-- [x] `lua/vcssign/config.lua`：`sidebar` 段（`position`/`width`/`group_by`/`keymaps`）（03 §2、§5）
+- [x] `lua/vcssign/config.lua`：`sidebar` 段（`position`/`width`/`group_by`/`keymaps`）（sidebar §2、§5）
 - [x] `lua/vcssign/sidebar/init.lua`：窗口/缓冲区生命周期（open/close/toggle/focus/close_all/forget_all、
-      `nvim_open_win{split}`、`signcolumn=yes:2`、订阅跟缓冲区走、`VimResized` 重画、`cursor_entry`）（03 §2）
+      `nvim_open_win{split}`、`signcolumn=yes:2`、订阅跟缓冲区走、`VimResized` 重画、`cursor_entry`）（sidebar §2）
 - [x] `lua/vcssign/sidebar/renderer.lua`：
-  - [x] 排序（严重度→字典序）+ 分组（git 三组，svn 无 index 域则扁平）（03 §3.1）
-  - [x] 双 extmark sign 位渲染（`+1000` upstream 偏移 → porcelain XY）+ namespace 全量重画（03 §3.3）
-  - [x] 高亮组定义（`default = true`，18 组，覆盖枚举全部取值）（03 §3.4）
-  - [x] `item_at`/`entry_at` 行模型反查（0 基行号，缓存于 `vim.b[bufnr].vcssign_items`）（03 §4）
-  - [x] `banner` 三态占位（refreshing / 失败原因 / no changes）（03 §7.1 #6）
+  - [x] 排序（严重度→字典序）+ 分组（git 三组，svn 无 index 域则扁平）（sidebar §3.1）
+  - [x] 双 extmark sign 位渲染（`+1000` upstream 偏移 → porcelain XY）+ namespace 全量重画（sidebar §3.3）
+  - [x] 高亮组定义（`default = true`，18 组，覆盖枚举全部取值）（sidebar §3.4）
+  - [x] `item_at`/`entry_at` 行模型反查（0 基行号，缓存于 `vim.b[bufnr].vcssign_items`）（sidebar §4）
+  - [x] `banner` 三态占位（refreshing / 失败原因 / no changes）（sidebar §7.1 #6）
 - [x] `lua/vcssign/sidebar/keymap.lua`：默认 8 键（`<cr> t d s u r q ?`）+ `dispatch()` 单一分派入口
-      + capability 门控（svn 提示 `no staging area`，INFO）+ 动作交 04（M3 期缺模块则明确提示）（03 §5）
-- [x] 光标行恢复：按 rel_path 恢复（行号只作兜底）（03 §3.5）
-- [x] 验收：03 §6.1–6.6 全部通过（表格见 03 §6，`sidebar_spec` 用 `screenstring` 读真实屏幕断言）
+      + capability 门控（svn 提示 `no staging area`，INFO）+ 动作交 actions（M3 期缺模块则明确提示）（sidebar §5）
+- [x] 光标行恢复：按 rel_path 恢复（行号只作兜底）（sidebar §3.5）
+- [x] 验收：sidebar §6.1–6.6 全部通过（表格见 sidebar §6，`sidebar_spec` 用 `screenstring` 读真实屏幕断言）
 - [x] spec：`renderer_spec`（15，纯函数）+ `sidebar_spec`（18，真实仓库/窗口/按键）
 - [ ] backlog（明确不做）：`position = "float"`、`single_column`、`group_by = "directory"` 树模式、
-      条目级增量更新（1000 行 7ms，全量重画足够）—见 03 §7.3
+      条目级增量更新（1000 行 7ms，全量重画足够）—见 sidebar §7.3
 
-## M4 · 命令与动作（04，P3）—— ✅ 已完成（167/167 spec 通过，含独立审查修复）
+## M4 · 命令与动作（actions，P3）—— ✅ 已完成（167/167 spec 通过，含独立审查修复）
 
-- [x] `lua/vcssign/actions.lua`：open/diff/stage/unstage/commit/refresh，动作后强制 refresh（04 §2）
-- [x] diff 展示：unified diff → nofile 缓冲区 `filetype=diff`，同文件复用缓冲/窗口，只读（04 §2.1）
-- [x] `lua/vcssign/cli.lua` + `plugin/vcssign.vim`：`:Vcssign` 子命令族（+`diff`/`debug`）+ customlist 补全（04 §3）
-- [x] `lua/vcssign/autocmds.lua`：BufReadPost/BufEnter/BufDelete/DirChanged/FocusGained/VimLeavePre（04 §4）
-- [x] 公共 API：`setup/open/close/toggle/refresh/get_status/get_entries` + `M.cli`（04 §5）
-- [x] 验收：04 §6 全部 8 条（含两条额外的：空会话第一条命令可用、`plugin/` 薄壳真的注册了命令）
-- [x] 测试：`actions_spec` 24 + `cli_spec` 17 + `autocmds_spec` 10 + `exec_spec` 9（05 §6）
+- [x] `lua/vcssign/actions.lua`：open/diff/stage/unstage/commit/refresh，动作后强制 refresh（actions §2）
+- [x] diff 展示：unified diff → nofile 缓冲区 `filetype=diff`，同文件复用缓冲/窗口，只读（actions §2.1）
+- [x] `lua/vcssign/cli.lua` + `plugin/vcssign.vim`：`:Vcssign` 子命令族（+`diff`/`debug`）+ customlist 补全（actions §3）
+- [x] `lua/vcssign/autocmds.lua`：BufReadPost/BufEnter/BufDelete/DirChanged/FocusGained/VimLeavePre（actions §4）
+- [x] 公共 API：`setup/open/close/toggle/refresh/get_status/get_entries` + `M.cli`（actions §5）
+- [x] 验收：actions §6 全部 8 条（含两条额外的：空会话第一条命令可用、`plugin/` 薄壳真的注册了命令）
+- [x] 测试：`actions_spec` 24 + `cli_spec` 17 + `autocmds_spec` 10 + `exec_spec` 9（testing §6）
 
-M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
+M4 期间修掉的三个既有缺陷（都在 actions §7.1 有完整记录）：
 1. `exec.run` 的超时定时器武装顺序 → 立刻失败的进程会留下一个**已武装**的定时器（15s 后才自我关闭）。
 2. `repo_manager.ensure`（新）与 `get_by_path` 的语义差：嵌套仓库时内层文件会被判给已 attach 的外层仓库。
 3. 路径未解析就传给 `ensure` → `base.normalize(nil)` 静默变成「cwd 下的相对路径」（实测字符串 `v:/null`）。
 
-## M5 · 测试与工程化（05，P4，M1 起并行）—— ✅ 完成（174/174；CI 仍 backlog）
+## M5 · 测试与工程化（testing，P4，M1 起并行）—— ✅ 完成（174/174；CI 仍 backlog）
 
-- [x] `scripts/make_test_repos.sh`：幂等生成全部 fixture（已实测：从零重建 + 连续两次跑均正确）（05 §2）
+- [x] `scripts/make_test_repos.sh`：幂等生成全部 fixture（已实测：从零重建 + 连续两次跑均正确）（testing §2）
 - [x] `scripts/run_tests.sh` + `test/run.lua` + `test/helpers.lua`：TAP 输出、exit code、svn 缺失 SKIP、
-      `helpers.wait` 阻塞式异步测试（取代计划里的 `preload.lua` + `wait_for`）（05 §3）
+      `helpers.wait` 阻塞式异步测试（取代计划里的 `preload.lua` + `wait_for`）（testing §3）
 - [x] spec（M1 部分）：`status_type_spec` / `config_spec` / `vcs_git_spec` / `vcs_svn_spec` / `vcs_registry_spec`（53 用例）
 - [x] spec（M2 部分）：`repo_spec`（21 用例）+ `exec_spec`（7 用例，固化「回调在主循环」契约）
 - [x] `test/helpers.lua` 扩展：`scratch_dir` + `cleanup`（末尾清理）、`git_repo` / `svn_checkout` / `git_worktree`
@@ -108,15 +110,15 @@ M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
 - [x] spec（M3 部分）：`renderer_spec`（15 用例，纯函数）+ `sidebar_spec`（18 用例，真实仓库/窗口/按键）
 - [x] spec（后续里程碑）：`actions_spec`（24 用例，M4；在副本仓库上跑真实 stage/unstage/commit 并用 VCS 自身核对）
 - [x] `stylua.toml` / `.luacheckrc` / `Makefile`（help/tools/fixtures/test/format/format-check/lint）+ `scripts/tools.sh`
-      （钉版本 stylua 2.3.1 / luacheck 1.2.0 到 `deps/`）；`format-check` 零输出、`lint` 0 警告（05 §4）
+      （钉版本 stylua 2.3.1 / luacheck 1.2.0 到 `deps/`）；`format-check` 零输出、`lint` 0 警告（testing §4）
 - [x] `doc/vcssign.txt` 初版手写（8 节 254 行）+ `test/doc_spec.lua`（7 用例：配置键 / 子命令 / 状态 / 高亮 /
-      键位动作 / API / `:helptags` tag 唯一）（05 §5）
-- [ ] CI（backlog，**未做**）：ubuntu+windows matrix——本机无 GitHub 远端，写了也无法验证；接入步骤见 05 §4
+      键位动作 / API / `:helptags` tag 唯一）（testing §5）
+- [ ] CI（backlog，**未做**）：ubuntu+windows matrix——本机无 GitHub 远端，写了也无法验证；接入步骤见 testing §4
 
-## M6 · 行级 sign（07，P0 转向）—— ✅ 完成（Step 1–14/14，250/250）
+## M6 · 行级 sign（signs，P0 转向）—— ✅ 完成（Step 1–14/14，250/250）
 
 > 用户要求把「文件状态侧边栏」换成 gitsigns 式的**行级 sign**（状态直接进 `'signcolumn'`）。
-> 设计、探针实测与分步计划见 `07-signs-in-signcolumn.md`；**交接说明见该文 §6.1–§6.4**
+> 设计、探针实测与分步计划见 `impl/knowledge/signs/2026-10-16T11-43-18-signs-in-signcolumn.md`；**交接说明见该文 §6.1–§6.4**
 > （已落地 SHA 表 + 回归始末、每步工作契约、已知坑、Step 6 入口）。
 
 - [x] **Step 1** 退役侧边栏，留最小 sign 骨架 —— `080379c`（174 → 125，全绿）
@@ -124,17 +126,17 @@ M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
 - [x] **Step 3** `hunk.lua` + `diff.lua`（`vim.text.diff` 封装）—— `5e8e485`（125 → 158）
 - [x] **Step 4** 适配器换血：`show` / `is_tracked` / `blame` / `apply_patch` / `revert`，`VcsCaps` 换字段 —— `7acc713`（150）
 - [x] **Step 5** `signs.lua`（双命名空间 + 放置规则 + 高亮）+ `attach.lua`（守卫 / 基线 / diff / 渲染 / `nvim_buf_attach`）—— `6eaef2b`（150 → 178）
-- [x] 顺带修掉两条独立缺陷：`f1d1735`（`fix(repo)` 根目录加非递归 watch，修 Step 2 的回归；`FILTER=repo_spec` 由 2/20 红 → 连跑两次 20/20 绿）、`e6c4f1b`（`fix(vcs)` svn 追踪判定改用 `svn info`，并更正 07 §3.1 / §5.3 的两处探针结论）
-- [x] 文档：`9b4eb90`（07 设计与探针实测）+ §6.1–§6.4 交接
+- [x] 顺带修掉两条独立缺陷：`f1d1735`（`fix(repo)` 根目录加非递归 watch，修 Step 2 的回归；`FILTER=repo_spec` 由 2/20 红 → 连跑两次 20/20 绿）、`e6c4f1b`（`fix(vcs)` svn 追踪判定改用 `svn info`，并更正 signs §3.1 / §5.3 的两处探针结论）
+- [x] 文档：`9b4eb90`（signs 设计与探针实测）+ §6.1–§6.4 交接
 - [x] **Step 6** 自动触发与生命周期（`on_lines` 防抖 / `on_reload` / `repo:on_update` / `BufWritePost` / `FocusGained`）+ 逐缓冲开关 `:Vcssign toggle` —— `2193802`（178 → 184；`attach_spec` 14→16、`autocmds_spec` 10→12、`cli_spec` 11→13）
 - [x] **Step 7** git 暂存态双层 sign（`load_head` 读 `HEAD`、`filter_common` 拆两层、`…Staged` 用暗色） —— `4bfe0ce`（184 → 189；`attach_spec` 16→20、`signs_spec` 13→14，`attach_spec` 起需要 svn）
 - [x] **Step 8** hunk 导航与默认键位（`nav.lua` 的 `]c`/`[c`；`keymap.lua` 的 buffer-local 默认映射，未落地动作先提示） —— `f54b6af`（189 → 202；`nav_spec` 13 例）
 - [x] **Step 9** hunk 级动作 + CLI（`stage_hunk` / `undo_stage_hunk` / `reset_hunk` / `stage_buffer` / `reset_buffer`；`attach.ready` 的等待者让命令可以抢在基线落地之前到达） —— `a5e544a`（202 → 213；`actions_spec` 19 → 30；`preview_hunk` 挪到 Step 10）
 - [x] **Step 10** 词级 diff（`worddiff.lua`）+ 删除预览与 hunk 浮窗（`preview.lua`）+ `hp` / `tw` 接线 —— `1317890`（213 → 229；`worddiff_spec` 9 + `preview_spec` 7）
 - [x] **Step 11** 当前行 blame（`blame.lua`：行内 `virt_text`、`changedtick` 缓存、`blame_line` 浮窗） + `revdiff.lua`（`diffthis [rev]`，diff 窗口从 `actions` 挪进来） —— `22ad24a`（229 → 244；`blame_spec` 8 + `revdiff_spec` 7）
-- [x] **Step 12** 文档与帮助回写（`00`–`06`、`doc/vcssign.txt`、`doc_spec`） —— `a4b3551`（用例数不变，`make test` 244/244；`doc_spec` 6/6）
+- [x] **Step 12** 文档与帮助回写（`overview`–`milestones`、`doc/vcssign.txt`、`doc_spec`） —— `a4b3551`（用例数不变，`make test` 244/244；`doc_spec` 6/6）
 - [x] **Step 13** 独立审查（`code-reviewer` 只读审 `080379c^..HEAD`，报告 `temp/m6_review.md`）+ 修复 —— `c2990be`（F1 死状态复活 / F2 `hq`·`hQ` 假绿灯 / F4 signcolumn 告警 / F7 键位释放 / F3 注释 / F8 两条边界用例；V1 实测为否；244 → 250）
-- [x] **Step 14** 终验（全量两遍幂等、stderr 合同、`git diff --check`、逐 SHA 复跑） —— `a3e41fd`（两次 `250 tests, 0 failed`；stderr 只剩 retry 那一行；逐 SHA 复跑 15 个代码提交——其中 3 个是 `f1d1735` 修的已知 Step 2 回归、1 个是负载 flake，见 07 §6.1；docs-only 提交不单独复跑）
+- [x] **Step 14** 终验（全量两遍幂等、stderr 合同、`git diff --check`、逐 SHA 复跑） —— `a3e41fd`（两次 `250 tests, 0 failed`；stderr 只剩 retry 那一行；逐 SHA 复跑 15 个代码提交——其中 3 个是 `f1d1735` 修的已知 Step 2 回归、1 个是负载 flake，见 signs §6.1；docs-only 提交不单独复跑）
 
 **工程门（`6eaef2b` 实测）**：`make test` → `178 tests, 0 failed`；`make format-check` → 零输出；
 `make lint` → `Total: 0 warnings / 0 errors in 35 files`。
@@ -149,7 +151,7 @@ M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
 
 ### M6 之后：按用户要求做的三处 gitsigns 对齐
 
-> 都是 M6 交付之后用户实测/点名要的，不是 §6 表里的步骤；实现细节见 `07` §6.1 末尾三条与 §6.3。
+> 都是 M6 交付之后用户实测/点名要的，不是 §6 表里的步骤；实现细节见 `signs` §6.1 末尾三条与 §6.3。
 
 - `d743bba` `fix(attach)` —— **noice 崩溃**（用户实测）：`WinEnter` → `reapply_signcolumn` 会在别人的
   `nvim_win_call`（`:Noice history`）里写 `'signcolumn'`，而**写入窗口已有的值也会触发 `OptionSet`**
@@ -172,24 +174,24 @@ M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
 **工程门（`f66b074` 实测）**：`make test` → **`260 tests, 0 failed`**、`make format-check` 零输出、
 `make lint` → `0 warnings / 0 errors in 48 files`；stderr 只剩 `repo_spec` retry 那一行。
 
-## M7 · 性能与架构优化（08，审查记录 · ✅ 已完成：P0-1…P0-5 / P1-1…P1-3 / P2-1…P2-6 / S1 全部落地，P1-4 备档）
+## M7 · 性能与架构优化（perf，审查记录 · ✅ 已完成：P0-1…P0-5 / P1-1…P1-3 / P2-1…P2-6 / S1 全部落地，P1-4 备档）
 
 > 用户要求审查「性能、架构上可优化的部分」（m00001）。结论由**实测探针**（`exec.run` 打桩数进程 /
 > `attach._render` 打桩数渲染 / 微基准）支撑：算法层（diff / hunk / extmark）都不是瓶颈（40000 行
 > 全改写 8.1 ms），瓶颈是**每次渲染固定的进程数**（git 3 个 × 43 ms；svn 2 个 × ≈72 ms——svn 没有
 > staged 层但单价更高，**两边墙钟差不多**）与**无差别重复的整文件管线**（`FocusGained` 磁盘无变化仍
 > 整趟重跑：git 每 buffer 6 进程 2 渲染，svn 2 进程 1 渲染，均产出零差异）。
-> **git / svn 已分别实测**（svn：`svnbench.lua` 单价 + `svne2e.lua` 计数；逐条适用性见 08 §3.5 矩阵）。
-> 设计、实测数据与推进顺序见 `08-perf-review.md`（P0-1…P0-5 / P1-1…P1-4 / P2-1…P2-6 / S1–S3 / A1–A5）。
+> **git / svn 已分别实测**（svn：`svnbench.lua` 单价 + `svne2e.lua` 计数；逐条适用性见 perf §3.5 矩阵）。
+> 设计、实测数据与推进顺序见 `impl/archive/perf/2026-10-19T11-33-42-m7-performance-review.md`（P0-1…P0-5 / P1-1…P1-4 / P2-1…P2-6 / S1–S3 / A1–A5）。
 
-- [x] 1. P0-4 渲染短路（**已落地**，实测见 08 §2.4：`FocusGained` git 121 → 1 进程、同步 80.1 → 3–5 ms，
+- [x] 1. P0-4 渲染短路（**已落地**，实测见 perf §2.4：`FocusGained` git 121 → 1 进程、同步 80.1 → 3–5 ms，
       svn 25 → 1 / 72.2 → 0.6 ms；纯编辑 6 → 0 / 2 → 0）。新增可选适配器钩子
       `baseline_stamp(root)`（git `.git/index`+`HEAD`+分支文件、svn `.svn/wc.db`；拿不到返回 `nil` 退回原行为），
       渲染指纹 = `changedtick` + 基线 stamp + 渲染相关配置；回归用 `test/attach_spec.lua` 的
       `count_procs` + 4 例断言、`vcs_git_spec`/`vcs_svn_spec` 各 2 例（全文 268 例通过）。
       遗留：`FocusGained` 仍每 buffer 进两次 `_render`（`refresh_all` + repo `on_update` 两条路径），
       金额已便宜但重复仍在 → 已由第 2 步消掉（40 → 20）。
-- [x] 2. P0-3 `changed_paths` 通道（**已落地**，实测见 08 §2.5：外部改写 1 个文件从 git 20 buffer /
+- [x] 2. P0-3 `changed_paths` 通道（**已落地**，实测见 perf §2.5：外部改写 1 个文件从 git 20 buffer /
       61 进程降到 1 / 1（996 ms）；`FocusGained` 的重复渲染 40 → 20、svn 12 → 6；进程数仍是「每仓库 1」）。
       `Repo:on_update(fn, changed)` 三态：集合 = 这些文件 / `nil` = 指认不了（元数据、目录汇总事件、
       已消失路径）/ 空集 = 什么也没动（探测类请求）；只有 fs 事件记账，`mark_dirty`/`refresh*` 不算证据。
@@ -197,12 +199,12 @@ M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
       `repo_spec` +4 例（git/svn 各一套），全文 275 例通过。
       坑记一笔：`x and nil or y` 永远得不到 `nil`（两处都是此惯用法）→ 改显式 `if`；
       目录汇总事件（实测 `git add` 在根 watch 上以 `filename='.git'` 触发）必须回落「全员」，否则静默漏刷新。
-- [x] 3. P0-5 首刷去重 root 探测（**已落地**，实测见 08 §2.6）：`Repo.new(system, root, { verified = true })`
+- [x] 3. P0-5 首刷去重 root 探测（**已落地**，实测见 perf §2.6）：`Repo.new(system, root, { verified = true })`
       （`is_dirty = false` + `has_loaded = true`），`repo_manager.attach` 只在新仓库分支传它。
       首刷进程 git 5 → 4、svn 4 → 3，**首标延迟 224–236 → 185–195 ms**（省的是 1 轮串行往返，
       进程计数只差 1 个——`_bind` 的缓存快路径本来就让同仓库后续 buffer 不再探测）。
       回归：`repo_spec` 改写 1 例 + 新增 2 例（后续触发仍探测、svn 版），全文 277 例通过。
-- [x] 4a. P0-1 仓库级状态缓存（**已落地**，实测见 08 §2.7）：可选适配器钩子
+- [x] 4a. P0-1 仓库级状态缓存（**已落地**，实测见 perf §2.7）：可选适配器钩子
       `status(root, cb) -> cb(err, entries)`（git `status --porcelain=v2 -z --untracked-files=all
       --ignored=traditional --no-renames`、svn `status --xml --no-ignore`），`Repo` 缓存并在
       `Repo:status(cb)` 上投递三参 `(err, entries, trusted)`：`trusted` = 查询前后 `baseline_stamp`
@@ -213,11 +215,11 @@ M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
       外部改写而事件未到，读它会把别人的编辑变成幻影 hunk）；代价是 `assume-unchanged`/`skip-worktree`
       的文件不再显示标志（gitsigns 会显示）。实测：git 脏文件首标 232.3 → 183.8 ms、进程 4 → 3，
       干净文件 152.9 → 105.6 ms、进程 4 → 2（0 个 `show`）；svn 脏 290.5 → 184.5 ms、4 → 3，
-      干净文件 2 进程 0 个 `cat`；20 文件 attach 进程 git 62 → 22、svn 14 → 8（08 §2.7）。
+      干净文件 2 进程 0 个 `cat`；20 文件 attach 进程 git 62 → 22、svn 14 → 8（perf §2.7）。
       回归：`attach_spec` +4 例（含 `spawned()` 记 argv）、`repo_spec` +4 例，全文 285 例通过。
       顺手修掉一个真 bug：`load_base_show` 被放在 `load_base_probe` **之后**定义 → 那次调用是全局访问，
       「status 查询失败」这条回退路径此前没有断言覆盖，其实一直是坏的。
-- [x] 4b. P0-2 `cat-file --batch` 常驻（**仅 git**，svn 无 blob 批协议；**已落地**，实测见 08 §2.8）：
+- [x] 4b. P0-2 `cat-file --batch` 常驻（**仅 git**，svn 无 blob 批协议；**已落地**，实测见 perf §2.8）：
       `exec.lua` 新增 `M.stream`（长驻 `vim.system` + `stdin = true` + 调度回主循环），
       `vcs/git.lua` 新增 `CatFile`（`--batch` 协议：`<sha> <type> <size>` + 内容按字节数切分、
       `
@@ -235,9 +237,9 @@ M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
       index**，`git apply --cached` 后仍回答旧 blob（sha 不变）→ stage 一个 hunk 后 staged 层恒空，
       `actions_spec` 两例超时。修法：reader 寿命绑 `baseline_stamp`（变了就换新），
       没有指纹的适配器对 `index` 读取直接走 `show`。
-- [x] 5. P1 动作层三处（08 §2.9 有前后表；`temp/probe_stage.lua` / `probe_commit.lua` / `probe_blame.lua` 保留）
+- [x] 5. P1 动作层三处（perf §2.9 有前后表；`temp/probe_stage.lua` / `probe_commit.lua` / `probe_blame.lua` 保留）
       - **P1-1**：`stage_hunk` / `unstage_hunk` 只留 `attach.refresh`，删 `repo:refresh_now()`
-        ——应答时进程 4 → 3、应答耗时在噪声内、`hs` 后立刻 `hu` 仍作用于新层（08 §7-5 结案）。
+        ——应答时进程 4 → 3、应答耗时在噪声内、`hs` 后立刻 `hu` 仍作用于新层（perf §7-5 结案）。
         `commit`/`stage`/`unstage` 的 `refresh_now` **保留**（无「下一动作读屏幕层」约束，svn 亦无索引事件）。
       - **P1-2**：`has_staged_change` 先问 `Repo:status`（`trusted` 为真才信 `entry.staged`），
         不可信才回退两次整文件 `show`；commit 一个已 stage 文件 5 → 3 进程、`show` 2 → 0。
@@ -250,7 +252,7 @@ M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
       - 回归：`actions_spec` 32 → 34（`spawned_commands`/`running` 辅助同时拦 `exec.run` 与 `exec.stream`），
         `blame_spec` 10 → 13（改 1 加 3），全文 290 → **294**。坑：`helpers.git_repo` 的
         `user.name = 't'`，断言 blame 文本时别写 'Ada Lovelace'。
-- [x] 6. A4 进程计数探针固化为回归 spec（08 §6 的验收断言表；**git/svn 各一套**）
+- [x] 6. A4 进程计数探针固化为回归 spec（perf §6 的验收断言表；**git/svn 各一套**）
   - `test/proc_budget_spec.lua`（7 例），helper 是 `helpers.spawns`（同时拦 `exec.run` 与
     `exec.stream`）+ `helpers.running`；预算 git attach 5 / clean 3 / focus 1 / external 2 /
     stage 6 / commit 4 / blame 1，svn attach 10 / clean 3 / focus 1 / external 2 / commit 4 / blame 1
@@ -259,8 +261,8 @@ M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
     blame 1 然后 0；A/B：`git checkout 3675b24 -- lua/` 后同一 spec 用例 1 报 26 > 5、用例 2 报 2 个 `show`
   - 坑：没 `autocmds.setup()` 时 `nvim_exec_autocmds('FocusGained')` 是空操作，用例会假通过；
     `test/run.lua` 的 `DEFAULT_SPECS` + `REQUIRES` 要登记新 spec
-  - 文档：08 §6.1 + A4 状态块、05 §1 表格与 §3 两条规矩
-> 汇总：`impl/init/08-perf-review.md` **§2.10「M7 前后总表」**一页看完整体收益与剩余备档项。
+  - 文档：perf §6.1 + A4 状态块、testing §1 表格与 §3 两条规矩
+> 汇总：`impl/archive/perf/2026-10-19T11-33-42-m7-performance-review.md` **§2.10「M7 前后总表」**一页看完整体收益与剩余备档项。
 
 - [x] S1 svn `.svn` 递归 watch —— 量完发现**句柄不是问题**（1200 文件 wc 上始终 2 个：libuv 的递归
     是一个标志，不是每子目录一个句柄），代价在**事件量**：一次 300 文件 `svn commit` 递归 3135 条
@@ -301,7 +303,7 @@ NUL 分隔（下文以换行代替 NUL 展示；中文路径按 UTF-8 原样传�
 ```
 
 要点确认：
-- rename 记录是**连续两段**（新路径 + orig_path），解析循环必须按 01 §4.2 的「双段消费」处理；
+- rename 记录是**连续两段**（新路径 + orig_path），解析循环必须按 vcs §4.2 的「双段消费」处理；
 - `core.quotepath` 引号转义**不会出现**在 `-z` 输出中（计划 D3 验证成立）；
 - 状态域实际形态：` M`（local M）、` D`（local D）、`R `（upstream R）、`A `、`AM`（upstream A + local M）、`??`（untracked）。
 
@@ -321,7 +323,7 @@ R       repl.txt
 ```
 
 要点确认：
-- `MM` = 第 1 列 M（内容修改）+ 第 2 列 M（属性修改）—— 01 §5.2 的「列 1 主状态 + 列 2 属性补充」策略成立；
+- `MM` = 第 1 列 M（内容修改）+ 第 2 列 M（属性修改）—— vcs §5.2 的「列 1 主状态 + 列 2 属性补充」策略成立；
 - `!`（missing）、`R`（replaced，`svn rm --keep-local` + `svn add` 制得）按预期出现；
 - `svn info --show-item wc-root` 对 `svn-repo` 与 `nested/inner` 都返回正确绝对路径（svn ≥ 1.9 特性可用，D4 成立）；
 - file:// 仓库 URL 形态：`file:///D:/Developer/.../temp/svn-server/trunk`（三斜杠 + 盘符，`pwd -W` 可直接生成）。
@@ -364,11 +366,11 @@ R       repl.txt
 | minor | svn 列 5 `X`（file external）未映射，条目被整条丢弃 | 补映射为 `external` |
 | minor（测试） | 全局单例（config / `registry.MODULES`）在断言失败时不恢复；`REQUIRES` 未覆盖 git；临时目录不清理 | `with_isolated_state` + `pcall`；`REQUIRES` 改为多值；临时目录用完删 |
 
-未修复（已知且已在 05 §3 标注为未覆盖）：svn `<1.9` 降级、git `unstage` 旧版分支（需 git < 2.23，
+未修复（已知且已在 testing §3 标注为未覆盖）：svn `<1.9` 降级、git `unstage` 旧版分支（需 git < 2.23，
 本机无法制造，仅对错误文案做了实测）、`exec` 的超时/spawn 失败用例。
 
 审查提出的**契约级提醒**已写入设计文档：同步回调（能力不支持 / 空参数）会让 M2 的
-「调用后置标志」写法打穿，见 01 §3 的说明。
+「调用后置标志」写法打穿，见 vcs §3 的说明。
 
 ## 附录 C · M2 实测记录（Windows 11 · nvim 0.12.4 · git 2.55 · svn 1.14.5）
 
@@ -398,7 +400,7 @@ R       repl.txt
 
 ## 附录 D · M2 独立代码审查（code-reviewer）与修复
 
-审查给出 1 critical + 3 major + 6 minor + 测试/文档问题；逐条定论与动作见 `02-repo-runtime.md` §7。
+审查给出 1 critical + 3 major + 6 minor + 测试/文档问题；逐条定论与动作见 `impl/knowledge/runtime/2026-10-15T15-07-15-repo-runtime.md` §7。
 最值得记住的三条：
 
 1. **critical（已修）**：`repo_manager` 的检测是异步的，`attach` 与 `detach` 竞态时
@@ -424,7 +426,7 @@ R       repl.txt
 ## 附录 E · M2 收尾后的第二轮全量审查
 
 code-reviewer 复查全部实现（~2400 行）：**无 critical，2 major + 7 minor**，逐条定论见
-`02-repo-runtime.md` §7「第二轮」。三条最值得记住的：
+`impl/knowledge/runtime/2026-10-15T15-07-15-repo-runtime.md` §7「第二轮」。三条最值得记住的：
 
 1. **major（已修，实证）**：`relpath(root, root) == nil` —— 前缀（根 + 分隔符）天然比根
    长一字符，等值路径永远比不上。后果：`cd repo && nvim` 时 `active()` 解析不到，
@@ -474,7 +476,7 @@ waiter 陈旧语义文档化、`!!`/`X`/`I` 前向兼容注释。`get_by_path` �
 | # | 现象 | 原因 / 修法 |
 |---|------|-------------|
 | 1 | `forget_all()` 抛 `Cannot deepcopy object of type userdata` | Repo 持 libuv 句柄 → 浅拷贝值列表（见上 #5） |
-| 2 | `sidebar_spec` placeholder 用例超时 | `item_at(buf, row)` 是 **0 基**行号，spec 里当 1 基用了 → 断言改成读行模型首行；0 基约定已写进 03 §4/§7.2 |
+| 2 | `sidebar_spec` placeholder 用例超时 | `item_at(buf, row)` 是 **0 基**行号，spec 里当 1 基用了 → 断言改成读行模型首行；0 基约定已写进 sidebar §4/§7.2 |
 | 3 | 测试输出里混入 `Already only one window` 与 `vcssign: no handler for action stage` | `:only` 在单窗口时也会发消息（`reset()` 里先判窗口数）；`log.warn` 是 `vim.schedule` 投递的（`capture_notify` 排空后就被捕获，不再漏到 stderr） |
 
 ### 测试与工程门
@@ -486,7 +488,7 @@ waiter 陈旧语义文档化、`!!`/`X`/`I` 前向兼容注释。`get_by_path` �
 ## 附录 G · M3 独立代码审查（code-reviewer）与修复
 
 范围 `cab8f47^..62b8005`，结论 **无 critical，1 major + 11 minor**；逐条核实后全部处置
-（定论表在 `03-sidebar-ui.md` §7.4，此处只记最值得记住的）：
+（定论表在 `impl/archive/sidebar/2026-10-15T15-07-15-sidebar-ui.md` §7.4，此处只记最值得记住的）：
 
 1. **major（已修）**：占位横幅沿用了「截头留尾」——那是给路径写的规则（文件名在尾部），
    但错误消息的有效信息在**开头**。默认 40 列下
@@ -503,7 +505,7 @@ waiter 陈旧语义文档化、`!!`/`X`/`I` 前向兼容注释。`get_by_path` �
 6. **minor（已修）**：resize 只挂 `VimResized`，而手动 `:vertical resize` 发的是 `WinResized`
    （0.9+）→ 两个都挂。
 7. 保留的取舍：行模型放 `vim.b`（读回整表重建、`entry_at` 返回副本）——1000 行 7ms 在预算内，
-   已在 03 §4 写明 M4 按 `path`/`rel_path` 值比较；单 sign 行落在左列（03 §7.3 #6）同理保留。
+   已在 sidebar §4 写明 M4 按 `path`/`rel_path` 值比较；单 sign 行落在左列（sidebar §7.3 #6）同理保留。
 8. 文档与代码四处不符（严重度顺序把 `added` 写在 `renamed` 前、§3.3 术语与 `+100` 偏移、§6 标准列
    拔高、D6 bufname 少 `<system>`）全部按代码改正；§6 的措辞收敛到用例真正断言的范围。
 
@@ -547,7 +549,7 @@ waiter 陈旧语义文档化、`!!`/`X`/`I` 前向兼容注释。`get_by_path` �
 
 ## 附录 I · M4 独立审查（code-reviewer）与修复
 
-范围 `318e1b3..1f3ed6e`，结论 **无 critical，2 major + 约 20 minor**（定论表在 04 §7.4）。两条 major 都值得记住：
+范围 `318e1b3..1f3ed6e`，结论 **无 critical，2 major + 约 20 minor**（定论表在 actions §7.4）。两条 major 都值得记住：
 
 1. **动作条目要按「身份」绑定仓库**。`entry.rel_path` 是**渲染它的那个 root** 的相对路径。仓库套仓库时
    （外层把内嵌 checkout 列成一行 `?? inner/`），「包含该路径的最深仓库」是内层——于是外层的相对路径被交给内层

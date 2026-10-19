@@ -341,7 +341,7 @@ return {
     fn = guarded(function()
       -- Deliberately does *not* stub `vim.notify`: this is the case whose one
       -- expected warning is the suite's single stderr line (see
-      -- impl/init/05-testing-infra.md §6).  The probe now runs `git rev-parse`,
+      -- impl/knowledge/testing/ §6).  The probe now runs `git rev-parse`,
       -- so that line names `rev-parse --show-toplevel`.
       local dir = helpers.git_repo('runtime-retry-real')
       with_config({ retry_delay_ms = 100, retry_max_ms = 200 }, function()
@@ -425,7 +425,7 @@ return {
       ok(repo.watch_paths[vim.fs.normalize(dir)], 'the root must be watched for liveness')
       -- git spreads its store over the git directory (index, HEAD, refs), so
       -- the metadata watch is recursive wherever libuv can do that
-      -- (08 §3.5 S1).
+      -- (perf §3.5 S1).
       eq(
         repo.watch_recursive[repo.metadata_path],
         vim.uv.os_uname().sysname ~= 'Linux',
@@ -785,7 +785,7 @@ return {
           announced[#announced + 1] = changed
         end)
         -- The root watch is non-recursive, which is the one place libuv hands
-        -- us a filename (08 P0-3).  The metadata watch never does: the index /
+        -- us a filename (perf P0-3).  The metadata watch never does: the index /
         -- wc.db is one store for every file in the repository.
         helpers.write(dir .. '/base.txt', 'edited on disk\n')
         helpers.wait_for(function()
@@ -873,7 +873,7 @@ return {
           saw_all = saw_all or changed == nil
         end)
         -- A commit rewrites `.svn/wc.db`, the file BASE is read through — the
-        -- svn anchor of the same rule (08 §3.5).
+        -- svn anchor of the same rule (perf §3.5).
         helpers.write(dir .. '/base.txt', 'committed\n')
         helpers.sh({ 'svn', 'commit', '-q', '-m', 'changed', dir .. '/base.txt' })
         helpers.wait_for(function()

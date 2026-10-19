@@ -4,7 +4,7 @@
 # Idempotent: safe to run repeatedly.  To rebuild a fixture from scratch,
 # delete it first, e.g. `rm -rf temp/svn-repo temp/svn-server`.
 #
-# Layout and expected status matrix: impl/init/05-testing-infra.md §2.
+# Layout and expected status matrix: impl/knowledge/testing/ §2.
 #   temp/git-repo           git: M D ?? A AM R(+rename source) and a subdirectory
 #   temp/git-repo-conflict  git: an unresolved merge (UU)
 #   temp/git-worktree       git linked worktree (.git is a file)

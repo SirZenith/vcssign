@@ -1,6 +1,6 @@
 --- svn adapter.
 ---
---- See impl/init/01-vcs-adapter.md §5.  Everything here was verified against a
+--- See impl/knowledge/vcs/ §5.  Everything here was verified against a
 --- real working copy (svn 1.14.5 on Windows).  The three things that shape the
 --- code:
 ---   * paths are printed verbatim (spaces, UTF-8 bytes, no quoting), so the
@@ -64,7 +64,7 @@ end
 --- svn's baseline store is the single file `wc.db` in that directory, so the
 --- watch is not recursive (see `vcssign.VcsSystem.metadata_recursive`).  Without
 --- this, a `svn commit` in a big working copy wakes the pipeline ~2500 extra
---- times for events nothing reads (08 §3.5 S1).
+--- times for events nothing reads (perf §3.5 S1).
 M.metadata_recursive = false
 
 ---@param path string
@@ -73,7 +73,7 @@ function M.find_root_sync(path)
   return base.find_root_upwards(path, marker_at)
 end
 
---- A free change-detection key for svn's baseline store (08 P0-4).
+--- A free change-detection key for svn's baseline store (perf P0-4).
 ---
 --- `svn cat -r BASE` resolves through `.svn/wc.db`, and every operation that
 --- can change what BASE holds — `update`, `switch`, `revert`, `add`, the
@@ -238,7 +238,7 @@ local SVN_ITEM = {
 }
 
 --- Parse `svn status --xml` output into `{[abspath] = vcssign.FileStatus}`
---- (08 P0-1).
+--- (perf P0-1).
 ---
 --- Measured shape (svn 1.14.5): attributes come out one per line, and the
 --- document is `<status><target path="."><entry path="REL"><wc-status …
@@ -267,7 +267,7 @@ function M.parse_status(xml, root)
   return entries
 end
 
---- One status query for the whole working copy (08 P0-1).
+--- One status query for the whole working copy (perf P0-1).
 ---
 --- `--no-ignore` is not an optimisation knob but a fidelity one: without it an
 --- ignored file is simply absent from the answer, and "absent" means "in sync
@@ -390,7 +390,7 @@ M.unstage = base.unsupported('unstage')
 ---
 --- The patch goes through a temporary file because svn 1.14.5 refuses stdin.
 --- `--strip N` drops N leading path components.  Measured with svn 1.14.5
---- (07 §11.2, reshaped in Step 9): `--strip 0` accepts *both* dialects — a bare
+--- (signs §11.2, reshaped in Step 9): `--strip 0` accepts *both* dialects — a bare
 --- unidiff (`--- f`), svn's own format (with `Index:`) and git's headers
 --- (`--- a/f` / `+++ b/f`, which is what `hunk.build_patch` emits) all apply
 --- and print `U <path>` — while `--strip 1` conflicts and `--strip 2` fails

@@ -1,5 +1,5 @@
 --- Current-line blame: the `current_line_blame` decoration and the `blame_line`
---- float of impl/init/07-signs-in-signcolumn.md §4 / §6 (Step 11).
+--- float of impl/knowledge/signs/ §4 / §6 (Step 11).
 ---
 --- The decoration follows gitsigns: `current_line_blame_opts` decides where the
 --- text goes (`virt_text`, `virt_text_pos`, `virt_text_priority`), how long the
@@ -10,7 +10,7 @@
 --- per-window question (`is that window focused?`) is answered on every render,
 --- so a cursor move in one window does not disturb another.
 ---
---- A blame is asked for **one line at a time** (`-L l,l`, 08 P1-3) and cached per
+--- A blame is asked for **one line at a time** (`-L l,l`, perf P1-3) and cached per
 --- line number: moving the cursor must not cost a process, and neither must
 --- coming back to a line that was already answered.  The cache is keyed by the
 --- buffer's `changedtick`, the options that shape the answer and the baseline
@@ -46,7 +46,7 @@ end
 ---@type integer?
 M._ns = nil
 
---- The namespace of the inline blame (`vcssign_blame`, 07 §4).
+--- The namespace of the inline blame (`vcssign_blame`, signs §4).
 ---@return integer
 function M.namespace()
   if not M._ns then
@@ -199,7 +199,7 @@ end
 --- * **ask for the line window** (`-L l,l`), not the whole file — git then
 ---   answers with one line's attribution and parses one line (svn has no line
 ---   window, so its adapter ignores the window and answers the whole file; every
----   later line of that buffer is then free, 08 §3.5);
+---   later line of that buffer is then free, perf §3.5);
 --- * **cache per line number**, keyed by the buffer's `changedtick`, the options
 ---   that shape the answer and the baseline fingerprint — moving the cursor
 ---   costs nothing, because the line it moves to is usually already known;

@@ -5,7 +5,7 @@
 ---
 --- Prints TAP-ish lines and exits non-zero when anything failed, so CI can use
 --- it as-is.  `make_test_repos.sh` must have been run first (temp/ fixtures).
---- See impl/init/05-testing-infra.md §3.
+--- See impl/knowledge/testing/ §3.
 --- `vim.fs.normalize` is lexical and does not absolutise, but `-l test/run.lua`
 --- hands us a relative script path.  Same rule as `vcssign.vcs.base.normalize`.
 ---@param path string

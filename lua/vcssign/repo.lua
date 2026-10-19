@@ -11,9 +11,9 @@
 ---
 --- What *is* cached here is the answer to "which files did the filesystem say
 --- moved": filesystem events name a path wherever libuv gives one, and that set
---- travels with the `on_update` announcement (`changed_paths`, 08 P0-3), so the
+--- travels with the `on_update` announcement (`changed_paths`, perf P0-3), so the
 --- sign layer can refresh the affected buffers instead of all of them.
---- See impl/init/02-repo-runtime.md §3.
+--- See impl/knowledge/runtime/ §3.
 local config = require('vcssign.config')
 local debounce = require('vcssign.debounce')
 local log = require('vcssign.log')
@@ -55,13 +55,13 @@ M.__index = M
 ---@field watch_paths table<string, true>
 ---@field watch_recursive table<string, boolean>  how each watched path was started
 ---@field changed_paths table<string, true>  absolute paths a filesystem event named since the
----                                         last announcement; replaced, never reused (08 P0-3)
+---                                         last announcement; replaced, never reused (perf P0-3)
 ---@field changed_all boolean  an event moved something that names no file (index / wc.db):
 ---                            every baseline may be stale
 ---@field status_cache table<string, vcssign.FileStatus>?  the repository's status view, or nil
 ---@field _reader vcssign.BlobReader?  the batch reader, once some baseline was read through it
 ---@field _reader_stamp string?  the baseline stamp that reader was started on (see `read_blob`)
----                            when it has to be asked again (08 P0-1).  Absence of a
+---                            when it has to be asked again (perf P0-1).  Absence of a
 ---                            path means "tracked and in sync with its baseline".
 
 ---@param path string
@@ -92,7 +92,7 @@ function M.new(system, root, opts)
   self.marker_path = vim.fs.normalize(vim.fs.joinpath(self.root, system.keyfile))
   self.refs = {}
   self.is_dirty = not verified -- the first refresh is always wanted, unless the root was
-  --                             just verified by the VCS itself (08 P0-5)
+  --                             just verified by the VCS itself (perf P0-5)
   self.is_updating = false
   self.has_pending = false
   self.is_deleted = false
@@ -129,7 +129,7 @@ end
 
 --- A successful liveness probe announcement.
 ---
---- The second argument is the changed-path channel (08 P0-3): a set of absolute
+--- The second argument is the changed-path channel (perf P0-3): a set of absolute
 --- paths for "these files moved", `nil` for "something moved that names no file
 --- — assume every baseline", and an empty set for "the probe found nothing
 --- moved".  Without that last case every `FocusGained` would re-run the whole
@@ -160,7 +160,7 @@ function M:has_status()
   return self.system.status ~= nil
 end
 
---- The adapter's baseline key right now, or nil when it has none (08 P0-4).
+--- The adapter's baseline key right now, or nil when it has none (perf P0-4).
 ---
 --- This is the same free syscall family `attach` uses for its render
 --- fingerprint, and here it answers a second question: has the store that
@@ -176,7 +176,7 @@ function M:_stamp()
   return (ok and type(stamp) == 'string') and stamp or nil
 end
 
---- The repository's status view, asked at most once per invalidation (08 P0-1).
+--- The repository's status view, asked at most once per invalidation (perf P0-1).
 ---
 --- Coalesced on purpose: every caller arriving while a query is in flight is
 --- answered by that same query, which is the whole point — twenty buffers
@@ -281,7 +281,7 @@ end
 -- ▏ blob reads ──────────────────────────────────────────────────────────────
 
 --- Read `rel` as of `rev` through the repository's batch reader, when its
---- adapter has one (08 P0-2).
+--- adapter has one (perf P0-2).
 ---
 --- Why: a per-file `show` costs a process each (~45 ms of start-up for a reply of
 --- a few kilobytes), while one `cat-file --batch` child answers every file of
@@ -641,7 +641,7 @@ function M:_init_watch()
   -- directory under the root needs a handle of its own any more.
   -- Recursive only when the adapter says its store is spread over the tree:
   -- svn's `wc.db` is one file, and recursing into `.svn/pristine/` buys nothing
-  -- but events (08 §3.5 S1).
+  -- but events (perf §3.5 S1).
   local recursive = self.system.metadata_recursive ~= false and RECURSIVE_FS_EVENT
   self:_watch(self.metadata_path, recursive)
   -- Liveness watch.  libuv never reports the *watched directory itself*
@@ -752,7 +752,7 @@ function M:_on_fs_event(watch_path, err, filename, events)
   end
   -- Record *what* moved before deciding anything else: the announcement after
   -- the next probe is the only channel that tells a buffer whether it has to
-  -- do any work at all (08 P0-3).
+  -- do any work at all (perf P0-3).
   local changed
   if watch_path == self.metadata_path then
     -- The index / wc.db is one store for the whole repository: a change there
@@ -774,7 +774,7 @@ function M:_on_fs_event(watch_path, err, filename, events)
   -- Keep the status view in step with what the filesystem just said: a named
   -- file is a worktree change (the second layer lives in the metadata store),
   -- while a metadata event or a directory-summarised one can move any baseline
-  -- and so retires the whole view (08 P0-1).
+  -- and so retires the whole view (perf P0-1).
   if changed == nil then
     self:_drop_status()
   else
@@ -820,7 +820,7 @@ function M:_mark_deleted()
 end
 
 --- Release every handle and subscriber.  Terminal: the manager drops the repo
---- from its maps right after this, and `impl/init/02-repo-runtime.md` §5.4
+--- from its maps right after this, and `impl/knowledge/runtime/` §5.4
 --- asserts that no `uv_fs_event_t`/`uv_timer_t` survives it.
 ---
 --- The manager is normally the caller, but calling it directly is still safe:

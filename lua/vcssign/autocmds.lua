@@ -5,11 +5,11 @@
 --- `attach.lua`; what is left here is only the *trigger* layer.  That split is
 --- what keeps `setup()` safe to run twice: this module owns nothing but the
 --- augroup and the two manager hooks, so there is no state to leak.
---- The plan (04 §4) put a 100ms debounce around attach calls to absorb
+--- The plan (actions §4) put a 100ms debounce around attach calls to absorb
 --- `BufEnter` storms; `attach.attach` answers a second call for a buffer it
 --- already holds with a table lookup instead, which does not delay the very
 --- first attach after opening a file — the one the user is waiting for.
---- See impl/init/07-signs-in-signcolumn.md §6.
+--- See impl/knowledge/signs/ §6.
 local attach = require('vcssign.attach')
 local config = require('vcssign.config')
 local log = require('vcssign.log')
@@ -95,7 +95,7 @@ function M.setup()
   end)
 
   -- No `WinEnter` hook here: vcssign never writes the window's `'signcolumn'`
-  -- (07 §6.3).  `config.signcolumn` is a boolean that decides whether the sign
+  -- (signs §6.3).  `config.signcolumn` is a boolean that decides whether the sign
   -- text is drawn, and `signs.place` reads it on every render.
   -- The worktree and the index may disagree again the moment the file lands on
   -- disk.  `on_lines` already covers an edit, but `:w` can happen with no text
@@ -134,7 +134,7 @@ function M.setup()
   end)
 
   -- A colorscheme change wipes the highlight groups; the definitions live in
-  -- the signs layer (08 P2-4) and are otherwise done once, at the first attach.
+  -- the signs layer (perf P2-4) and are otherwise done once, at the first attach.
   subscribe('ColorScheme', function()
     signs.define_highlights(true)
   end)
