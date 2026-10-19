@@ -42,7 +42,15 @@ actions.commit(...)          # 见 §2.2
 actions.refresh()            # Repo:refresh
 ```
 
-完成后的统一收尾：动作成功 → 触发 `Repo:refresh()`（强制拉新，staging 会翻转状态）；失败 → `vim.notify(err, ERROR)`。**所有动作走 02 的 exec 封装**，UI 层（03 keymap）只调 actions，层次干净。
+完成后的统一收尾：动作成功 → 触发 `Repo:refresh()`（强制拉新，staging 会翻转状态）；失败 → `vim.notify(err, ERROR)`。
+
+> **M7 步骤 5 修正（08 P1-1/§2.9）**：**hunk 级**的 `stage_hunk` / `unstage_hunk` 只留
+> `attach.refresh(bufnr)`，不再同时 `repo:refresh_now()`——索引写自身会产生 fs 事件，去抖之后
+> 那次探测就够了；两条路径并存等于一次动作两次刷新（实测应答时进程 4 → 3，`hs` 后立刻 `hu`
+> 仍作用于刚更新的层）。`commit` / `stage` / `unstage`（整文件）**仍用 `refresh_now`**：它们没有
+> 「下一个动作要读屏幕上的层」这个约束，也没有索引事件之外的刷新手段。
+> 另：`has_staged_change` 改成先问仓库的 status 视图（`Repo:status` 的 `trusted` 为真时），
+> 视图不可信才回退两次整文件 `show`（commit 一个已 stage 文件 5 → 3 进程、`show` 2 → 0）。**所有动作走 02 的 exec 封装**，UI 层（03 keymap）只调 actions，层次干净。
 
 ### 2.1 diff 展示
 

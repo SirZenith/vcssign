@@ -126,7 +126,7 @@ lua/vcssign/exec,log,util,debounce.lua  既有基建（exec 加 stdin）
 ---@field is_tracked fun(root: string, rel: string, cb: fun(err: string?, tracked: boolean?))
 ---     git: `git ls-files --error-unmatch -- <rel>`；svn: `svn info -- <abs>` 的退出码（非零 ⇒ 未纳管；见 §5.3 的实测更正）
 ---@field blame fun(root: string, rel: string, opts: {from: integer, to: integer}, cb)
----     git: `git blame --line-porcelain -L a,b -- <rel>`；svn: `svn blame --xml`（整文件缓存）
+---     git: `git blame --line-porcelain -L a,b -- <rel>`；svn: `svn blame --xml`（整文件；M7 步骤 5 起 "整文件" 是优点：`store()` 把答案按行摊开，之后每行都免费）
 ---@field apply_patch fun(root: string, patch: string, opts: {cached?: boolean, reverse?: boolean}, cb)
 ---     git: `git apply [--cached] [-R] --unidiff-zero -`；svn: 临时文件 + `svn patch --strip 0`
 ---@field revert fun(root: string, rel: string, cb)   -- 整文件丢弃（svn revert / git checkout -- <rel>）
@@ -477,8 +477,13 @@ rename 事件（3 events）。于是工作副本被删后 `Repo` 不会自杀，
 
 **Step 11 的三个决定（交接时别改回去）**：
 
-1. **blame 的缓存键是 `changedtick`，不是时间**：`blame.lua` 给每个缓冲区存一份 `{tick, result}`，渲染
-   时先比 tick —— 相等就直接复用，不等才重新 `blame`。所以「只移动光标」是零子进程的
+1. ~~**blame 的缓存键是 `changedtick`，不是时间**~~ —— **M7 步骤 5 扩成了三元组**
+   `changedtick + 选项 + 基线指纹`，并且**按行**缓存（08 §2.9）。原设计的两条后果都被改掉：
+   「只移动光标零子进程」不再全成立——移到**没看过**的行要一个进程（`-L l,l`，回头免费），
+   换来 2000 行文件首次看一行 211 → 63 ms；「外部 commit 后缓存不失效」也被修掉（只比
+   `changedtick` 时，别人 `git add`/commit 改了一行的归属而缓冲区没动，那行会永远显示
+   `Not Committed Yet`——现在指纹变了就重取）。**原始设计**：`blame.lua` 给每个缓冲区存一份
+   `{tick, result}`，渲染时先比 tick —— 相等就直接复用，不等才重新 `blame`。所以「只移动光标」是零子进程的
    （`blame_spec` 用 `exec.run` 计数器断言 0 次），按一次撤销/重做才会重新问。装饰是 extmark 的
    `virt_text`（`eol`，前后各一个空格），落在 `vcssign_blame` 命名空间；关掉开关时 `blame.render`
    只清命名空间、不撤自动命令（重开零成本）。
