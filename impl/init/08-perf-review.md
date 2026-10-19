@@ -605,8 +605,12 @@ staged 变更由批量 `status` 缓存（失效面小：只在索引/HEAD 变动
 「打开 N 个文件 ≤ k 进程」「`FocusGained` 无磁盘变化 → 0 个 `show`/`cat`」「纯 buffer 编辑 → 0 进程」。
 计数断言跨平台稳定，能防未来回归——本表的验收数字见 §6。**必须 git/svn 各一套**（同为
 `.lua` 文件、只换 fixture 与断言数字），否则「svn 无 staged 层」这类能力差异会被 git-only 的
-断言悄悄漏掉。**P0-4 的那一半已经落了**：`test/attach_spec.lua` 的 `count_procs`（不过滤命令，
-每次 `exec.run` 计一）+ 4 例断言；以后的步骤照这个样子往同一个 helper 上加。
+断言悄悄漏掉。
+> **状态：已修（M7 步骤 6）**——`test/proc_budget_spec.lua` 7 例、两 VCS 各一套，计数走
+> `helpers.spawns(fn)`（**同时**拦 `exec.run` 与 `exec.stream`）与 `helpers.running(calls, sub)`。
+> 它一上来就咬住了旧代码：用 `3675b24` 的 `lua/` 跑同一份 spec，用例 1 报
+> `git: 26 processes for 8 files, budget 5`、用例 2 报 `a clean file needs no show / actual: 2`。
+> 预算表与三条落地经验见 §6.1。
 
 **A5 模块级单例状态**（`attach._bufs` / `blame._bufs` / `signs._ns` / `manager._by_root`）。
 单实例下没有问题，只是决定了「同一 nvim 内无法干净 dispose 后重测」。纯整洁度，**不必动**。
@@ -647,7 +651,10 @@ staged 变更由批量 `status` 缓存（失效面小：只在索引/HEAD 变动
       （应答时进程 4 → 3，`hs`→`hu` 仍即时；§7-5 结案）、`has_staged_change` 先问 status 视图
       （commit 5 → 3 进程、整文件 `show` 2 → 0，视图不可信时仍回退两次 `show`）、`blame_for` 带
       `-L l,l` + 按行缓存 + 基线指纹（2000 行首看 211 → 63 ms；代价「换到没看过的行」多 1 进程）。
-- [ ] **6. A4 探针固化**——`test/exec_spec` 加进程计数断言；§6 每步收尾时更新本文实测表。
+- [x] **6. A4 探针固化**——已落地（§6.1）：`test/proc_budget_spec.lua` 7 例，`helpers.spawns`
+      同时数 `exec.run` 与 `exec.stream`，预算按 VCS 各一套（attach git 5 / svn 10 等）。
+      没有往 `exec_spec` 里加断言——进程数要看**一个场景**（装 8 个文件、一次 sweep），
+      单条命令的 spec 看不见。
 - [ ] P2 六项在顺路提交里捎带（尤其 P2-6 的文档漂移——独立一个 `docs(diff)` 提交也行）。
 
 **验收断言建议**（A4 固化时用计数写，不写毫秒）：
@@ -666,6 +673,36 @@ commit 一个已 stage 文件  ≤ 4 进程、0 个整文件 show（原 5 / 2）
 ```
 
 两类 VCS 都要有对应断言——**svn 的计数天然比 git 少一个，别把 git 的数字写死成通用门限**。
+
+### §6.1 断言落地（`test/proc_budget_spec.lua`）
+
+一例一个场景，每例自己建仓（`budget-git` / 一次性 svn 工作副本），因此不依赖 `temp/` 的共享
+fixture，也不会互相污染。计数一律是**进程条数**，没有毫秒断言。
+
+| 用例 | git 实测 | git 预算 | svn 实测 | svn 预算 |
+|------|----------|----------|----------|----------|
+| attach 8 个已改文件 | 3 | 5 | — | — |
+| attach 6 个已改文件 | — | — | 8（内含 6 个 `cat`） | 10 |
+| 打开一个干净文件 | 2（0 个 `show`） | 3 | 2（0 个 `cat`） | 3 |
+| 纯 buffer 编辑 | 0 | 0 | 0 | 0 |
+| `FocusGained`（磁盘不变） | 1 / 仓库 | 1 / 仓库 | 1 / 仓库 | 1 / 仓库 |
+| 外部改写 1 个文件 | 1 | 2 | 1 | 2 |
+| `stage_hunk` | 4 | 6 | 无此动作 | — |
+| commit 一个文件 | 3（0 个 `show`） | 4 | 2 | 4 |
+| 行内 blame 一行 / 再看同一行 | 1 / 0 | 1 / 0 | 1 / 0 | 1 / 0 |
+
+三条落地经验（不这么做会写出「永远通过」的用例）：
+
+- **必须让插件自己的 autocmd 上场**：`nvim_exec_autocmds('FocusGained', {})` 在没 `setup()` 的
+  会话里什么也不做——实测把 `FocusGained` 的预算写成 0 也照样通过。用例因此在 `guarded` 里
+  `autocmds.setup()`、收尾 `autocmds.disable()`。
+- **只数 `exec.run` 会漏掉常驻进程**：4b 之后 `cat-file` 走 `exec.stream`，只打桩前者会把
+  「每仓库 1 个 reader」看成 0。`helpers.spawns` 两个都拦。
+- **预算留余量，但两条不能松**：attach 的**不随文件数增长**（8 文件 3 进程，旧代码 26）与干净
+  文件的 **0 个 `show`/`cat`**。其余 9 条当前都是「预算 − 1/− 2」，作为地板而不是等号。
+
+与保留的探针不重复：`temp/probe_p04.lua` 量墙钟与渲染进入次数（CI 上没法当基线），
+spec 只管进程条数（跨平台稳定）。两边都留。
 
 ## §7 待验证项（P0 动工前要补的探针）
 
