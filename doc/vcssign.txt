@@ -350,6 +350,10 @@ attach_to_untracked                       *vcssign-config-attach_to_untracked*
 
     Attach to untracked files as well and draw their signs.
 
+    Ignored files (`.gitignore`, `svn:ignore`) are never signed whatever
+    this is set to: an ignored path is one the repository was told to
+    leave alone, not one that has yet to be added.
+
 max_file_length                               *vcssign-config-max_file_length*
     Type: `number`, Default: `40000`
 
@@ -645,7 +649,8 @@ VcssignChangedelete
     Links to: `VcssignChange`
                                                    *hl-VcssignUntracked*
 VcssignUntracked
-    Used for the text of 'untracked' signs.
+    Used for the text of 'untracked' signs.  Ignored files are drawn with
+    nothing at all |vcssign-config-attach_to_untracked|.
 
     Links to: `VcssignAdd`
                                                     *hl-VcssignWordDiff*
