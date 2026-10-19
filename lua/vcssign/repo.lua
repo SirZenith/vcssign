@@ -57,6 +57,9 @@ M.__index = M
 ---                                         last announcement; replaced, never reused (08 P0-3)
 ---@field changed_all boolean  an event moved something that names no file (index / wc.db):
 ---                            every baseline may be stale
+---@field status_cache table<string, vcssign.FileStatus>?  the repository's status view, or nil
+---                            when it has to be asked again (08 P0-1).  Absence of a
+---                            path means "tracked and in sync with its baseline".
 
 ---@param path string
 ---@return boolean
@@ -98,6 +101,10 @@ function M.new(system, root, opts)
   self.watch_paths = {}
   self.changed_paths = {}
   self.changed_all = false
+  self.status_cache = nil
+  self.status_stamp = nil
+  self._status_waiters = {}
+  self._status_generation = 0
   self._waiters = {}
   self._on_update = {}
   self._on_error = {}
@@ -137,6 +144,129 @@ end
 ---@return fun() unsubscribe
 function M:on_delete(fn)
   return subscribe(self._on_delete, fn)
+end
+
+-- ▏ status view ──────────────────────────────────────────────────────────────
+
+--- Whether this system can answer "which paths differ" in one query.
+---@return boolean
+function M:has_status()
+  return self.system.status ~= nil
+end
+
+--- The adapter's baseline key right now, or nil when it has none (08 P0-4).
+---
+--- This is the same free syscall family `attach` uses for its render
+--- fingerprint, and here it answers a second question: has the store that
+--- decides "staged" moved since the cached view was taken.
+---@private
+---@return string?
+function M:_stamp()
+  local fn = self.system.baseline_stamp
+  if not fn then
+    return nil
+  end
+  local ok, stamp = pcall(fn, self.root)
+  return (ok and type(stamp) == 'string') and stamp or nil
+end
+
+--- The repository's status view, asked at most once per invalidation (08 P0-1).
+---
+--- Coalesced on purpose: every caller arriving while a query is in flight is
+--- answered by that same query, which is the whole point — twenty buffers
+--- attaching at once must cost one subprocess, not twenty.
+---
+--- The third argument says whether the answer may be *trusted about staging*.
+--- That is a different question from "is it fresh": another program can stage a
+--- file without any filesystem event reaching us in time, so the cached view's
+--- `staged` answer is only believed while the baseline key it was taken under
+--- is still the current one.  `false` means "ask the baseline itself", which is
+--- one `show HEAD` — never a wrong sign.
+---
+--- A failed query is not cached: the next caller asks again, and `attach` falls
+--- back to its per-file questions in the meantime.
+---@param cb fun(err: string?, entries: table<string, vcssign.FileStatus>?, trusted: boolean)
+function M:status(cb)
+  local stamp = self:_stamp()
+  local cached = self.status_cache
+  if cached then
+    if stamp == self.status_stamp then
+      return cb(nil, cached, stamp ~= nil)
+    end
+    -- The store moved under this view, so its staged answers are stale.
+    self:_drop_status()
+  end
+  local waiters = self._status_waiters
+  local entry = { cb = cb, stamp = stamp }
+  waiters[#waiters + 1] = entry
+  if #waiters > 1 then
+    return
+  end
+  self:_query_status(waiters)
+end
+
+---@private
+---@class vcssign.StatusWaiter
+---@field cb fun(err: string?, entries: table<string, vcssign.FileStatus>?, trusted: boolean)
+---@field stamp string?
+
+---@param waiters vcssign.StatusWaiter[]
+function M:_query_status(waiters)
+  local generation = self._status_generation
+  local stamp = waiters[1].stamp
+  self.system.status(self.root, function(err, entries)
+    -- `stamp` was taken *before* the query: if the store moved while the query
+    -- was in flight, the answer describes a world that is already gone.  It is
+    -- still the best answer anyone has (and the refresh the event triggered is
+    -- on its way), so it is handed out — but never cached, and never trusted
+    -- about staging.  Re-querying here would be the alternative; it is not done
+    -- because a store the query itself disturbs would then feed itself a loop.
+    local trusted = stamp ~= nil and self:_stamp() == stamp
+    if trusted and not err and entries and self._status_generation == generation then
+      self.status_cache = entries
+      self.status_stamp = stamp
+    end
+    -- Reset before answering: a callback may ask again, and by then the cache
+    -- is either in place (answered without another subprocess) or correctly
+    -- absent.
+    if self._status_waiters == waiters then
+      self._status_waiters = {}
+    end
+    for _, waiter in ipairs(waiters) do
+      waiter.cb(err, entries, trusted)
+    end
+  end)
+end
+
+---@private
+function M:_drop_status()
+  self.status_cache = nil
+  self.status_stamp = nil
+  -- Retires any query in flight: see `_query_status`.
+  self._status_generation = self._status_generation + 1
+end
+
+--- Fold one named worktree event into the cached view.
+---
+--- A known *tracked* file can only have moved in its worktree — the second
+--- layer lives in the metadata store, and that is a different event — so the
+--- entry is patched instead of thrown away, which is what keeps a save from
+--- costing a whole-repository query.  Anything else (the path is absent, i.e.
+--- it was in sync, or it was untracked) has no entry that can describe the new
+--- state, so the next caller asks again.
+---@private
+---@param path string
+function M:_note_status_change(path)
+  local cached = self.status_cache
+  if not cached then
+    return
+  end
+  local entry = cached[path]
+  if entry and entry.tracked then
+    entry.worktree = true
+    return
+  end
+  self:_drop_status()
 end
 
 -- ▏ refresh pipeline ──────────────────────────────────────────────────────────
@@ -557,6 +687,17 @@ function M:_on_fs_event(watch_path, err, filename, events)
     end
   end
   self:_record_change(changed)
+  -- Keep the status view in step with what the filesystem just said: a named
+  -- file is a worktree change (the second layer lives in the metadata store),
+  -- while a metadata event or a directory-summarised one can move any baseline
+  -- and so retires the whole view (08 P0-1).
+  if changed == nil then
+    self:_drop_status()
+  else
+    for _, path in ipairs(changed) do
+      self:_note_status_change(path)
+    end
+  end
   -- A probe can spawn a VCS command that rewrites `.git/index`; an event caused
   -- by our own command must not queue another probe.  (`--no-optional-locks`
   -- already prevents the rewrite in practice — this is the belt to that pair of

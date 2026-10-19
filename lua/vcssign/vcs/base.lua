@@ -63,6 +63,18 @@ local NORMALIZE_OPTS = { expand_env = false }
 
 ---@alias vcssign.BlameCb fun(err: string?, result: vcssign.BlameResult?)
 
+--- What one `status` entry says about a path.
+---
+--- "Staged" means the staging baseline (git's index, svn's BASE) differs from
+--- `HEAD` — i.e. the second layer of signs has something to say.  svn has no
+--- staging area, so it never sets it (`capabilities.staged_signs == false`).
+---@class vcssign.FileStatus
+---@field tracked boolean   false for an untracked *or* ignored path
+---@field staged boolean    the index/BASE differs from HEAD
+---@field worktree boolean  the worktree differs from the index/BASE
+---@field ignored boolean?  not under version control because it is ignored
+---@field dir boolean?      the entry is an ignored directory, not a file
+
 --- How `apply_patch` should apply its patch.
 ---@class vcssign.PatchOpts
 ---@field cached boolean?   apply to the index instead of the worktree (git only)
@@ -97,6 +109,21 @@ local NORMALIZE_OPTS = { expand_env = false }
 ---@field baseline_stamp? fun(root: string): string?
 --- Authoritative root lookup through the VCS itself.
 ---@field get_root_async fun(path: string, cb: fun(err: string?, root: string?))
+--- One whole-repository status query: which paths differ from what, and how.
+---
+--- Optional, and the point is arithmetic: without it every attached buffer
+--- costs its own `is_tracked` + `show` (3 processes for git), while one answer
+--- covers the whole repository — and a path the answer stays silent about is
+--- by definition in sync with its baseline, so it needs no baseline read at
+--- all (08 P0-1).
+---
+--- Keys of `entries` are absolute, normalised paths.  A path that is *absent*
+--- is "tracked and unmodified"; everything else says otherwise.  An entry whose
+--- `dir` flag is set is an ignored **directory**: paths below it are untracked
+--- even though the query names only the directory (git collapses ignored trees
+--- to one record, `traditional` mode — walking them individually would cost
+--- more than the reads it saves).
+---@field status? fun(root: string, cb: fun(err: string?, entries: table<string, vcssign.FileStatus>?))
 --- Baseline text of `rel` as of `rev`; `rev == 'index'` means the staging
 --- baseline (git's index, svn's BASE — D42).
 ---@field show fun(root: string, rev: string, rel: string, cb: fun(err: string?, text: string?))

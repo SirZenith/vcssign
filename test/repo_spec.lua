@@ -58,6 +58,30 @@ local function count_probes(fn)
   return calls
 end
 
+--- Count how many *status queries* `fn` spawns.
+---
+--- Same trick as `count_probes` above — `repo.lua` reaches the adapters through
+--- module tables, so wrapping `exec.run` sees every command — with the filter
+--- being the subcommand only the status view uses (`git status` / `svn status`).
+---@param fn fun()
+---@return integer
+local function count_status(fn)
+  local real_run = exec.run
+  local calls = 0
+  exec.run = function(cmd, opts, cb)
+    if table.concat(cmd, ' '):find('status', 1, true) then
+      calls = calls + 1
+    end
+    return real_run(cmd, opts, cb)
+  end
+  local ok, err = pcall(fn)
+  exec.run = real_run
+  if not ok then
+    error(err, 0)
+  end
+  return calls
+end
+
 --- Run `fn` with a config override, restoring the previous options afterwards.
 ---@param opts table
 ---@param fn fun()
@@ -848,6 +872,120 @@ return {
           return saw_all
         end, 'the svn metadata event')
         eq(saw_all, true)
+      end)
+    end),
+  },
+
+  {
+    name = 'one status query answers the whole repository, and it is cached',
+    fn = guarded(function()
+      local dir = helpers.git_repo('repo-status-cache')
+      helpers.write(dir .. '/base.txt', 'base\none\n')
+      helpers.with_repo('spec:status-cache', dir, function(repo)
+        local calls = count_status(function()
+          local _, first, trusted = helpers.wait(function(cb)
+            repo:status(cb)
+          end)
+          ok(trusted, 'the answer is trusted: the store did not move')
+          eq(first[dir .. '/base.txt'].worktree, true, 'and it can see the change')
+
+          local _, second = helpers.wait(function(cb)
+            repo:status(cb)
+          end)
+          ok(second == first, 'the second caller is handed the cached table')
+        end)
+        eq(calls, 1, 'two callers, one query')
+      end)
+    end),
+  },
+
+  {
+    name = 'a worktree event is folded into the cached view instead of retiring it',
+    fn = guarded(function()
+      local dir = helpers.git_repo('repo-status-patch')
+      helpers.write(dir .. '/base.txt', 'base\none\n')
+      helpers.with_repo('spec:status-patch', dir, function(repo)
+        local _, entries = helpers.wait(function(cb)
+          repo:status(cb)
+        end)
+        local path = dir .. '/base.txt'
+        eq(entries[path].worktree, true)
+
+        local folded = {}
+        local real_note = repo._note_status_change
+        repo._note_status_change = function(self, changed)
+          folded[#folded + 1] = changed
+          return real_note(self, changed)
+        end
+        helpers.write(path, 'base\ntwo\n')
+        local ok_note, note_err = pcall(helpers.wait_for, function()
+          return #folded > 0
+        end, 'the event to be folded into the view')
+        repo._note_status_change = real_note
+        if not ok_note then
+          error(note_err, 0)
+        end
+        eq(folded[1], path, 'the event named the file')
+
+        local calls = count_status(function()
+          local _, again = helpers.wait(function(cb)
+            repo:status(cb)
+          end)
+          ok(again == entries, 'the same table survived the write')
+        end)
+        eq(calls, 0, 'a save costs no query at all')
+      end)
+    end),
+  },
+
+  {
+    name = 'a metadata change retires the view, because it can move everything',
+    fn = guarded(function()
+      local dir = helpers.git_repo('repo-status-retire')
+      helpers.write(dir .. '/base.txt', 'base\none\n')
+      helpers.with_repo('spec:status-retire', dir, function(repo)
+        local _, first, trusted = helpers.wait(function(cb)
+          repo:status(cb)
+        end)
+        ok(trusted)
+        eq(first[dir .. '/base.txt'].staged, false, 'the change is unstaged')
+
+        helpers.sh({ 'git', '-C', dir, 'add', 'base.txt' })
+        helpers.wait_for(function()
+          return repo.status_cache == nil
+        end, 'the view to be retired by the index event')
+
+        local calls = count_status(function()
+          local _, second, again_trusted = helpers.wait(function(cb)
+            repo:status(cb)
+          end)
+          ok(again_trusted, 'the fresh answer is trusted again')
+          eq(second[dir .. '/base.txt'].staged, true, 'and it sees the staging')
+        end)
+        eq(calls, 1, 'the retired view is asked again, once')
+      end)
+    end),
+  },
+
+  {
+    name = 'a view taken before the store moved is never believed about staging',
+    fn = guarded(function()
+      local dir = helpers.git_repo('repo-status-stale')
+      helpers.with_repo('spec:status-stale', dir, function(repo)
+        local _, first = helpers.wait(function(cb)
+          repo:status(cb)
+        end)
+        eq(first[dir .. '/base.txt'], nil, 'a clean file has no entry at all')
+
+        -- Staged behind the watcher's back: whether or not the event has landed
+        -- by the time of the next call, the answer must not claim "not staged".
+        helpers.write(dir .. '/base.txt', 'base\none\n')
+        helpers.sh({ 'git', '-C', dir, 'add', 'base.txt' })
+        local _, second, trusted = helpers.wait(function(cb)
+          repo:status(cb)
+        end)
+        ok(trusted, 'the store is quiet now, so the answer is trusted')
+        eq(second[dir .. '/base.txt'].staged, true, 'the staging is visible')
       end)
     end),
   },

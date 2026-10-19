@@ -134,6 +134,28 @@ local function count_procs(fn)
   return calls
 end
 
+--- Every command `fn` spawns, as `argv` strings, in order.
+---
+--- `count_procs` above answers "how many"; this answers "which ones", which is
+--- what the status-cache cases need: the claim is not just that a clean file is
+--- cheap, it is that no baseline was read for it.
+---@param fn fun()
+---@return string[]
+local function spawned(fn)
+  local real_run = exec.run
+  local calls = {}
+  exec.run = function(cmd, opts, cb)
+    calls[#calls + 1] = table.concat(cmd, ' ')
+    return real_run(cmd, opts, cb)
+  end
+  local ok, err = pcall(fn)
+  exec.run = real_run
+  if not ok then
+    error(err, 0)
+  end
+  return calls
+end
+
 --- Start counting `attach._render` entries per buffer, until `stop()`.
 ---
 --- *Entries*, not draws: the short-circuit (08 P0-4) returns from inside
@@ -808,6 +830,103 @@ return {
       if not ran then
         error(err, 0)
       end
+    end),
+  },
+  {
+    name = 'a clean file costs one status query and no baseline read',
+    fn = guarded(function()
+      -- The whole point of P0-1: nothing per file.  `rev-parse` is the
+      -- detector's own root lookup, `status` is the repository-wide view, and
+      -- the baseline is the buffer's own text because the view says the file is
+      -- in sync with its index.
+      local dir = helpers.git_repo('attach-status-clean')
+      local bufnr = open(dir .. '/base.txt')
+      local argv = spawned(function()
+        attach_now(bufnr)
+      end)
+      eq(#argv, 2, 'two commands: ' .. table.concat(argv, ' | '))
+      ok(argv[1]:find('rev%-parse'), 'first the root lookup: ' .. argv[1])
+      ok(argv[2]:find('status', 1, true), 'then the status view: ' .. argv[2])
+      local st = attach._bufs[bufnr]
+      eq(#st.hunks, 0, 'a clean file has no hunks')
+      eq(st.base_text, 'base', 'the baseline is the buffer text')
+    end),
+  },
+
+  {
+    name = 'an untracked file is answered by the view too, with no probe of its own',
+    fn = guarded(function()
+      local dir = helpers.git_repo('attach-status-untracked')
+      helpers.write(dir .. '/loose.txt', 'one\ntwo\n')
+      local bufnr = open(dir .. '/loose.txt')
+      local argv = spawned(function()
+        attach_now(bufnr)
+      end)
+      eq(#argv, 2, 'two commands: ' .. table.concat(argv, ' | '))
+      local st = attach._bufs[bufnr]
+      eq(st.untracked, true)
+      eq(st.base_text, '', 'an untracked baseline is the empty file')
+      eq(#st.hunks, 1)
+    end),
+  },
+
+  {
+    name = 'a dirty file reads its baseline, and staging it reads HEAD as well',
+    fn = guarded(function()
+      local dir = helpers.git_repo('attach-status-dirty')
+      helpers.write(dir .. '/base.txt', 'base\nnew\n')
+      local bufnr = open(dir .. '/base.txt')
+      local argv = spawned(function()
+        attach_now(bufnr)
+      end)
+      -- rev-parse + status + one `show :base.txt`; HEAD is not read because the
+      -- view says the index matches it.
+      eq(#argv, 3, 'three commands: ' .. table.concat(argv, ' | '))
+      ok(argv[3]:find('show', 1, true), 'the baseline is read: ' .. argv[3])
+      local st = attach._bufs[bufnr]
+      eq(#st.hunks, 1)
+      eq(#st.hunks_staged, 0)
+
+      helpers.sh({ 'git', '-C', dir, 'add', 'base.txt' })
+      local staged_argv = spawned(function()
+        refresh_now(bufnr)
+      end)
+      -- The index moved, so the cached view is retired: one status query plus
+      -- the HEAD read the staged layer needs.  The baseline itself is the
+      -- buffer's text now (worktree in sync), so no second `show`.
+      eq(#staged_argv, 2, 'two commands: ' .. table.concat(staged_argv, ' | '))
+      ok(staged_argv[2]:find('show HEAD', 1, true), 'HEAD is read: ' .. staged_argv[2])
+      eq(#st.hunks, 0, 'the worktree layer is empty again')
+      eq(#st.hunks_staged, 1, 'and the staged layer has the hunk')
+    end),
+  },
+
+  {
+    name = 'a status query that fails falls back to the per-file questions',
+    fn = guarded(function()
+      local dir = helpers.git_repo('attach-status-failure')
+      helpers.write(dir .. '/base.txt', 'base\nnew\n')
+      local bufnr = open(dir .. '/base.txt')
+
+      -- The view is optional: an adapter, or a working copy, that cannot answer
+      -- it must lose the shortcut, not the signs.
+      local system = require('vcssign.vcs.git')
+      local real_status, real_tracked = system.status, system.is_tracked
+      local asked = 0
+      system.status = function(_, cb)
+        cb('boom')
+      end
+      system.is_tracked = function(...)
+        asked = asked + 1
+        return real_tracked(...)
+      end
+      local ok_attach, attach_err = pcall(attach_now, bufnr)
+      system.status, system.is_tracked = real_status, real_tracked
+      if not ok_attach then
+        error(attach_err, 0)
+      end
+      eq(asked, 1, 'the per-file question is asked instead')
+      eq(#attach.hunks(bufnr), 1, 'and the signs are still right')
     end),
   },
 }

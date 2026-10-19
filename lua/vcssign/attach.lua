@@ -189,8 +189,11 @@ end
 --- an untracked file's, and every line reads as staged-added.
 ---@param st vcssign.AttachState
 ---@param done fun()
-local function load_head(st, done)
-  if not wants_staged(st) then
+---@param staged boolean?  what the status view said; nil when this refresh has none
+local function load_head(st, done, staged)
+  -- `staged == false` is the status view saying the index matches `HEAD`, so the
+  -- second layer has nothing to show and reading it would be pure cost (08 P0-1).
+  if staged == false or not wants_staged(st) then
     st.head_text = nil
     return done()
   end
@@ -208,22 +211,51 @@ local function load_head(st, done)
   end)
 end
 
---- Read the baseline text into `st`, then call `done()`.
+--- The baseline read of a file known to be under version control.
+---
+--- `show(rev)` falls back once to `'HEAD'` before giving up; a failure is "no
+--- signs" plus a debug line, never a warning (the stderr contract allows one
+--- line, and the runtime spec owns it).
+---@param st vcssign.AttachState
+---@param done fun()
+---@param staged boolean?  what the status view said, nil when unknown
+local function load_base_show(st, done, staged)
+  st.tracked, st.untracked = true, false
+  ---@param rev string
+  ---@param retry boolean
+  local function show_with(rev, retry)
+    st.system.show(st.root, rev, st.rel, function(err, text)
+      if M._bufs[st.bufnr] ~= st then
+        return
+      end
+      if not err then
+        st.base_text = text
+        return load_head(st, done, staged)
+      end
+      if retry then
+        return show_with('HEAD', false)
+      end
+      st.base_text = nil
+      log.debug('buffer %d: no baseline for %s: %s', st.bufnr, st.rel, err)
+      done()
+    end)
+  end
+  show_with(st.rev, st.rev ~= 'HEAD')
+end
+
+--- Read both baselines through the adapter's per-file questions, then call
+--- `done()`.
+---
+--- This is the path the status view replaced (08 P0-1), kept because it is the
+--- only one a VCS without the primitive — or a failed query — has.
 ---
 --- Failure chain: an error from `is_tracked` is "no signs" (and no warning —
 --- the stderr contract allows exactly one line, from the runtime spec);
 --- `show(rev)` falls back once to `'HEAD'` before giving up.
 ---@param st vcssign.AttachState
 ---@param done fun()
-local function load_base(st, done)
-  -- Both baselines are re-read together (they have to describe the same
-  -- moment), so a refresh cannot leave an older `head_text` behind: every
-  -- branch below either sets it or leaves it nil.
-  st.head_text = nil
-  -- Recorded *before* the read, not after: if the index moves while `show` is
-  -- in flight, the stamp has to stay the older one so the next trigger re-reads
-  -- instead of trusting text from a moment it never saw.
-  st.base_stamp = stamp_of(st)
+---@param staged boolean?  what the status view said, nil when unknown
+local function load_base_probe(st, done, staged)
   st.system.is_tracked(st.root, st.rel, function(terr, tracked)
     if M._bufs[st.bufnr] ~= st then
       return
@@ -241,27 +273,119 @@ local function load_base(st, done)
       st.base_text = config.get().attach_to_untracked and '' or nil
       return done()
     end
-    st.tracked, st.untracked = true, false
-    ---@param rev string
-    ---@param retry boolean
-    local function show_with(rev, retry)
-      st.system.show(st.root, rev, st.rel, function(err, text)
-        if M._bufs[st.bufnr] ~= st then
-          return
-        end
-        if not err then
-          st.base_text = text
-          return load_head(st, done)
-        end
-        if retry then
-          return show_with('HEAD', false)
-        end
-        st.base_text = nil
-        log.debug('buffer %d: no baseline for %s: %s', st.bufnr, st.rel, err)
-        done()
-      end)
+    load_base_show(st, done, staged)
+  end)
+end
+
+--- The status entry for `path`, honouring the ignored-directory records.
+---
+--- A git `!` record and an svn `unversioned`/`ignored` record may name a
+--- *directory* instead of every file below it; a buffer inside one is untracked
+--- all the same.  The scan only ever walks the ignored directories, which is a
+--- handful even in a large repository.
+---@param entries table<string, vcssign.FileStatus>
+---@param path string
+---@return vcssign.FileStatus?
+local function status_entry(entries, path)
+  local entry = entries[path]
+  if entry then
+    return entry
+  end
+  for key, value in pairs(entries) do
+    if value.dir and path:sub(1, #key + 1) == key .. '/' then
+      return { tracked = false, staged = false, worktree = false, ignored = value.ignored }
     end
-    show_with(st.rev, st.rev ~= 'HEAD')
+  end
+  return nil
+end
+
+--- Both baselines from the repository's status view (08 P0-1), then `done()`.
+---
+--- The saving is not just "one query instead of three per buffer": a path the
+--- view does not mention is in sync with its index/BASE, and for such a file
+--- the baseline text *is* the buffer's own text — so a clean file costs no
+--- subprocess at all.
+---
+--- Reading the buffer rather than the worktree on disk is deliberate, and it is
+--- what keeps a stale answer harmless: the disk may have been edited after this
+--- buffer read it (a missed fs event), and its *current* bytes would turn that
+--- edit into phantom signs.  The buffer's text is what `show` would have
+--- answered before anything moved, so a wrong "clean" degrades to "no signs" —
+--- the pre-M7 answer — instead of inventing hunks.
+---
+--- A modified buffer is the case the shortcut cannot serve: its text is not the
+--- baseline any more, so the real baseline is read.
+---@param st vcssign.AttachState
+---@param entries table<string, vcssign.FileStatus>
+---@param trusted boolean  the view may be believed about staging (see `Repo:status`)
+---@param done fun()
+local function load_base_status(st, entries, trusted, done)
+  local entry = status_entry(entries, st.path)
+  if entry and not entry.tracked then
+    st.tracked, st.untracked = false, true
+    st.base_text = config.get().attach_to_untracked and '' or nil
+    return done()
+  end
+  -- Written out: `entry and entry.staged or nil` can never answer nil.
+  local staged, clean
+  if entry == nil then
+    -- Absent means "in sync with the index/BASE" — which also means the index
+    -- has nothing staged, so the second layer has nothing to say (`nil` here
+    -- would ask for `HEAD` and cost a subprocess for a clean file).
+    clean = true
+    if trusted then
+      staged = false
+    end
+  else
+    -- Only a view confirmed against the baseline key is believed about the
+    -- second layer; `nil` means "read HEAD", which cannot be wrong.
+    if trusted then
+      staged = entry.staged == true
+    end
+    clean = entry.worktree == false
+  end
+  local from_buffer = clean
+    and (st.rev == 'index' or st.rev == 'HEAD')
+    and api.nvim_buf_is_loaded(st.bufnr)
+    and not vim.bo[st.bufnr].modified
+  if from_buffer then
+    st.tracked, st.untracked = true, false
+    st.base_text = diff.join(api.nvim_buf_get_lines(st.bufnr, 0, -1, false))
+    return load_head(st, done, staged)
+  end
+  -- Tracked (or unknown-but-present) and not in sync: the baseline is read, but
+  -- `is_tracked` is not asked again — the view already answered it.
+  return load_base_show(st, done, staged)
+end
+
+--- Read the baseline text into `st`, then call `done()`.
+---@param st vcssign.AttachState
+---@param done fun()
+local function load_base(st, done)
+  -- Both baselines are re-read together (they have to describe the same
+  -- moment), so a refresh cannot leave an older `head_text` behind: every
+  -- branch below either sets it or leaves it nil.
+  st.head_text = nil
+  -- Recorded *before* the read, not after: if the index moves while `show` is
+  -- in flight, the stamp has to stay the older one so the next trigger re-reads
+  -- instead of trusting text from a moment it never saw.
+  st.base_stamp = stamp_of(st)
+  local repo = st.repo
+  if not repo then
+    return load_base_probe(st, done, nil)
+  end
+  -- The status view is a repository-wide answer, so it is asked once and a
+  -- failed query is not cached: this falls back to the per-file questions
+  -- rather than dropping the signs.
+  repo:status(function(serr, entries, trusted)
+    if M._bufs[st.bufnr] ~= st then
+      return
+    end
+    if serr or not entries then
+      log.debug('buffer %d: no status view for %s: %s', st.bufnr, st.rel, serr or 'unknown')
+      return load_base_probe(st, done, nil)
+    end
+    load_base_status(st, entries, trusted, done)
   end)
 end
 
