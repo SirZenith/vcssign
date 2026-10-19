@@ -53,6 +53,7 @@ M.__index = M
 ---@field fs_handles table<string, uv.uv_fs_event_t>
 ---@field fs_handle_pool uv.uv_fs_event_t[]
 ---@field watch_paths table<string, true>
+---@field watch_recursive table<string, boolean>  how each watched path was started
 ---@field changed_paths table<string, true>  absolute paths a filesystem event named since the
 ---                                         last announcement; replaced, never reused (08 P0-3)
 ---@field changed_all boolean  an event moved something that names no file (index / wc.db):
@@ -101,6 +102,7 @@ function M.new(system, root, opts)
   self.fs_handles = {}
   self.fs_handle_pool = {}
   self.watch_paths = {}
+  self.watch_recursive = {}
   self.changed_paths = {}
   self.changed_all = false
   self.status_cache = nil
@@ -637,7 +639,11 @@ function M:_init_watch()
   -- Metadata only (D38): the work tree is not watched.  A hunk is computed
   -- when a buffer is signed, from the index/HEAD the VCS exposes, so no
   -- directory under the root needs a handle of its own any more.
-  self:_watch(self.metadata_path, RECURSIVE_FS_EVENT)
+  -- Recursive only when the adapter says its store is spread over the tree:
+  -- svn's `wc.db` is one file, and recursing into `.svn/pristine/` buys nothing
+  -- but events (08 §3.5 S1).
+  local recursive = self.system.metadata_recursive ~= false and RECURSIVE_FS_EVENT
+  self:_watch(self.metadata_path, recursive)
   -- Liveness watch.  libuv never reports the *watched directory itself*
   -- going away (verified on Windows: renaming `.git` away fires nothing on
   -- a handler watching `.git`, while a non-recursive handler on the root
@@ -681,6 +687,7 @@ function M:_watch(path, recursive)
   end
   self.fs_handles[path] = handle
   self.watch_paths[path] = true
+  self.watch_recursive[path] = recursive
   log.debug('watching %s (recursive=%s)', path, tostring(recursive))
 end
 
@@ -693,6 +700,7 @@ function M:_unwatch(path)
   end
   self.fs_handles[path] = nil
   self.watch_paths[path] = nil
+  self.watch_recursive[path] = nil
   handle:stop()
   if not handle:is_closing() then
     self.fs_handle_pool[#self.fs_handle_pool + 1] = handle
@@ -715,6 +723,7 @@ function M:_stop_watching()
   end
   self.fs_handle_pool = {}
   self.watch_paths = {}
+  self.watch_recursive = {}
 end
 
 ---@private

@@ -50,6 +50,23 @@ local function marker_at(dir)
   return stat and stat.type == 'directory' and dir or nil
 end
 
+--- Where svn keeps the working copy's own bookkeeping.  Every operation that
+--- moves the baseline (`update`, `switch`, `revert`, `add`, `commit`) rewrites
+--- `<root>/.svn/wc.db`; nothing else in there needs watching, because the
+--- pristine store under `.svn/pristine/` holds content-addressed copies that no
+--- baseline read ever looks at.
+---@param root string
+---@return string
+function M.metadata_dir(root)
+  return vim.fs.joinpath(base.normalize(root), M.keyfile)
+end
+
+--- svn's baseline store is the single file `wc.db` in that directory, so the
+--- watch is not recursive (see `vcssign.VcsSystem.metadata_recursive`).  Without
+--- this, a `svn commit` in a big working copy wakes the pipeline ~2500 extra
+--- times for events nothing reads (08 §3.5 S1).
+M.metadata_recursive = false
+
 ---@param path string
 ---@return string?
 function M.find_root_sync(path)

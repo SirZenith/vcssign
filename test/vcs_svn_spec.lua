@@ -39,6 +39,17 @@ return {
     end,
   },
   {
+    name = 'metadata_dir names .svn, and the watch there needs no recursion',
+    fn = function()
+      -- Every baseline-moving operation rewrites `.svn/wc.db`; the pristine
+      -- store under `.svn/pristine/` is written by the same operations but no
+      -- baseline read looks at it, so recursing buys nothing but events
+      -- (08 §3.5 S1).
+      eq(svn.metadata_dir(repo), vim.fs.joinpath(vim.fs.normalize(repo), '.svn'))
+      eq(svn.metadata_recursive, false)
+    end,
+  },
+  {
     name = 'find_root_sync resolves a file path to its working copy root',
     fn = function()
       eq(svn.find_root_sync(repo .. '/base.txt'), repo)
