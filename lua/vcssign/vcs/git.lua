@@ -233,6 +233,89 @@ function M.is_tracked(root, rel, cb)
   )
 end
 
+--- Parse `git status --porcelain=v2 -z` output into
+--- `{[abspath] = vcssign.FileStatus}` (08 P0-1).
+---
+--- Record shapes with `-z --no-renames`: `1 <XY> <sub> <mH> <mI> <mW> <hH> <hI>
+--- <path>`, `u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>`, `? <path>`
+--- and `! <path>`.  Records are NUL-separated, so a path may hold spaces and
+--- even newlines with no quoting to undo — and it is always the *last* field,
+--- which is why it is matched as the tail instead of by splitting on blanks.
+---
+--- `X` is the index against `HEAD` (a staged change), `Y` the worktree against
+--- the index.  `.` means "same", so `1 .M …` is a worktree edit with nothing
+--- staged and `1 M. …` its mirror.  Unmerged (`u`) is reported as both, which is
+--- the conservative answer: a resolution touches both layers.
+---
+--- `!` records are ignored paths.  In `traditional` mode git collapses an
+--- ignored directory to one record with a trailing `/`, hence `dir` — walking
+--- those trees file by file would cost more than the reads it saves, and the
+--- only consumer is the "is this untracked" question.
+---@param stdout string
+---@param root string
+---@return table<string, vcssign.FileStatus>
+function M.parse_status(stdout, root)
+  local entries = {}
+  local function add(path, status)
+    if not path or path == '' then
+      return
+    end
+    if path:sub(-1) == '/' then
+      path = path:sub(1, -2)
+      status.dir = true
+    end
+    entries[base.normalize(vim.fs.joinpath(root, path))] = status
+  end
+  for record in stdout:gmatch('[^%z]+') do
+    local kind = record:sub(1, 1)
+    if kind == '1' then
+      local xy, path = record:match('^1 (%S%S) %S+ %S+ %S+ %S+ %S+ %S+ (.+)$')
+      if xy then
+        add(path, { tracked = true, staged = xy:sub(1, 1) ~= '.', worktree = xy:sub(2, 2) ~= '.' })
+      end
+    elseif kind == 'u' then
+      local path = record:match('^u %S%S %S+ %S+ %S+ %S+ %S+ %S+ %S+ %S+ (.+)$')
+      add(path, { tracked = true, staged = true, worktree = true })
+    elseif kind == '?' or kind == '!' then
+      add(record:match('^[^ ] ([^%z]+)$'), {
+        tracked = false,
+        staged = false,
+        worktree = false,
+        ignored = kind == '!',
+      })
+    end
+  end
+  return entries
+end
+
+--- One status query for the whole repository (08 P0-1).
+---
+--- `--untracked-files=all` because the per-file question it replaces was "is
+--- *this* path tracked", which a collapsed `dir/` record cannot answer;
+--- `--ignored=traditional` adds those records back for the same reason (an
+--- ignored file is untracked, and used to show as such).
+---@param root string
+---@param cb fun(err: string?, entries: table<string, vcssign.FileStatus>?)
+function M.status(root, cb)
+  exec.run(
+    build({
+      'status',
+      '--porcelain=v2',
+      '-z',
+      '--untracked-files=all',
+      '--ignored=traditional',
+      '--no-renames',
+    }),
+    { cwd = root },
+    function(err, res)
+      if err then
+        return cb(err)
+      end
+      cb(nil, M.parse_status(res.stdout, root))
+    end
+  )
+end
+
 --- Parse `git blame --line-porcelain` output into `{[lineno] = vcssign.BlameLine}`.
 ---
 --- The header is `<40hex sha> <orig_lineno> <final> <num_lines>`, where the

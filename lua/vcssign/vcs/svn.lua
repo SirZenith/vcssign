@@ -186,6 +186,96 @@ function M.is_tracked(root, rel, cb)
   end)
 end
 
+--- Undo the XML entity quoting svn applies to paths.
+---@param text string
+---@return string
+local function unescape(text)
+  return (
+    text:gsub('&(%a+);', {
+      amp = '&',
+      lt = '<',
+      gt = '>',
+      quot = '"',
+      apos = "'",
+    })
+  )
+end
+
+--- What a `wc-status` `item` means for the sign layers.
+---
+--- `normal` and `none` are the "matches its BASE" answers, and `external` is
+--- another working copy altogether — all three stay *out* of the map, because a
+--- path the map does not mention is the one that needs no baseline read.
+---@type table<string, vcssign.FileStatus?>
+local SVN_ITEM = {
+  modified = { tracked = true, staged = false, worktree = true },
+  conflicted = { tracked = true, staged = false, worktree = true },
+  missing = { tracked = true, staged = false, worktree = true },
+  obstructed = { tracked = true, staged = false, worktree = true },
+  incomplete = { tracked = true, staged = false, worktree = true },
+  added = { tracked = true, staged = false, worktree = true },
+  replaced = { tracked = true, staged = false, worktree = true },
+  deleted = { tracked = true, staged = false, worktree = true },
+  unversioned = { tracked = false, staged = false, worktree = false },
+  ignored = { tracked = false, staged = false, worktree = false, ignored = true },
+}
+
+--- Parse `svn status --xml` output into `{[abspath] = vcssign.FileStatus}`
+--- (08 P0-1).
+---
+--- Measured shape (svn 1.14.5): attributes come out one per line, and the
+--- document is `<status><target path="."><entry path="REL"><wc-status …
+--- item="modified">…` — with the command run in the working copy root, `path`
+--- is relative to it.
+---
+--- svn has no staging area, so no entry ever sets `staged`: BASE is both the
+--- comparison baseline and the second layer, which is why `capabilities`
+--- declares `staged_signs = false` (D42).
+---
+--- The `dir` flag is *not* set here — it needs a `stat`, so `M.status` fills it
+--- in for the untracked entries only, keeping this function pure.
+---@param xml string
+---@param root string
+---@return table<string, vcssign.FileStatus>
+function M.parse_status(xml, root)
+  local entries = {}
+  for chunk in xml:gmatch('<entry%s(.-)</entry>') do
+    local path = chunk:match('path="([^"]*)"')
+    local item = chunk:match('item="([%a_]*)"')
+    local status = item and SVN_ITEM[item]
+    if path and status then
+      entries[base.normalize(vim.fs.joinpath(root, unescape(path)))] = vim.deepcopy(status)
+    end
+  end
+  return entries
+end
+
+--- One status query for the whole working copy (08 P0-1).
+---
+--- `--no-ignore` is not an optimisation knob but a fidelity one: without it an
+--- ignored file is simply absent from the answer, and "absent" means "in sync
+--- with BASE" — which would silently turn today's untracked-file signs off.
+--- The price is a walk of ignored trees, so an ignored entry that turns out to
+--- be a directory gets the `dir` flag (one `stat`, no recursion) and is then
+--- handled by the same prefix rule as git's `traditional` ignored records.
+---@param root string
+---@param cb fun(err: string?, entries: table<string, vcssign.FileStatus>?)
+function M.status(root, cb)
+  exec.run(build({ 'status', '--xml', '--no-ignore' }), { cwd = root }, function(err, res)
+    if err then
+      return cb(err)
+    end
+    local entries = M.parse_status(res.stdout, root)
+    for path, status in pairs(entries) do
+      if not status.tracked then
+        local stat = vim.uv.fs_stat(path)
+        status.dir = stat ~= nil and stat.type == 'directory'
+      end
+    end
+    cb(nil, entries)
+  end)
+end
+
 --- `2026-10-16T09:00:00.000000Z` (svn always reports UTC) as Unix seconds.
 ---
 --- `os.time` reads its table as *local* time, so the offset it applied is added
