@@ -172,6 +172,41 @@ M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
 **工程门（`f66b074` 实测）**：`make test` → **`260 tests, 0 failed`**、`make format-check` 零输出、
 `make lint` → `0 warnings / 0 errors in 48 files`；stderr 只剩 `repo_spec` retry 那一行。
 
+## M7 · 性能与架构优化（08，审查记录 · 进行中）
+
+> 用户要求审查「性能、架构上可优化的部分」（m00001）。结论由**实测探针**（`exec.run` 打桩数进程 /
+> `attach._render` 打桩数渲染 / 微基准）支撑：算法层（diff / hunk / extmark）都不是瓶颈（40000 行
+> 全改写 8.1 ms），瓶颈是**每次渲染固定的进程数**（git 3 个 × 43 ms；svn 2 个 × ≈72 ms——svn 没有
+> staged 层但单价更高，**两边墙钟差不多**）与**无差别重复的整文件管线**（`FocusGained` 磁盘无变化仍
+> 整趟重跑：git 每 buffer 6 进程 2 渲染，svn 2 进程 1 渲染，均产出零差异）。
+> **git / svn 已分别实测**（svn：`svnbench.lua` 单价 + `svne2e.lua` 计数；逐条适用性见 08 §3.5 矩阵）。
+> 设计、实测数据与推进顺序见 `08-perf-review.md`（P0-1…P0-5 / P1-1…P1-4 / P2-1…P2-6 / S1–S3 / A1–A5）。
+
+- [x] 1. P0-4 渲染短路（**已落地**，实测见 08 §2.4：`FocusGained` git 121 → 1 进程、同步 80.1 → 3–5 ms，
+      svn 25 → 1 / 72.2 → 0.6 ms；纯编辑 6 → 0 / 2 → 0）。新增可选适配器钩子
+      `baseline_stamp(root)`（git `.git/index`+`HEAD`+分支文件、svn `.svn/wc.db`；拿不到返回 `nil` 退回原行为），
+      渲染指纹 = `changedtick` + 基线 stamp + 渲染相关配置；回归用 `test/attach_spec.lua` 的
+      `count_procs` + 4 例断言、`vcs_git_spec`/`vcs_svn_spec` 各 2 例（全文 268 例通过）。
+      遗留：`FocusGained` 仍每 buffer 进两次 `_render`（`refresh_all` + repo `on_update` 两条路径），
+      金额已便宜但重复仍在 → 已由第 2 步消掉（40 → 20）。
+- [x] 2. P0-3 `changed_paths` 通道（**已落地**，实测见 08 §2.5：外部改写 1 个文件从 git 20 buffer /
+      61 进程降到 1 / 1（996 ms）；`FocusGained` 的重复渲染 40 → 20、svn 12 → 6；进程数仍是「每仓库 1」）。
+      `Repo:on_update(fn, changed)` 三态：集合 = 这些文件 / `nil` = 指认不了（元数据、目录汇总事件、
+      已消失路径）/ 空集 = 什么也没动（探测类请求）；只有 fs 事件记账，`mark_dirty`/`refresh*` 不算证据。
+      `attach` 侧按 `not changed or changed[st.path]` 过滤。回归：`attach_spec` +3 例（+`watch_renders()`）、
+      `repo_spec` +4 例（git/svn 各一套），全文 275 例通过。
+      坑记一笔：`x and nil or y` 永远得不到 `nil`（两处都是此惯用法）→ 改显式 `if`；
+      目录汇总事件（实测 `git add` 在根 watch 上以 `filename='.git'` 触发）必须回落「全员」，否则静默漏刷新。
+- [ ] 3. P0-5 首次 attach 去重 root 探测（git `rev-parse`×2 / svn `info --show-item`×2 → 1）
+- [ ] 4. P0-1 仓库级状态缓存（跨 VCS：git `status --porcelain=v2 -z`、svn `status --xml`；
+      干净文件直接不取基线）+ P0-2 `cat-file --batch` 常驻（**仅 git**，svn 无 blob 批协议）
+      —— 可先落 S2 过渡步（多目标 `svn info` / `ls-files`）；先做 08 §7 的待验证探针
+- [ ] 5. P1 动作层三处（stage 双刷新二选一——svn 侧只核 revert/reset 路径 / `has_staged_change`
+      改 `--cached --quiet`（仅 git）/ blame 带 `-L`（git）+ 按行缓存（两类都受益，svn 无 `-L`））
+- [ ] 6. A4 进程计数探针固化为回归 spec（08 §6 的验收断言表；**git/svn 各一套**）
+- [ ] S1 svn `.svn` 递归 watch 的句柄数（`metadata_dir` 钩子 + 非递归）——先按 08 §7-7 在大 wc 上量
+- [ ] P2 六项随顺路提交捎带（含 P2-6 `diff.lua:71` 文档漂移）
+
 ## 里程碑依赖
 
 ```
@@ -363,7 +398,8 @@ waiter 陈旧语义文档化、`!!`/`X`/`I` 前向兼容注释。`get_by_path` �
 7. **1000 行渲染 7ms**（build 1.7 + draw 5.3，三次采样 6.5/7.5/6.8）→ 远低于 300ms 去抖窗口，
    全量 clear + 重画这个策略站得住，条目级增量更新无需做。
 8. **按键可以真实按**：headless 下 `nvim_feedkeys('r', 'x', false)` 会走 buffer-local 映射
-   （`q` 关窗、`r` 刷新都实测过）；`<CR>` 要用真实 `` 字节，`'<CR>'` 这种记法不展开。
+   （`q` 关窗、`r` 刷新都实测过）；`<CR>` 要用真实 `
+` 字节，`'<CR>'` 这种记法不展开。
 
 ### 实现期自己踩到并修掉的三个坑
 
