@@ -455,11 +455,9 @@ end
 --- staged and `1 M. …` its mirror.  Unmerged (`u`) is reported as both, which is
 --- the conservative answer: a resolution touches both layers.
 ---
---- `!` records are ignored paths.  In `traditional` mode git collapses an
---- ignored directory to one record with a trailing `/`, hence `dir` — walking
---- those trees file by file would cost more than the reads it saves, and the
---- only consumer is the "is this path ignored" question (`attach` draws nothing
---- for such a path, D49).
+--- `!` records are ignored paths.  Production `M.status` no longer asks for
+--- them (D50), but the parser keeps the branch for adapters and tests, and
+--- honours a folded record with a trailing `/` via `dir`.
 ---@param stdout string
 ---@param root string
 ---@return table<string, vcssign.FileStatus>
@@ -500,10 +498,15 @@ end
 --- One status query for the whole repository (perf P0-1).
 ---
 --- `--untracked-files=all` because the per-file question it replaces was "is
---- *this* path tracked", which a collapsed `dir/` record cannot answer;
---- `--ignored=traditional` adds the ignored records back so that an ignored path
---- can be told apart from an untracked one — it gets no signs at all (D49),
---- while an untracked file still gets the whole-file layer (D42).
+--- *this* path tracked", which a collapsed `dir/` record cannot answer.
+---
+--- D50: do not ask for ignored paths.  git-status(1) says `--ignored=traditional`
+--- folds an ignored directory only when untracked-files is not `all`; with
+--- `--untracked-files=all` it expands every file below the directory.  The
+--- sample library repo has 221,385 ignored files, a ~17 MB answer that was
+--- parsed on the main loop.  An ignored path draws no signs anyway (D49), and
+--- an absent entry is treated as clean by `load_base_status`, so asking for
+--- them bought only a flag nothing in the attach path consumes.
 ---@param root string
 ---@param cb fun(err: string?, entries: table<string, vcssign.FileStatus>?)
 function M.status(root, cb)
@@ -513,13 +516,17 @@ function M.status(root, cb)
       '--porcelain=v2',
       '-z',
       '--untracked-files=all',
-      '--ignored=traditional',
+      '--ignored=no',
       '--no-renames',
     }),
     { cwd = root },
     function(err, res)
       if err then
         return cb(err)
+      end
+      local limit = config.get().max_status_bytes
+      if limit and limit > 0 and #res.stdout > limit then
+        return cb(('status output too large: %d bytes (limit %d)'):format(#res.stdout, limit))
       end
       cb(nil, M.parse_status(res.stdout, root))
     end

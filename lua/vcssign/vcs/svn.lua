@@ -17,6 +17,7 @@
 --- svn has no index: the staging baseline (`rev == 'index'`) is BASE (D42).
 local exec = require('vcssign.exec')
 local base = require('vcssign.vcs.base')
+local config = require('vcssign.config')
 
 local M = {}
 
@@ -269,20 +270,21 @@ end
 
 --- One status query for the whole working copy (perf P0-1).
 ---
---- `--no-ignore` is not an optimisation knob but a fidelity one: without it an
---- ignored file is simply absent from the answer, and "absent" means "in sync
---- with BASE".  The signs would come out the same — D49 draws nothing for an
---- ignored path either way — but the answer would no longer say *why*, and a
---- clean file would be indistinguishable from one the working copy was told to
---- leave alone.  The price is a walk of ignored trees, so an ignored entry that
---- turns out to be a directory gets the `dir` flag (one `stat`, no recursion) and
---- is then handled by the same prefix rule as git's `traditional` records.
+--- D50: do not ask svn for ignored paths.  `--no-ignore` walks every ignored
+--- tree, and the XML answer is parsed on the main loop; ignored paths draw no
+--- signs (D49).  Without the flag they are absent, which `load_base_status`
+--- treats as clean.  `SVN_ITEM.ignored` and the parser branch remain for
+--- adapters and tests, but production status no longer requests them.
 ---@param root string
 ---@param cb fun(err: string?, entries: table<string, vcssign.FileStatus>?)
 function M.status(root, cb)
-  exec.run(build({ 'status', '--xml', '--no-ignore' }), { cwd = root }, function(err, res)
+  exec.run(build({ 'status', '--xml' }), { cwd = root }, function(err, res)
     if err then
       return cb(err)
+    end
+    local limit = config.get().max_status_bytes
+    if limit and limit > 0 and #res.stdout > limit then
+      return cb(('status output too large: %d bytes (limit %d)'):format(#res.stdout, limit))
     end
     local entries = M.parse_status(res.stdout, root)
     for path, status in pairs(entries) do

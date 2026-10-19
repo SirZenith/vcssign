@@ -54,6 +54,10 @@ M.__index = M
 ---@field changed_all boolean  an event moved something that names no file (index / wc.db):
 ---                            every baseline may be stale
 ---@field status_cache table<string, vcssign.FileStatus>?  the repository's status view, or nil
+---@field status_stamp string?  the baseline key the cached view was taken under
+---@field status_error string?  a deterministic "status output too large" failure, with
+---                            `status_error_stamp` as its key
+---@field status_error_stamp string?
 ---@field _reader vcssign.BlobReader?  the batch reader, once some baseline was read through it
 ---@field _reader_stamp string?  the baseline stamp that reader was started on (see `read_blob`)
 ---                            when it has to be asked again (perf P0-1).  Absence of a
@@ -102,6 +106,11 @@ function M.new(system, root, opts)
   self.changed_all = false
   self.status_cache = nil
   self.status_stamp = nil
+  -- A deterministic "answer too large" failure is cached under the same
+  -- baseline stamp as a successful view: without it every buffer would run the
+  -- huge query again before falling back to the per-file questions.
+  self.status_error = nil
+  self.status_error_stamp = nil
   self._reader = nil
   self._reader_stamp = nil
   self._status_waiters = {}
@@ -184,8 +193,10 @@ end
 --- is still the current one.  `false` means "ask the baseline itself", which is
 --- one `show HEAD` — never a wrong sign.
 ---
---- A failed query is not cached: the next caller asks again, and `attach` falls
---- back to its per-file questions in the meantime.
+--- A transient failed query is not cached: the next caller asks again, and
+--- `attach` falls back to its per-file questions in the meantime.  The one
+--- exception is `status output too large`: that answer is deterministic for a
+--- given baseline stamp, so it is cached until the stamp moves (D50).
 ---@param cb fun(err: string?, entries: table<string, vcssign.FileStatus>?, trusted: boolean)
 function M:status(cb)
   local stamp = self:_stamp()
@@ -196,6 +207,9 @@ function M:status(cb)
     end
     -- The store moved under this view, so its staged answers are stale.
     self:_drop_status()
+  end
+  if self.status_error and stamp ~= nil and stamp == self.status_error_stamp then
+    return cb(self.status_error, nil, false)
   end
   local waiters = self._status_waiters
   local entry = { cb = cb, stamp = stamp }
@@ -223,9 +237,18 @@ function M:_query_status(waiters)
     -- about staging.  Re-querying here would be the alternative; it is not done
     -- because a store the query itself disturbs would then feed itself a loop.
     local trusted = stamp ~= nil and self:_stamp() == stamp
-    if trusted and not err and entries and self._status_generation == generation then
-      self.status_cache = entries
-      self.status_stamp = stamp
+    if trusted and self._status_generation == generation then
+      if err then
+        if stamp ~= nil and err:find('status output too large', 1, true) then
+          self.status_error = err
+          self.status_error_stamp = stamp
+        end
+      elseif entries then
+        self.status_cache = entries
+        self.status_stamp = stamp
+        self.status_error = nil
+        self.status_error_stamp = nil
+      end
     end
     -- Reset before answering: a callback may ask again, and by then the cache
     -- is either in place (answered without another subprocess) or correctly
@@ -243,6 +266,8 @@ end
 function M:_drop_status()
   self.status_cache = nil
   self.status_stamp = nil
+  self.status_error = nil
+  self.status_error_stamp = nil
   -- Retires any query in flight: see `_query_status`.
   self._status_generation = self._status_generation + 1
 end

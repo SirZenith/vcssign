@@ -66,6 +66,7 @@ example with most of the default settings:
       rev = 'index',
       attach_to_untracked = true,
       max_file_length = 40000, -- Disable if file is longer than this (in lines)
+      max_status_bytes = 4194304, -- Refuse a bigger repository status answer
       word_diff = false, -- Toggle with `<leader>tw`
       deleted_preview = false,
       current_line_blame = false, -- Toggle with `<leader>tb`
@@ -354,11 +355,25 @@ attach_to_untracked                       *vcssign-config-attach_to_untracked*
     this is set to: an ignored path is one the repository was told to
     leave alone, not one that has yet to be added.
 
+    Ignored paths are not requested from the status view; they are absent
+    from it, and an absent path is treated as clean.  This is what keeps a
+    repository with a large ignored tree from turning into a large
+    `git status` answer.
+
 max_file_length                               *vcssign-config-max_file_length*
     Type: `number`, Default: `40000`
 
     Max file length (in lines) to attach to. Buffers with more lines than
     this get no signs at all.
+
+max_status_bytes                             *vcssign-config-max_status_bytes*
+    Type: `number`, Default: `4194304` (4 MiB)
+
+    Maximum size of the repository-wide status answer accepted for the sign
+    view.  A larger answer is rejected without being parsed on the main loop;
+    the buffer falls back to per-file baseline queries.  Set to `0` to disable
+    the cap.  Ignored paths are never requested, so this only matters for a
+    repository with an exceptionally large untracked tree.
 
 word_diff                                           *vcssign-config-word_diff*
     Type: `boolean`, Default: `false`

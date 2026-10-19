@@ -284,9 +284,9 @@ return {
       local ibuf = open(dir .. '/secret.txt')
       local ist = attach_now(ibuf)
       ok(ist.attached, 'the buffer still attaches, so the commands keep working')
-      eq(ist.ignored, true, 'the status view says the path is ignored')
+      ok(not ist.ignored, 'D50: the status view no longer asks for ignored paths')
       eq(ist.untracked, false, 'which is not the same thing as untracked')
-      eq(ist.base_text, nil, 'there is no baseline to diff against')
+      eq(ist.base_text, 'a\nb', 'an absent entry is clean, so the baseline is the buffer')
       eq(#attach.hunks(ibuf), 0)
       eq(signs.sign_count(ibuf), 0, 'and nothing is drawn')
 
@@ -298,6 +298,23 @@ return {
     end),
   },
   {
+    name = 'an ignored file costs the status view and no baseline read',
+    fn = guarded(function()
+      local dir = helpers.git_repo('attach-ignored-absent')
+      helpers.write(dir .. '/.gitignore', 'secret.txt\n')
+      helpers.write(dir .. '/secret.txt', 'a\nb\n')
+      local bufnr = open(dir .. '/secret.txt')
+      local argv = spawned(function()
+        attach_now(bufnr)
+      end)
+      eq(#argv, 2, 'rev-parse + status: ' .. table.concat(argv, ' | '))
+      ok(argv[2]:find('status', 1, true))
+      local st = attach._bufs[bufnr]
+      eq(st.base_text, 'a\nb')
+      eq(signs.sign_count(bufnr), 0)
+    end),
+  },
+  {
     name = 'a file inside an ignored directory is drawn with nothing too',
     fn = guarded(function()
       local dir = helpers.git_repo('attach-ignored-dir')
@@ -306,9 +323,9 @@ return {
 
       local bufnr = open(dir .. '/logs/a.log')
       local st = attach_now(bufnr)
-      eq(st.ignored, true, 'the folded `dir` record covers the file below it')
+      ok(not st.ignored, 'D50: an ignored path is absent from the view')
       eq(st.untracked, false)
-      eq(st.base_text, nil)
+      eq(st.base_text, 'a\nb\nc', 'the absent entry is clean')
       eq(#attach.hunks(bufnr), 0)
       eq(signs.sign_count(bufnr), 0)
     end),
@@ -322,9 +339,9 @@ return {
 
       local bufnr = open(dir .. '/secret.txt')
       local st = attach_now(bufnr)
-      eq(st.ignored, true, 'svn reports the path as ignored under --no-ignore')
+      ok(not st.ignored, 'D50: svn is not asked for ignored paths')
       eq(st.untracked, false)
-      eq(st.base_text, nil)
+      eq(st.base_text, 'a\nb', 'the absent entry is clean')
       eq(#attach.hunks(bufnr), 0)
       eq(signs.sign_count(bufnr), 0)
     end),

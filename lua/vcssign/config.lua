@@ -22,6 +22,7 @@ local M = {}
 ---@field rev string                 revision the buffer is compared against
 ---@field attach_to_untracked boolean
 ---@field max_file_length integer    buffers longer than this get no signs
+---@field max_status_bytes integer    repository status answers larger than this are refused
 ---@field word_diff boolean
 ---@field deleted_preview boolean
 ---@field current_line_blame boolean
@@ -119,6 +120,11 @@ M.defaults = {
   rev = 'index',
   attach_to_untracked = true,
   max_file_length = 40000,
+  -- The repository-wide status answer is parsed on the main loop, so an
+  -- unexpectedly huge one (a worktree with a very large untracked or ignored
+  -- tree) must be refused before `parse_status` touches it.  0 disables the
+  -- cap.  The buffer then falls back to per-file baseline questions.
+  max_status_bytes = 4 * 1024 * 1024,
   word_diff = false,
   deleted_preview = false,
   current_line_blame = false,

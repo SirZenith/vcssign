@@ -378,8 +378,65 @@ return {
     end,
   },
   {
+    name = 'status does not ask git for ignored paths (D50)',
+    fn = function()
+      local exec = require('vcssign.exec')
+      local dir = repo_named('vcs-git-status-argv')
+      local real_run = exec.run
+      local seen
+      exec.run = function(cmd, opts, cb)
+        if vim.tbl_contains(cmd, '--porcelain=v2') then
+          seen = cmd
+        end
+        return real_run(cmd, opts, cb)
+      end
+      local ok_call, err = pcall(function()
+        local status_err = helpers.wait(function(cb)
+          git.status(dir, cb)
+        end)
+        eq(status_err, nil)
+      end)
+      exec.run = real_run
+      if not ok_call then
+        error(err, 0)
+      end
+      ok(seen, 'the status query ran')
+      ok(not vim.tbl_contains(seen, '--ignored=traditional'), 'D50: no ignored paths')
+      ok(vim.tbl_contains(seen, '--ignored=no'), 'the intent is explicit')
+    end,
+  },
+  {
+    name = 'status refuses an oversized answer before parsing it',
+    fn = function()
+      local config = require('vcssign.config')
+      local exec = require('vcssign.exec')
+      local dir = repo_named('vcs-git-status-cap')
+      config.setup({ max_status_bytes = 8 })
+      local real_run = exec.run
+      exec.run = function(cmd, opts, cb)
+        if vim.tbl_contains(cmd, '--porcelain=v2') then
+          return cb(nil, { stdout = string.rep('x', 9), stderr = '', code = 0 })
+        end
+        return real_run(cmd, opts, cb)
+      end
+      local ok_call, err = pcall(function()
+        local status_err = helpers.wait(function(cb)
+          git.status(dir, cb)
+        end)
+        ok(status_err and status_err:find('status output too large', 1, true), status_err)
+      end)
+      exec.run = real_run
+      config.setup({})
+      if not ok_call then
+        error(err, 0)
+      end
+    end,
+  },
+  {
     -- D49 rests on this: the view has to keep ignored records *apart* from
     -- untracked ones, and keep the folded `dir` record for an ignored tree.
+    -- D50: production git status no longer asks for `!` records; this test keeps
+    -- the parser honest for svn-style adapters and a future opt-in.
     name = 'parse_status keeps ignored records apart from untracked ones',
     fn = function()
       local base = require('vcssign.vcs.base')

@@ -276,6 +276,60 @@ return {
     end,
   },
   {
+    name = 'status does not ask svn for ignored paths (D50)',
+    fn = function()
+      local exec = require('vcssign.exec')
+      local dir = repo_named('vcs-svn-status-argv')
+      local real_run = exec.run
+      local seen
+      exec.run = function(cmd, opts, cb)
+        if vim.tbl_contains(cmd, 'status') then
+          seen = cmd
+        end
+        return real_run(cmd, opts, cb)
+      end
+      local ok_call, err = pcall(function()
+        local status_err = helpers.wait(function(cb)
+          svn.status(dir, cb)
+        end)
+        eq(status_err, nil)
+      end)
+      exec.run = real_run
+      if not ok_call then
+        error(err, 0)
+      end
+      ok(seen, 'the status query ran')
+      ok(not vim.tbl_contains(seen, '--no-ignore'), 'D50: no ignored paths')
+    end,
+  },
+  {
+    name = 'status refuses an oversized answer before parsing it',
+    fn = function()
+      local config = require('vcssign.config')
+      local exec = require('vcssign.exec')
+      local dir = repo_named('vcs-svn-status-cap')
+      config.setup({ max_status_bytes = 8 })
+      local real_run = exec.run
+      exec.run = function(cmd, opts, cb)
+        if vim.tbl_contains(cmd, 'status') then
+          return cb(nil, { stdout = string.rep('x', 9), stderr = '', code = 0 })
+        end
+        return real_run(cmd, opts, cb)
+      end
+      local ok_call, err = pcall(function()
+        local status_err = helpers.wait(function(cb)
+          svn.status(dir, cb)
+        end)
+        ok(status_err and status_err:find('status output too large', 1, true), status_err)
+      end)
+      exec.run = real_run
+      config.setup({})
+      if not ok_call then
+        error(err, 0)
+      end
+    end,
+  },
+  {
     name = 'baseline_stamp is wc.db, which every BASE change rewrites',
     fn = function()
       local dir = repo_named('vcs-svn-stamp')
