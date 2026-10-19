@@ -296,4 +296,40 @@ return {
       eq(vim.fn.readfile(dir .. '/base.txt'), { 'changed' })
     end,
   },
+  {
+    name = 'baseline_stamp is the index and the branch, never the worktree',
+    fn = function()
+      local dir = repo_named('vcs-git-stamp')
+      local before = git.baseline_stamp(dir)
+      ok(type(before) == 'string', 'a repository has a stamp')
+
+      -- An unstaged edit is invisible to the baseline: `show(:rel)` does not
+      -- read the worktree, so the render short-circuit may keep the signs it
+      -- already has.
+      helpers.write(dir .. '/base.txt', 'edited\n')
+      eq(git.baseline_stamp(dir), before, 'the worktree is not part of the key')
+
+      -- Staging rewrites `.git/index` (through a lock file and a rename).
+      helpers.sh({ 'git', '-C', dir, 'add', 'base.txt' })
+      local staged = git.baseline_stamp(dir)
+      ok(staged ~= before, 'the index is part of the key')
+
+      -- A commit leaves `.git/HEAD` byte-identical (`ref: refs/heads/main`) and
+      -- moves the branch file instead, which is why statting HEAD alone would
+      -- miss it.
+      helpers.sh({ 'git', '-C', dir, 'commit', '-qm', 'second', 'base.txt' })
+      ok(git.baseline_stamp(dir) ~= staged, 'and so is the branch ref')
+    end,
+  },
+  {
+    name = 'baseline_stamp refuses an answer outside a repository',
+    fn = function()
+      -- Not `scratch_dir`: `temp/` lives inside this plugin's own repository,
+      -- so detection would legitimately find a root above it.
+      local dir = vim.fn.tempname()
+      vim.fn.mkdir(dir, 'p')
+      eq(git.baseline_stamp(dir), nil, 'no answer is better than a stale one')
+      vim.fn.delete(dir, 'rf')
+    end,
+  },
 }

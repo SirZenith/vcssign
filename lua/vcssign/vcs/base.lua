@@ -84,6 +84,17 @@ local NORMALIZE_OPTS = { expand_env = false }
 --- a *file* whose `gitdir:` target (outside the worktree) holds the real index —
 --- the only place a staging change can be observed.
 ---@field metadata_dir? fun(root: string): string?
+--- A free (no subprocess) change-detection key for the baseline store — the
+--- entries `show(rev, rel)` answers from — or nil when the adapter cannot
+--- produce a trustworthy one.
+---
+--- It is what lets a refresh skip re-reading a baseline that cannot have moved
+--- (08 P0-4): `attach` compares it against the value recorded when the current
+--- `base_text` was read, and re-reads on any difference.  Returning nil is
+--- always safe — the caller then re-reads every time, which is the behaviour
+--- without a fingerprint — while a key that misses one of the inputs makes the
+--- signs stale, so when in doubt return nil.
+---@field baseline_stamp? fun(root: string): string?
 --- Authoritative root lookup through the VCS itself.
 ---@field get_root_async fun(path: string, cb: fun(err: string?, root: string?))
 --- Baseline text of `rel` as of `rev`; `rev == 'index'` means the staging
@@ -109,6 +120,31 @@ local NORMALIZE_OPTS = { expand_env = false }
 ---@return string
 function M.normalize(path)
   return vim.fs.normalize(vim.fn.fnamemodify(path, ':p'), NORMALIZE_OPTS)
+end
+
+--- A cheap change-detection key for one filesystem entry, for the baseline
+--- fingerprints in `attach.lua` (08 P0-4): a missing entry is `-`, and every
+--- other answer carries inode, size and nanosecond mtime, so a rewrite that
+--- keeps the size still produces a different key.
+---
+--- `vim.uv.fs_stat` is a syscall, not a subprocess: this is the whole reason a
+--- refresh can answer "did the baseline store move" for free.
+---@param path string
+---@return string
+function M.stat_key(path)
+  local stat = vim.uv.fs_stat(path)
+  if not stat then
+    return '-'
+  end
+  local mtime = stat.mtime or {}
+  return string.format(
+    '%s:%s:%s:%s.%s',
+    tostring(stat.ino or 0),
+    tostring(stat.size or 0),
+    tostring(mtime.sec or 0),
+    tostring(mtime.nsec or 0),
+    tostring(stat.type or '?')
+  )
 end
 
 --- Directory to run VCS commands in for `path`: the path itself when it is an
