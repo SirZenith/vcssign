@@ -167,12 +167,10 @@ return {
       local dir = helpers.git_repo('revdiff-same')
       open_attached(dir .. '/base.txt')
 
-      local seen = helpers.capture_notify(function()
+      local notification = helpers.capture_notify_one(function()
         actions.diffthis(nil, { rev = 'HEAD' })
-      end, function(s)
-        return #s > 0
-      end)
-      eq(seen[1].message, 'vcssign: base.txt: no changes against HEAD')
+      end, 'no changes against HEAD')
+      eq(notification.message, 'vcssign: base.txt: no changes against HEAD')
       eq(diff_lines(), nil, 'and no window is opened')
     end),
   },
@@ -196,7 +194,7 @@ return {
           actions.diffthis_rev(nil)
         end)
       end)
-      eq(#seen, 0)
+      eq(#seen, 0, 'cancelling says nothing: ' .. helpers.describe_notifications(seen))
     end),
   },
   {
@@ -204,13 +202,11 @@ return {
     fn = guarded(function()
       local dir = edited_repo('revdiff-nobuffer')
       helpers.with_repo('spec-revdiff', dir, function()
-        local seen = helpers.capture_notify(function()
+        local notification = helpers.capture_notify_one(function()
           actions.diffthis(dir .. '/base.txt', { rev = 'HEAD' })
-        end, function(s)
-          return #s > 0
-        end)
-        eq(seen[1].level, vim.log.levels.ERROR)
-        ok(seen[1].message:find('is not open in a buffer', 1, true), seen[1].message)
+        end, 'is not open in a buffer')
+        eq(notification.level, vim.log.levels.ERROR)
+        ok(notification.message:find('is not open in a buffer', 1, true), notification.message)
         eq(diff_lines(), nil, 'nothing is opened')
       end)
     end),

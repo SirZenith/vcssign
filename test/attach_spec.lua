@@ -333,7 +333,11 @@ return {
       end)
 
       eq(attach.count(), 0)
-      for _, msg in ipairs(seen) do
+      -- Only what mentions *this* file: a repository an earlier case left behind
+      -- can still be chatting, and this case is not about it (the same reason
+      -- the other specs wait through `capture_notify_one`).
+      local about = helpers.select_notifications(seen, vim.fs.basename(file))
+      for _, msg in ipairs(about) do
         ok(msg.level < vim.log.levels.WARN, 'unexpected notification: ' .. msg.message)
       end
       vim.fn.delete(file)

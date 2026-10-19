@@ -318,19 +318,19 @@ return {
         return #marked_rows(bufnr) == 1
       end, 'the decoration to appear')
 
-      local seen = helpers.capture_notify(function()
+      local notification = helpers.capture_notify_one(function()
         actions.toggle_current_line_blame()
-      end)
-      eq(seen[1].message, 'vcssign: blame off', 'turning it off says so')
+      end, 'blame off')
+      eq(notification.message, 'vcssign: blame off', 'turning it off says so')
       helpers.wait_for(function()
         return #marked_rows(bufnr) == 0
       end, 'the decoration to go')
       eq(vim.b[bufnr].vcssign_blame_line, nil, 'and the text goes with it')
 
-      local back = helpers.capture_notify(function()
+      local back = helpers.capture_notify_one(function()
         actions.toggle_current_line_blame()
-      end)
-      eq(back[1].message, 'vcssign: blame on')
+      end, 'blame on')
+      eq(back.message, 'vcssign: blame on')
       helpers.wait_for(function()
         return #marked_rows(bufnr) == 1
       end, 'the decoration to come back')
@@ -351,7 +351,7 @@ return {
           return preview.is_open(bufnr, 1)
         end, 'the blame float')
       end)
-      eq(#seen, 0, 'showing a float says nothing')
+      eq(#seen, 0, 'showing a float says nothing: ' .. helpers.describe_notifications(seen))
       local text = float_lines()
       ok(text ~= nil, 'the float is open')
       ok(text[1]:match('^%x+ t %d%d%d%d%-%d%d%-%d%d$'), 'the commit, then the source line')
@@ -409,7 +409,7 @@ return {
           return preview.is_open(bufnr, 2)
         end, 'the blame float')
       end)
-      eq(#seen, 0, 'showing a float says nothing')
+      eq(#seen, 0, 'showing a float says nothing: ' .. helpers.describe_notifications(seen))
       local text = float_lines()
       ok(text ~= nil, 'the float is open')
       eq(text[1], 'Not Committed Yet')
