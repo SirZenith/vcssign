@@ -60,6 +60,7 @@ local M = {}
 ---@field hunks_staged vcssign.Hunk[]      staged layer (HEAD -> buffer), git only
 ---@field tracked boolean?
 ---@field untracked boolean
+---@field ignored boolean?     the VCS ignores this path: no baseline, no signs (D49)
 ---@field attached boolean
 ---@field abandoned boolean    the repository went away; a later `attach` rebuilds
 ---@field enabled boolean       false = the pipeline found nothing to diff against
@@ -233,7 +234,7 @@ end
 ---@param done fun()
 ---@param staged boolean?  what the status view said, nil when unknown
 local function load_base_show(st, done, staged)
-  st.tracked, st.untracked = true, false
+  st.tracked, st.untracked, st.ignored = true, false, false
   ---@param rev string
   ---@param retry boolean
   local function show_with(rev, retry)
@@ -262,6 +263,13 @@ end
 --- This is the path the status view replaced (perf P0-1), kept because it is the
 --- only one a VCS without the primitive — or a failed query — has.
 ---
+--- It cannot tell "ignored" from "untracked": `is_tracked` answers "no" for both
+--- (`git ls-files --error-unmatch` does not consult the ignore rules).  So when
+--- this path runs, an ignored file falls back to the untracked signs of D42
+--- instead of the nothing D49 promises.  A second process (`git check-ignore`)
+--- for a path that only runs once the status view has already failed is not
+--- worth it.
+---
 --- Failure chain: an error from `is_tracked` is "no signs" (and no warning —
 --- the stderr contract allows exactly one line, from the runtime spec);
 --- `show(rev)` falls back once to `'HEAD'` before giving up.
@@ -280,7 +288,7 @@ local function load_base_probe(st, done, staged)
       return done()
     end
     if tracked == false then
-      st.tracked, st.untracked = false, true
+      st.tracked, st.untracked, st.ignored = false, true, false
       -- An untracked file's baseline is the empty file, so every line is added
       -- (rendered as `untracked`, one sign per line).
       st.base_text = config.get().attach_to_untracked and '' or nil
@@ -293,9 +301,10 @@ end
 --- The status entry for `path`, honouring the ignored-directory records.
 ---
 --- A git `!` record and an svn `unversioned`/`ignored` record may name a
---- *directory* instead of every file below it; a buffer inside one is untracked
---- all the same.  The scan only ever walks the ignored directories, which is a
---- handful even in a large repository.
+--- *directory* instead of every file below it; a buffer inside one is *ignored*
+--- all the same, and the record's `ignored` bit is carried out to the caller so
+--- it can tell the two cases apart.  The scan only ever walks the ignored
+--- directories, which is a handful even in a large repository.
 ---@param entries table<string, vcssign.FileStatus>
 ---@param path string
 ---@return vcssign.FileStatus?
@@ -334,8 +343,18 @@ end
 ---@param done fun()
 local function load_base_status(st, entries, trusted, done)
   local entry = status_entry(entries, st.path)
+  if entry and entry.ignored then
+    -- An ignored path is not "untracked with a twist": the repository was told
+    -- to leave it alone, so vcssign claims nothing about it — no baseline, no
+    -- signs, whatever `attach_to_untracked` says (D49).  `tracked` is false
+    -- because the path really is outside the index; `untracked` is false
+    -- because that flag is what draws the whole-file layer.
+    st.tracked, st.untracked, st.ignored = false, false, true
+    st.base_text = nil
+    return done()
+  end
   if entry and not entry.tracked then
-    st.tracked, st.untracked = false, true
+    st.tracked, st.untracked, st.ignored = false, true, false
     st.base_text = config.get().attach_to_untracked and '' or nil
     return done()
   end
@@ -362,7 +381,7 @@ local function load_base_status(st, entries, trusted, done)
     and api.nvim_buf_is_loaded(st.bufnr)
     and not vim.bo[st.bufnr].modified
   if from_buffer then
-    st.tracked, st.untracked = true, false
+    st.tracked, st.untracked, st.ignored = true, false, false
     st.base_text = diff.join(api.nvim_buf_get_lines(st.bufnr, 0, -1, false))
     return load_head(st, done, staged)
   end

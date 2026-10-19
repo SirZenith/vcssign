@@ -271,6 +271,65 @@ return {
     end),
   },
   {
+    -- D49: an ignored path is not "untracked with a twist".  `attach_to_untracked`
+    -- answers "let me see the files I have not added yet"; it does not answer
+    -- "show me the files I explicitly told the repository to leave alone".
+    name = 'an ignored file gets no signs, even with attach_to_untracked on',
+    fn = guarded(function()
+      local dir = helpers.git_repo('attach-ignored')
+      helpers.write(dir .. '/.gitignore', 'secret.txt\n')
+      helpers.write(dir .. '/secret.txt', 'a\nb\n')
+      helpers.write(dir .. '/loose.txt', 'a\nb\n')
+
+      local ibuf = open(dir .. '/secret.txt')
+      local ist = attach_now(ibuf)
+      ok(ist.attached, 'the buffer still attaches, so the commands keep working')
+      eq(ist.ignored, true, 'the status view says the path is ignored')
+      eq(ist.untracked, false, 'which is not the same thing as untracked')
+      eq(ist.base_text, nil, 'there is no baseline to diff against')
+      eq(#attach.hunks(ibuf), 0)
+      eq(signs.sign_count(ibuf), 0, 'and nothing is drawn')
+
+      -- The control: an untracked file next door keeps its whole-file layer.
+      local lbuf = open(dir .. '/loose.txt')
+      local lst = attach_now(lbuf)
+      eq(lst.untracked, true, 'a plain untracked file is still untracked')
+      eq(signs.sign_count(lbuf), 2)
+    end),
+  },
+  {
+    name = 'a file inside an ignored directory is drawn with nothing too',
+    fn = guarded(function()
+      local dir = helpers.git_repo('attach-ignored-dir')
+      helpers.write(dir .. '/.gitignore', 'logs/\n')
+      helpers.write(dir .. '/logs/a.log', 'a\nb\nc\n')
+
+      local bufnr = open(dir .. '/logs/a.log')
+      local st = attach_now(bufnr)
+      eq(st.ignored, true, 'the folded `dir` record covers the file below it')
+      eq(st.untracked, false)
+      eq(st.base_text, nil)
+      eq(#attach.hunks(bufnr), 0)
+      eq(signs.sign_count(bufnr), 0)
+    end),
+  },
+  {
+    name = 'svn:ignore leaves the file bare as well',
+    fn = guarded(function()
+      local dir = helpers.svn_repo('attach-svn-ignored')
+      helpers.sh({ 'svn', 'propset', 'svn:ignore', 'secret.txt\nlogs', dir })
+      helpers.write(dir .. '/secret.txt', 'a\nb\n')
+
+      local bufnr = open(dir .. '/secret.txt')
+      local st = attach_now(bufnr)
+      eq(st.ignored, true, 'svn reports the path as ignored under --no-ignore')
+      eq(st.untracked, false)
+      eq(st.base_text, nil)
+      eq(#attach.hunks(bufnr), 0)
+      eq(signs.sign_count(bufnr), 0)
+    end),
+  },
+  {
     name = 'max_file_length refuses a long buffer',
     fn = guarded(function()
       config.setup({ max_file_length = 2 })

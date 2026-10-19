@@ -271,10 +271,12 @@ end
 ---
 --- `--no-ignore` is not an optimisation knob but a fidelity one: without it an
 --- ignored file is simply absent from the answer, and "absent" means "in sync
---- with BASE" — which would silently turn today's untracked-file signs off.
---- The price is a walk of ignored trees, so an ignored entry that turns out to
---- be a directory gets the `dir` flag (one `stat`, no recursion) and is then
---- handled by the same prefix rule as git's `traditional` ignored records.
+--- with BASE".  The signs would come out the same — D49 draws nothing for an
+--- ignored path either way — but the answer would no longer say *why*, and a
+--- clean file would be indistinguishable from one the working copy was told to
+--- leave alone.  The price is a walk of ignored trees, so an ignored entry that
+--- turns out to be a directory gets the `dir` flag (one `stat`, no recursion) and
+--- is then handled by the same prefix rule as git's `traditional` records.
 ---@param root string
 ---@param cb fun(err: string?, entries: table<string, vcssign.FileStatus>?)
 function M.status(root, cb)

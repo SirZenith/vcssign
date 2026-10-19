@@ -377,4 +377,27 @@ return {
       end
     end,
   },
+  {
+    -- D49 rests on this: the view has to keep ignored records *apart* from
+    -- untracked ones, and keep the folded `dir` record for an ignored tree.
+    name = 'parse_status keeps ignored records apart from untracked ones',
+    fn = function()
+      local base = require('vcssign.vcs.base')
+      local root = repo_named('git-parse-status')
+      local entries = git.parse_status('! secret.txt\0? loose.txt\0! logs/\0', root)
+
+      local secret = entries[base.normalize(root .. '/secret.txt')]
+      ok(secret, 'the ignored file is in the view')
+      eq(secret.ignored, true, 'and says it is ignored')
+      eq(secret.tracked, false)
+
+      local loose = entries[base.normalize(root .. '/loose.txt')]
+      ok(not loose.ignored, 'an untracked file is not ignored')
+      eq(loose.tracked, false)
+
+      local logs = entries[base.normalize(root .. '/logs')]
+      eq(logs.dir, true, 'a folded directory record carries the flag')
+      eq(logs.ignored, true)
+    end,
+  },
 }

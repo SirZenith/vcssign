@@ -458,7 +458,8 @@ end
 --- `!` records are ignored paths.  In `traditional` mode git collapses an
 --- ignored directory to one record with a trailing `/`, hence `dir` — walking
 --- those trees file by file would cost more than the reads it saves, and the
---- only consumer is the "is this untracked" question.
+--- only consumer is the "is this path ignored" question (`attach` draws nothing
+--- for such a path, D49).
 ---@param stdout string
 ---@param root string
 ---@return table<string, vcssign.FileStatus>
@@ -500,8 +501,9 @@ end
 ---
 --- `--untracked-files=all` because the per-file question it replaces was "is
 --- *this* path tracked", which a collapsed `dir/` record cannot answer;
---- `--ignored=traditional` adds those records back for the same reason (an
---- ignored file is untracked, and used to show as such).
+--- `--ignored=traditional` adds the ignored records back so that an ignored path
+--- can be told apart from an untracked one — it gets no signs at all (D49),
+--- while an untracked file still gets the whole-file layer (D42).
 ---@param root string
 ---@param cb fun(err: string?, entries: table<string, vcssign.FileStatus>?)
 function M.status(root, cb)
