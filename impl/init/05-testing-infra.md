@@ -31,6 +31,7 @@
 | `test/actions_spec.lua` | 04 的动作 spec（真实仓库 + VCS 自身核对 + 桩 `vim.ui.input`） | ✅（24 用例全绿） |
 | `test/cli_spec.lua` | 04 的 `:Vcssign` spec（命令分派/补全/目标解析/公共 API/`plugin/` 薄壳） | ✅（17 用例全绿） |
 | `test/autocmds_spec.lua` | 04 的生命周期 spec（attach/detach/清理/钩子隔离） | ✅（10 用例全绿） |
+| `test/proc_budget_spec.lua` | **进程预算**（08 §6.1）：每 VCS 一套计数断言，一例一个场景 | ✅（7 用例全绿，M7 步骤 6） |
 | `scripts/tools.sh` | 钉版本把 stylua / luacheck 下到 `deps/`（幂等） | ✅（stylua 2.3.1 / luacheck 1.2.0） |
 | `stylua.toml` / `.luacheckrc` / `Makefile` | 工程工具链（gitsigns 同款） | ✅（05 §4，实测 `make 4.4.1`） |
 | `doc/vcssign.txt` + `test/doc_spec.lua` | 手写帮助文件 + 「文档与代码不许漂移」的断言 | ✅（7 用例，无外部二进制） |
@@ -167,6 +168,14 @@ Summary of conflicts:
   `git add` 一次，下一次跑套件就会失败。
 - **uv 句柄计数**：`helpers.uv_count('fs_event'|'timer')` 遍历 `vim.uv.walk`——02 §5.4 的
   「dispose 后句柄清零」就是用它断言前后相等（比只查内部字段更接近真实泄漏）。
+- **进程计数**（M7 步骤 6）：`helpers.spawns(fn) -> string[]` 在 `fn` 执行期间临时替换
+  `exec.run` **与** `exec.stream`，返回每条 argv 拼成的一个字符串（不筛命令）；
+  `helpers.running(calls, sub)` 再按 `' <sub> '` 过滤，于是 `cat-file` 与 `cat` 不会互相误伤。
+  两个通道都要拦：常驻进程（`git cat-file --batch`）走 `exec.stream`，只打桩 `exec.run`
+  会把「每仓库一个 reader」看成 0。数「一次场景花了几个进程」见 08 §6.1 的预算表。
+- **要断言 sweep 类场景时，autocmd 必须真的装上**：`vim.api.nvim_exec_autocmds('FocusGained', {})`
+  在没有 `autocmds.setup()` 的会话里是空操作，用例会「通过」得毫无意义（实测预算写 0 也过）。
+  `proc_budget_spec` 因此在 `guarded` 里 `autocmds.setup()`、收尾 `autocmds.disable()`。
 - **回调里不要断言**：管线的 waiters/订阅者由 `pcall` 隔离（02 §3.3），断言会被当作
   “callback failed” 记日志而**不会**让用例失败。spec 把结果写进变量、在用例体内断言。
 - spec 清单（对应各计划文件的验收标准，✅ = 已落地）：

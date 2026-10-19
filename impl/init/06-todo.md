@@ -250,7 +250,16 @@ M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
       - 回归：`actions_spec` 32 → 34（`spawned_commands`/`running` 辅助同时拦 `exec.run` 与 `exec.stream`），
         `blame_spec` 10 → 13（改 1 加 3），全文 290 → **294**。坑：`helpers.git_repo` 的
         `user.name = 't'`，断言 blame 文本时别写 'Ada Lovelace'。
-- [ ] 6. A4 进程计数探针固化为回归 spec（08 §6 的验收断言表；**git/svn 各一套**）
+- [x] 6. A4 进程计数探针固化为回归 spec（08 §6 的验收断言表；**git/svn 各一套**）
+  - `test/proc_budget_spec.lua`（7 例），helper 是 `helpers.spawns`（同时拦 `exec.run` 与
+    `exec.stream`）+ `helpers.running`；预算 git attach 5 / clean 3 / focus 1 / external 2 /
+    stage 6 / commit 4 / blame 1，svn attach 10 / clean 3 / focus 1 / external 2 / commit 4 / blame 1
+  - 实测：attach 8 文件 git 3 进程（旧代码 26）、干净文件 git/svn 各 2 且 0 个 `show`/`cat`、
+    纯编辑 0、focus 1/仓库、外部改写 1 buffer 1 进程、`stage_hunk` 4、commit git 3 / svn 2、
+    blame 1 然后 0；A/B：`git checkout 3675b24 -- lua/` 后同一 spec 用例 1 报 26 > 5、用例 2 报 2 个 `show`
+  - 坑：没 `autocmds.setup()` 时 `nvim_exec_autocmds('FocusGained')` 是空操作，用例会假通过；
+    `test/run.lua` 的 `DEFAULT_SPECS` + `REQUIRES` 要登记新 spec
+  - 文档：08 §6.1 + A4 状态块、05 §1 表格与 §3 两条规矩
 - [ ] S1 svn `.svn` 递归 watch 的句柄数（`metadata_dir` 钩子 + 非递归）——先按 08 §7-7 在大 wc 上量
 - [ ] P2 六项随顺路提交捎带（含 P2-6 `diff.lua:71` 文档漂移）
 
