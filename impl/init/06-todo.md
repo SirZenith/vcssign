@@ -260,6 +260,8 @@ M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
   - 坑：没 `autocmds.setup()` 时 `nvim_exec_autocmds('FocusGained')` 是空操作，用例会假通过；
     `test/run.lua` 的 `DEFAULT_SPECS` + `REQUIRES` 要登记新 spec
   - 文档：08 §6.1 + A4 状态块、05 §1 表格与 §3 两条规矩
+> 汇总：`impl/init/08-perf-review.md` **§2.10「M7 前后总表」**一页看完整体收益与剩余备档项。
+
 - [x] S1 svn `.svn` 递归 watch —— 量完发现**句柄不是问题**（1200 文件 wc 上始终 2 个：libuv 的递归
     是一个标志，不是每子目录一个句柄），代价在**事件量**：一次 300 文件 `svn commit` 递归 3135 条
     / 非递归 1225 条 / `wc.db` 单文件 1 条。修法：`VcsSystem.metadata_recursive?`（默认真，git 保持）
