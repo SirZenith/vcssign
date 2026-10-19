@@ -68,6 +68,57 @@ function M.eq(actual, expected, msg)
   end
 end
 
+--- Every subprocess spawned while `fn` runs, as argv strings.
+---
+--- The budget assertions (08 §6 / A4) are about *processes*, and a process can
+--- start through either door: `exec.run` for a one-shot command, `exec.stream`
+--- for the resident `cat-file --batch` reader (M7 4b).  Counting only the first
+--- would read "one process per repository" as zero.
+---
+--- Nothing is filtered: a budget that only counts the commands it expects would
+--- be blind to exactly the command a regression adds.
+---@param fn function
+---@return string[]
+function M.spawns(fn)
+  local exec = require('vcssign.exec')
+  local real_run, real_stream = exec.run, exec.stream
+  local calls = {}
+  local function record(cmd)
+    calls[#calls + 1] = table.concat(cmd, ' ')
+  end
+  exec.run = function(cmd, opts, cb)
+    record(cmd)
+    return real_run(cmd, opts, cb)
+  end
+  exec.stream = function(cmd, opts, on_stdout, on_exit)
+    record(cmd)
+    return real_stream(cmd, opts, on_stdout, on_exit)
+  end
+  local ok, err = pcall(fn)
+  exec.run, exec.stream = real_run, real_stream
+  if not ok then
+    error(err, 0)
+  end
+  return calls
+end
+
+--- The commands in `calls` whose argv runs `subcommand`, e.g. `'show'`.
+---
+--- Matched as a whole word between spaces, so `'cat-file'` matches the reader and
+--- `'cat'` does not (a substring test would confuse the two).
+---@param calls string[]
+---@param subcommand string
+---@return string[]
+function M.running(calls, subcommand)
+  local found = {}
+  for _, cmd in ipairs(calls) do
+    if cmd:find(' ' .. subcommand .. ' ', 1, true) then
+      found[#found + 1] = cmd
+    end
+  end
+  return found
+end
+
 --- Watch how many refresh passes a repository starts.
 ---
 --- `Repo` stopped caching status in M6 (D38), so "the refresh landed" can no
