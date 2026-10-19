@@ -50,6 +50,13 @@ return {
     end,
   },
   {
+    name = 'the status cap has a default and can be disabled',
+    fn = function()
+      eq(config.defaults.max_status_bytes, 4 * 1024 * 1024)
+      eq(config.merge(config.defaults, { max_status_bytes = 0 }).max_status_bytes, 0)
+    end,
+  },
+  {
     name = 'setup({}) restores the defaults',
     fn = function()
       config.setup({ systems = { 'svn' }, exec_timeout_ms = 1 })

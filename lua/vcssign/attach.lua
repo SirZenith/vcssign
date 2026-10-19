@@ -298,13 +298,12 @@ local function load_base_probe(st, done, staged)
   end)
 end
 
---- The status entry for `path`, honouring the ignored-directory records.
+--- The status entry for `path`, honouring directory records.
 ---
---- A git `!` record and an svn `unversioned`/`ignored` record may name a
---- *directory* instead of every file below it; a buffer inside one is *ignored*
---- all the same, and the record's `ignored` bit is carried out to the caller so
---- it can tell the two cases apart.  The scan only ever walks the ignored
---- directories, which is a handful even in a large repository.
+--- An adapter may report a directory instead of every file below it; a buffer
+--- inside one inherits the record's flags.  Production git status no longer
+--- asks for ignored paths (D50), so for git this is the exact-key path with an
+--- empty scan; svn still reports unversioned directories this way.
 ---@param entries table<string, vcssign.FileStatus>
 ---@param path string
 ---@return vcssign.FileStatus?
@@ -348,7 +347,10 @@ local function load_base_status(st, entries, trusted, done)
     -- to leave it alone, so vcssign claims nothing about it — no baseline, no
     -- signs, whatever `attach_to_untracked` says (D49).  `tracked` is false
     -- because the path really is outside the index; `untracked` is false
-    -- because that flag is what draws the whole-file layer.
+    -- because that flag is what draws the whole-file layer.  D50: production
+    -- git/svn status no longer requests ignored paths, so they normally reach
+    -- the absent (clean) branch below with the same visible result, no signs;
+    -- this branch stays for adapters that still report them.
     st.tracked, st.untracked, st.ignored = false, false, true
     st.base_text = nil
     return done()

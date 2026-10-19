@@ -977,6 +977,40 @@ return {
   },
 
   {
+    name = 'an oversized status answer is cached until the store moves',
+    fn = guarded(function()
+      local dir = helpers.git_repo('repo-status-cap')
+      -- A real status answer has to exceed the eight bytes below.
+      helpers.write(dir .. '/loose.txt', 'x\n')
+      helpers.with_repo('spec:status-cap', dir, function(repo)
+        repo:_drop_status() -- start cold; with_repo may already have warmed it
+        with_config({ max_status_bytes = 8 }, function()
+          local calls = count_status(function()
+            local err1 = helpers.wait(function(cb)
+              repo:status(cb)
+            end)
+            ok(err1 and err1:find('status output too large', 1, true), err1)
+            local err2 = helpers.wait(function(cb)
+              repo:status(cb)
+            end)
+            ok(err2 and err2:find('status output too large', 1, true), err2)
+          end)
+          eq(calls, 1, 'the second buffer reuses the cached error')
+
+          repo:_drop_status()
+          local calls_after = count_status(function()
+            local err3 = helpers.wait(function(cb)
+              repo:status(cb)
+            end)
+            ok(err3 and err3:find('status output too large', 1, true), err3)
+          end)
+          eq(calls_after, 1, 'a metadata change asks again')
+        end)
+      end)
+    end),
+  },
+
+  {
     name = 'a view taken before the store moved is never believed about staging',
     fn = guarded(function()
       local dir = helpers.git_repo('repo-status-stale')
