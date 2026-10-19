@@ -172,7 +172,7 @@ M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
 **工程门（`f66b074` 实测）**：`make test` → **`260 tests, 0 failed`**、`make format-check` 零输出、
 `make lint` → `0 warnings / 0 errors in 48 files`；stderr 只剩 `repo_spec` retry 那一行。
 
-## M7 · 性能与架构优化（08，审查记录 · 进行中）
+## M7 · 性能与架构优化（08，审查记录 · ✅ 已完成：P0-1…P0-5 / P1-1…P1-3 / P2-1…P2-6 / S1 全部落地，P1-4 备档）
 
 > 用户要求审查「性能、架构上可优化的部分」（m00001）。结论由**实测探针**（`exec.run` 打桩数进程 /
 > `attach._render` 打桩数渲染 / 微基准）支撑：算法层（diff / hunk / extmark）都不是瓶颈（40000 行
