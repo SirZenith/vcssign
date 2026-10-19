@@ -7,14 +7,17 @@
 --- cache — a cache that agrees with a command which did nothing is the failure
 --- mode worth catching.
 ---
---- `Repo` stopped caching status in M6 (D38), so "the plugin saw the change"
---- is asserted through the VCS (the helpers below) or through the refresh
---- mechanism (`helpers.count_refreshes`), never through a status list.
+--- "The plugin saw the change" is asserted through the VCS (the helpers
+--- below) or through the refresh mechanism (`helpers.count_refreshes`).  The
+--- repository's status *view* (M7 4a) is fair game too, but it is a cache: an
+--- assertion that reads it is also asserting that its fingerprint still held,
+--- so the VCS stays the authority whenever the two could disagree.
 --- See impl/init/04-commands-actions.md §2, §6.
 local actions = require('vcssign.actions')
 local attach = require('vcssign.attach')
 local autocmds = require('vcssign.autocmds')
 local config = require('vcssign.config')
+local exec = require('vcssign.exec')
 local helpers = require('helpers')
 local keymap = require('vcssign.keymap')
 local manager = require('vcssign.repo_manager')
@@ -117,6 +120,49 @@ local function stage_quietly(dir, rel)
   return answered(function()
     actions.stage(dir .. '/' .. rel)
   end, 'staged ' .. rel)
+end
+
+--- Every command `fn` spawns, as argv strings (08 P1-1/P1-2).
+---
+--- Both spawn paths are patched: `exec.stream` is how a resident reader starts,
+--- and a claim about "no `show` was run" must not be fooled by a process that
+--- came in through the other door.
+---@param fn function
+---@return string[]
+local function spawned_commands(fn)
+  local real_run, real_stream = exec.run, exec.stream
+  local calls = {}
+  local function record(cmd)
+    calls[#calls + 1] = table.concat(cmd, ' ')
+  end
+  exec.run = function(cmd, opts, cb)
+    record(cmd)
+    return real_run(cmd, opts, cb)
+  end
+  exec.stream = function(cmd, opts, on_stdout, on_exit)
+    record(cmd)
+    return real_stream(cmd, opts, on_stdout, on_exit)
+  end
+  local ok, err = pcall(fn)
+  exec.run, exec.stream = real_run, real_stream
+  if not ok then
+    error(err, 0)
+  end
+  return calls
+end
+
+--- The commands in `calls` that run `subcommand`.
+---@param calls string[]
+---@param subcommand string
+---@return string[]
+local function running(calls, subcommand)
+  local found = {}
+  for _, cmd in ipairs(calls) do
+    if cmd:find(' ' .. subcommand .. ' ', 1, true) then
+      found[#found + 1] = cmd
+    end
+  end
+  return found
 end
 
 --- How many diff views exist: the claim "pressing `d` twice reuses the buffer"
@@ -290,6 +336,38 @@ return {
         local st = attach.state(bufnr)
         return st ~= nil and #st.hunks == 1 and #st.hunks_staged == 1
       end, 'the sign layers to split')
+    end),
+  },
+  {
+    name = 'stage_hunk refreshes its buffer, not the repository as well',
+    fn = guarded(function()
+      reset()
+      local _, bufnr = two_hunk_repo('actions-stage-one-refresh')
+      put_cursor(bufnr, 2)
+      local repo = attach.state(bufnr).repo
+
+      -- Two paths used to run for one action: `attach.refresh` here and
+      -- `repo:refresh_now` right next to it.  The probe is what the second path
+      -- started, and it is countable (08 §7-5, §2.9).
+      local passes = helpers.count_refreshes(repo)
+      answered(function()
+        actions.stage_hunk(nil, { bufnr = bufnr })
+      end, 'staged base.txt (line 2)')
+      eq(passes(), 0, 'the action itself starts no probe')
+
+      -- The layers still follow the index, which is what the immediate refresh
+      -- was for, so `hs` then `hu` still sees the new split.
+      helpers.wait_for(function()
+        local st = attach.state(bufnr)
+        return st ~= nil and #st.hunks == 1 and #st.hunks_staged == 1
+      end, 'the sign layers to split')
+      -- The index write produced a filesystem event of its own; one debounced
+      -- probe is the whole cost of that, not a second refresh on top.
+      helpers.wait_for(function()
+        return passes() >= 1
+      end, 'the debounced probe')
+      vim.wait(400)
+      ok(passes() <= 2, 'the event costs one probe, not a refresh storm: ' .. passes())
     end),
   },
   {
@@ -571,6 +649,32 @@ return {
       -- worktree.
       eq(git_diff(dir, { '--cached' }), '', 'the index is clean again')
       eq(git_diff(dir), '', 'and so is the worktree')
+    end),
+  },
+  {
+    name = 'commit reads the index view instead of showing the file twice',
+    fn = guarded(function()
+      reset()
+      local repo, dir = modified_repo('actions-commit-view')
+      stage_quietly(dir, 'base.txt')
+
+      -- "Is the index different from HEAD?" used to be two full-text reads of
+      -- the file (`show :base.txt` and `show HEAD:base.txt`).  The repository's
+      -- status view answers it, and a view it cannot vouch for falls back to the
+      -- old pair — which this asserts did not happen (08 P1-2).
+      local commands
+      with_input('feat: through the view', function()
+        commands = spawned_commands(function()
+          answered(function()
+            actions.commit(file(repo, 'base.txt'))
+          end, 'committed base.txt')
+        end)
+      end)
+      eq(#running(commands, 'show'), 0, 'no baseline was read to answer a status question')
+      eq(
+        helpers.sh({ 'git', '-C', dir, 'log', '-1', '--format=%s' }):gsub('%s+$', ''),
+        'feat: through the view'
+      )
     end),
   },
   {

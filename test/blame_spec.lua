@@ -136,6 +136,30 @@ local function count_blames(fn)
   return calls
 end
 
+--- Every `blame` command `fn` runs, as argv strings (08 P1-3).
+---
+--- `count_blames` above answers "how many"; this answers "which window", which
+--- is the claim that matters: a look at one line must not blame the file.
+---@param fn function
+---@return string[]
+local function blame_commands(fn)
+  local real_run = exec.run
+  local calls = {}
+  exec.run = function(cmd, opts, cb)
+    local joined = table.concat(cmd, ' ')
+    if joined:find('blame', 1, true) then
+      calls[#calls + 1] = joined
+    end
+    return real_run(cmd, opts, cb)
+  end
+  local ok, err = pcall(fn)
+  exec.run = real_run
+  if not ok then
+    error(err, 0)
+  end
+  return calls
+end
+
 ---@param rev string
 ---@param time integer?
 ---@return vcssign.BlameLine
@@ -364,7 +388,7 @@ return {
     end),
   },
   {
-    name = 'a file is blamed once and reused while its text stands still',
+    name = 'a line is blamed once, and going back to it costs nothing',
     fn = guarded(function()
       enable_blame()
       local dir = helpers.git_repo('blame-cache')
@@ -377,13 +401,24 @@ return {
         return #marked_rows(bufnr) == 1
       end, 'the first decoration')
 
+      -- Line 2 has not been asked about yet: the cache is per line, so this is
+      -- one process (08 P1-3 asks for `-L l,l`, not the whole file).
       local calls = count_blames(function()
         move_to(bufnr, 2)
         helpers.wait_for(function()
           return vim.deep_equal(marked_rows(bufnr), { 1 })
         end, 'the decoration on line 2')
       end)
-      eq(calls, 0, 'moving the cursor reuses the cached blame')
+      eq(calls, 1, 'the line that was never looked at is blamed once')
+
+      -- And it stays: moving back is a cache hit.
+      local again = count_blames(function()
+        move_to(bufnr, 1)
+        helpers.wait_for(function()
+          return vim.deep_equal(marked_rows(bufnr), { 0 })
+        end, 'the decoration back on line 1')
+      end)
+      eq(again, 0, 'going back to a blamed line costs nothing')
 
       -- The text changed: the next render asks again.
       local after_edit = count_blames(function()
@@ -394,6 +429,55 @@ return {
         end, 'the decoration after an edit')
       end)
       eq(after_edit, 1, 'an edit invalidates the cache')
+    end),
+  },
+  {
+    name = 'the blame of a line asks for that line, not the whole file',
+    fn = guarded(function()
+      enable_blame()
+      local dir = helpers.git_repo('blame-window')
+      helpers.write(dir .. '/base.txt', 'one\ntwo\nthree\nfour\n')
+      helpers.sh({ 'git', '-C', dir, 'add', '-A' })
+      helpers.sh({ 'git', '-C', dir, 'commit', '-qm', 'four lines' })
+      local bufnr = open_attached(dir .. '/base.txt')
+      local cmds = blame_commands(function()
+        move_to(bufnr, 3)
+        helpers.wait_for(function()
+          return #marked_rows(bufnr) == 1
+        end, 'the decoration on line 3')
+      end)
+      eq(#cmds, 1, 'one process')
+      ok(cmds[1]:find('-L 3,3', 1, true) ~= nil, 'the window is the line asked about: ' .. cmds[1])
+      eq(vim.b[bufnr].vcssign_blame_line, ' t - four lines ', 'and it answers')
+    end),
+  },
+  {
+    name = 'a commit retires the cached answer, because the baseline moved',
+    fn = guarded(function()
+      enable_blame()
+      local dir = helpers.git_repo('blame-stamp')
+      helpers.write(dir .. '/base.txt', 'alpha\n')
+      helpers.sh({ 'git', '-C', dir, 'add', '-A' })
+      helpers.sh({ 'git', '-C', dir, 'commit', '-qm', 'first' })
+      -- A worktree line nobody has committed yet.
+      helpers.write(dir .. '/base.txt', 'alpha\nbeta\n')
+      local bufnr = open_attached(dir .. '/base.txt')
+      move_to(bufnr, 2)
+      helpers.wait_for(function()
+        return vim.b[bufnr].vcssign_blame_line == ' Not Committed Yet '
+      end, 'the not-committed annotation')
+
+      -- The buffer's text does not move: only the store does, so the
+      -- `changedtick` in the cache key cannot see this (08 P1-3).
+      helpers.sh({ 'git', '-C', dir, 'add', '-A' })
+      helpers.sh({ 'git', '-C', dir, 'commit', '-qm', 'second' })
+      local calls = count_blames(function()
+        blame.render(bufnr)
+        helpers.wait_for(function()
+          return vim.b[bufnr].vcssign_blame_line == ' t - second '
+        end, 'the committed annotation')
+      end)
+      eq(calls, 1, 'the answer was fetched again instead of being trusted')
     end),
   },
   {

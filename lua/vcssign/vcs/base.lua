@@ -195,6 +195,27 @@ function M.stat_key(path)
   )
 end
 
+--- The adapter's baseline fingerprint, or `nil` when it cannot answer.
+---
+--- The optional `baseline_stamp` hook is pcall'd **here** and nowhere else: an
+--- adapter that raises must degrade to "no fingerprint", and every caller (the
+--- render short-circuit, the blame cache) wants the same answer to the question
+--- "did the store move".  `nil` always means "cannot tell", never "unchanged".
+---@param system vcssign.VcsSystem
+---@param root string
+---@return string?
+function M.stamp(system, root)
+  local fn = system and system.baseline_stamp
+  if not fn then
+    return nil
+  end
+  local ok, stamp = pcall(fn, root)
+  if ok and type(stamp) == 'string' then
+    return stamp
+  end
+  return nil
+end
+
 --- Directory to run VCS commands in for `path`: the path itself when it is an
 --- existing directory, its parent otherwise (buffer names are files).
 ---@param path string
