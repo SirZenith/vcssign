@@ -114,6 +114,26 @@ local function count_probes(fn)
   return calls
 end
 
+--- Count how many subprocesses `fn` spawns.  No filtering, unlike
+--- `count_probes`: this is the "costs nothing" assertion of the render
+--- short-circuit (08 P0-4), where one stray `show` already fails it.
+---@param fn fun()
+---@return integer
+local function count_procs(fn)
+  local real_run = exec.run
+  local calls = 0
+  exec.run = function(cmd, opts, cb)
+    calls = calls + 1
+    return real_run(cmd, opts, cb)
+  end
+  local ok, err = pcall(fn)
+  exec.run = real_run
+  if not ok then
+    error(err, 0)
+  end
+  return calls
+end
+
 return {
   {
     name = 'attach draws a sign on the modified line',
@@ -574,4 +594,93 @@ return {
       vim.fn.delete(dir, 'rf')
     end),
   },
+
+  -- ▏ the render short-circuit (08 P0-4) ──────────────────────────────────────
+
+  {
+    name = 'an edit with no disk change spawns nothing to re-render',
+    fn = guarded(function()
+      -- The baseline is answered by a stat of the repository metadata, not by
+      -- `show`, so a buffer with a modified line still needs no subprocess to
+      -- redraw: the fingerprint (`changedtick` + baseline stamp) says only the
+      -- buffer half moved.
+      local dir = helpers.git_repo('attach-short-circuit-edit')
+      helpers.write(dir .. '/base.txt', 'base\n')
+      local bufnr = open(dir .. '/base.txt')
+      attach_now(bufnr)
+      eq(#attach.hunks(bufnr), 0, 'a clean file has no hunks')
+
+      local procs = count_procs(function()
+        api.nvim_buf_set_lines(bufnr, 1, 1, false, { 'added' })
+        helpers.wait_for(function()
+          return #attach.hunks(bufnr) == 1
+        end, 'the debounced render to land')
+      end)
+      eq(procs, 0, 'the baseline did not move, so nothing may be spawned')
+      eq(attach.hunks(bufnr)[1].added.start, 2)
+      eq(signs.sign_count(bufnr), 1, 'and the sign is drawn')
+    end),
+  },
+
+  {
+    name = 'the focus sweep skips a baseline that did not move',
+    fn = guarded(function()
+      local dir = helpers.git_repo('attach-short-circuit-sweep')
+      helpers.write(dir .. '/base.txt', 'base\nnew\n')
+      local bufnr = open(dir .. '/base.txt')
+      attach_now(bufnr)
+      eq(#attach.hunks(bufnr), 1)
+
+      local procs = count_procs(function()
+        attach.refresh_all()
+      end)
+      eq(procs, 0, 'FocusGained with nothing changed re-reads no baseline')
+      eq(#attach.hunks(bufnr), 1, 'and the hunks we had are still the ones we have')
+      eq(signs.sign_count(bufnr), 1)
+    end),
+  },
+
+  {
+    name = 'the focus sweep re-reads a baseline the index moved under',
+    fn = guarded(function()
+      -- The whole reason the sweep exists: another program stages the change.
+      local dir = helpers.git_repo('attach-short-circuit-staged')
+      helpers.write(dir .. '/base.txt', 'base\nnew\n')
+      local bufnr = open(dir .. '/base.txt')
+      local st = attach_now(bufnr)
+      eq(#st.hunks, 1)
+      eq(#st.hunks_staged, 0)
+
+      helpers.sh({ 'git', '-C', dir, 'add', 'base.txt' })
+      local procs = count_procs(function()
+        attach.refresh_all()
+      end)
+      ok(procs > 0, 'a moved index is re-read')
+      helpers.wait_for(function()
+        return #st.hunks == 0 and #st.hunks_staged == 1
+      end, 'the staged layer to appear')
+      eq(signs.sign_count(bufnr), 0, 'the worktree layer is empty')
+      eq(signs.sign_count(bufnr, true), 1, 'and the staged one is not')
+    end),
+  },
+
+  {
+    name = 'the short-circuit still redraws when an option it read changes',
+    fn = guarded(function()
+      local dir = helpers.git_repo('attach-short-circuit-config')
+      helpers.write(dir .. '/base.txt', 'base\nnew\n')
+      local bufnr = open(dir .. '/base.txt')
+      attach_now(bufnr)
+      eq(vim.trim(rows(bufnr)[1].sign_text or ''), '▎', 'the default sign text')
+
+      -- `config.setup` replaces the table instead of mutating it, so the render
+      -- fingerprint sees a different `signs`/`signcolumn`.  Without that half of
+      -- the key, this would be the one way to freeze the signs for good.
+      config.setup({ signcolumn = false, signs = { numhl = true } })
+      attach.refresh_all()
+      eq(rows(bufnr)[1].sign_text, nil, 'the sign text is gone')
+      eq(rows(bufnr)[1].number_hl_group, 'VcssignAddNr', 'the number highlight is not')
+    end),
+  },
+
 }

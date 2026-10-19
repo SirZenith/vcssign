@@ -52,6 +52,10 @@ local M = {}
 ---@field base_text string?      nil = "no baseline is known" (render nothing)
 ---@field head_text string?      `HEAD` for the staged layer; nil = no staged layer
 ---@field buf_text string?
+---@field base_stamp string?   the adapter's baseline key when `base_text` was read
+---@field render_key? { tick: integer, base: string?, head: string?, shown: boolean, conf: string }
+---                             what the last render was made from (`M._render`'s
+---                             short-circuit, 08 P0-4); nil = never rendered
 ---@field hunks vcssign.Hunk[]             worktree layer (index -> buffer)
 ---@field hunks_staged vcssign.Hunk[]      staged layer (HEAD -> buffer), git only
 ---@field tracked boolean?
@@ -146,6 +150,37 @@ local function wants_staged(st)
   return st.rev == 'index' and st.system.capabilities.staged_signs == true
 end
 
+--- The adapter's free "did the baseline store move" key, or nil when this
+--- adapter has none (a VCS without `baseline_stamp` keeps re-reading).
+---@param st vcssign.AttachState
+---@return string?
+local function stamp_of(st)
+  local fn = st.system and st.system.baseline_stamp
+  if not fn then
+    return nil
+  end
+  -- Adapters are the extension point: one that raises must not wedge every
+  -- refresh, so a failure degrades to "no fingerprint" (re-read, never skip).
+  local ok, stamp = pcall(fn, st.root)
+  return (ok and type(stamp) == 'string') and stamp or nil
+end
+
+--- Whether the baseline `st` holds may be out of date now.
+---
+--- Every trigger that reaches the debounce means "ask again", not "the index
+--- moved": a buffer edit cannot touch the baseline at all, and an fs event or
+--- the probe behind `FocusGained` usually reports the same baseline as before.
+--- The fingerprint is what tells the two apart without a subprocess (08 P0-4).
+---
+--- Either side being unknown answers `true`: a redundant re-read costs a few
+--- tens of milliseconds, a stale sign is a bug.
+---@param st vcssign.AttachState
+---@return boolean
+local function baseline_moved(st)
+  local stamp = stamp_of(st)
+  return stamp == nil or st.base_stamp == nil or stamp ~= st.base_stamp
+end
+
 --- Read `HEAD` into `st.head_text` — the staged layer's baseline — then call
 --- `done()`.
 ---
@@ -185,6 +220,10 @@ local function load_base(st, done)
   -- moment), so a refresh cannot leave an older `head_text` behind: every
   -- branch below either sets it or leaves it nil.
   st.head_text = nil
+  -- Recorded *before* the read, not after: if the index moves while `show` is
+  -- in flight, the stamp has to stay the older one so the next trigger re-reads
+  -- instead of trusting text from a moment it never saw.
+  st.base_stamp = stamp_of(st)
   st.system.is_tracked(st.root, st.rel, function(terr, tracked)
     if M._bufs[st.bufnr] ~= st then
       return
@@ -226,11 +265,66 @@ local function load_base(st, done)
   end)
 end
 
+--- The config half of the render fingerprint.
+---
+--- `config.setup` replaces the whole table (`M.options = M.merge(...)`), so the
+--- identity of the three tables the render reads covers a re-`setup()`; the
+--- three flags are also compared by value, because the action layer flips
+--- `word_diff` *in place* (`actions.toggle_word_diff`) and identity would not
+--- see that.  A render-relevant option mutated in place inside `signs`/`diff`
+--- is not detected — nothing in the plugin does that.
+---@param conf vcssign.Config
+---@return string
+local function render_conf_key(conf)
+  return table.concat({
+    tostring(conf.signcolumn),
+    tostring(conf.word_diff),
+    tostring(conf.deleted_preview),
+    tostring(conf.signs),
+    tostring(conf.signs_staged),
+    tostring(conf.diff),
+  }, '|')
+end
+
 --- The only place the pipeline touches the buffer's contents.
+---
+--- `force` bypasses the short-circuit below.  The explicit entry points
+--- (`:Vcssign refresh`, `toggle`, an action that just changed the index) pass
+--- it: they must answer "the signs are current" even when this module cannot
+--- see a difference from the last render.
 ---@param st vcssign.AttachState
-function M._render(st)
+---@param force boolean?  redraw even when the last render's inputs still hold
+function M._render(st, force)
+  local conf_key = render_conf_key(config.get())
+  local tick = api.nvim_buf_get_changedtick(st.bufnr)
+  local key = st.render_key
+  if
+    not force
+    and key
+    and key.tick == tick
+    and key.base == st.base_text
+    and key.head == st.head_text
+    and key.shown == st.shown
+    and key.conf == conf_key
+  then
+    -- Nothing this render reads has moved: no `nvim_buf_get_lines`, no diff,
+    -- no extmark churn.  This is what makes a `FocusGained` sweep and a sweep
+    -- after an fs event cost nothing (08 P0-4).  `changedtick` is the buffer
+    -- half and it is bumped by every change, including `:e!`.
+    return
+  end
   local buf_lines = api.nvim_buf_get_lines(st.bufnr, 0, -1, false)
   st.buf_text = diff.join(buf_lines)
+  -- Recorded before the branches below, every one of which leaves the buffer
+  -- text, the two baselines and the switch in the state a later trigger skips
+  -- on: only a successful render may claim to be current.
+  st.render_key = {
+    tick = tick,
+    base = st.base_text,
+    head = st.head_text,
+    shown = st.shown,
+    conf = conf_key,
+  }
   st.hunks, st.hunks_staged = {}, {}
   if st.base_text == nil then
     clear_layers(st.bufnr)
@@ -342,8 +436,18 @@ function M.attach(bufnr)
       return config.get().update_debounce_ms
     end,
   }, function()
-    if M._bufs[bufnr] == st then
+    if M._bufs[bufnr] ~= st then
+      return
+    end
+    -- Two very different triggers share this debounce: a buffer edit, which
+    -- cannot have touched the baseline, and the repository saying "something
+    -- moved on disk" (an fs event, or the probe behind `FocusGained`).  Only
+    -- the second may need a new baseline, and only when the adapter's
+    -- fingerprint moved — the render short-circuit covers the rest (08 P0-4).
+    if baseline_moved(st) then
       M.refresh(bufnr)
+    else
+      M._render(st)
     end
   end)
 
@@ -421,6 +525,10 @@ function M.attach(bufnr)
 end
 
 --- Note that the buffer changed and schedule the debounced re-render.
+---
+--- This is deliberately the *cheap* answer: the callback decides whether a
+--- baseline re-read is needed at all (`baseline_moved`), so an edit made with
+--- the index untouched costs no subprocess (08 P0-4).
 ---@param bufnr integer
 function M.mark_dirty(bufnr)
   local st = M._bufs[bufnr]
@@ -514,7 +622,8 @@ function M.refresh(bufnr, cb)
       end
       return
     end
-    M._render(st)
+    -- Forced: this is the explicit "read it again and draw it" contract.
+    M._render(st, true)
     if cb then
       cb(nil)
     end
@@ -613,12 +722,23 @@ function M.buffers()
   return out
 end
 
---- Re-read every attached buffer's baseline.  This is the `FocusGained`
+--- Bring every attached buffer up to date.  This is the `FocusGained`
 --- fallback: the index may have moved while another program held the focus and
 --- Windows fs events are not guaranteed to arrive.
+---
+--- The sweep runs on every focus gain, so it must be free when nothing moved:
+--- a buffer whose baseline fingerprint is unchanged is only re-rendered, which
+--- the render short-circuit turns into a `changedtick` comparison (08 P0-4).
 function M.refresh_all()
   for _, bufnr in ipairs(M.buffers()) do
-    M.refresh(bufnr)
+    local st = M._bufs[bufnr]
+    -- A user adapter's `baseline_stamp` runs inside this loop and could detach,
+    -- so the state is looked up per buffer and may legitimately be gone.
+    if st and baseline_moved(st) then
+      M.refresh(bufnr)
+    elseif st then
+      M._render(st)
+    end
   end
 end
 
