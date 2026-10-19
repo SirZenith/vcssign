@@ -125,6 +125,43 @@ function M.metadata_dir(root)
   return gitdir_at(base.normalize(root))
 end
 
+--- A free change-detection key for git's baseline store (08 P0-4 / §7-6).
+---
+--- `show(rev, rel)` answers from exactly two places: the index (`rev ==
+--- 'index'`, D42) and `HEAD`.  So the key is the stat of both, plus
+--- `packed-refs` and the branch file `HEAD` names — a commit rewrites
+--- `refs/heads/main` and leaves `HEAD` byte-identical (`ref: refs/heads/main`),
+--- so a stat of `HEAD` alone would miss it.  A detached `HEAD` holds the object
+--- name itself, which its own stat covers.
+---
+--- Objects never change (a rewrite is a new object), so nothing under
+--- `objects/` needs looking at.  Returns nil when the git directory cannot be
+--- resolved: the caller then re-reads unconditionally, which is always correct.
+---@param root string
+---@return string?
+function M.baseline_stamp(root)
+  local dir = gitdir_at(base.normalize(root))
+  if not dir then
+    return nil
+  end
+  local head_path = vim.fs.joinpath(dir, 'HEAD')
+  local parts = {
+    base.stat_key(vim.fs.joinpath(dir, 'index')),
+    base.stat_key(head_path),
+    base.stat_key(vim.fs.joinpath(dir, 'packed-refs')),
+  }
+  local fd = vim.uv.fs_open(head_path, 'r', 438)
+  if fd then
+    local data = vim.uv.fs_read(fd, 512, 0)
+    vim.uv.fs_close(fd)
+    local ref = type(data) == 'string' and data:match('^ref:%s*(%S+)') or nil
+    if ref then
+      parts[#parts + 1] = base.stat_key(vim.fs.joinpath(dir, ref))
+    end
+  end
+  return table.concat(parts, '|')
+end
+
 --- Synchronous fallback.  Cheap, but not authoritative — `get_root_async` is.
 ---@param path string
 ---@return string?

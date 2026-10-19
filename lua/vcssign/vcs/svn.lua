@@ -56,6 +56,24 @@ function M.find_root_sync(path)
   return base.find_root_upwards(path, marker_at)
 end
 
+--- A free change-detection key for svn's baseline store (08 P0-4).
+---
+--- `svn cat -r BASE` resolves through `.svn/wc.db`, and every operation that
+--- can change what BASE holds — `update`, `switch`, `revert`, `add`, the
+--- post-commit bump — rewrites that SQLite file, so one stat covers the whole
+--- baseline.  (There is no index: D42's `index` baseline *is* BASE.)  A working
+--- copy without a `wc.db` answers nil, so the caller re-reads and lets svn
+--- report the damage.
+---@param root string
+---@return string?
+function M.baseline_stamp(root)
+  local db = vim.fs.joinpath(base.normalize(root), '.svn', 'wc.db')
+  local key = base.stat_key(db)
+  -- `stat_key` answers '-' for a missing entry; without wc.db there is no
+  -- baseline to speak of, so the caller re-reads and lets svn report it.
+  return key ~= '-' and key or nil
+end
+
 ---@type boolean
 local warned_no_show_item = false
 

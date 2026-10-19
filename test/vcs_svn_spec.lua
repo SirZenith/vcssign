@@ -264,4 +264,31 @@ return {
       eq(helpers.sh({ 'svn', 'diff', dir .. '/base.txt' }), '', 'and svn agrees it is clean')
     end,
   },
+  {
+    name = 'baseline_stamp is wc.db, which every BASE change rewrites',
+    fn = function()
+      local dir = repo_named('vcs-svn-stamp')
+      local before = svn.baseline_stamp(dir)
+      ok(type(before) == 'string', 'a working copy has a stamp')
+
+      -- An unstaged edit touches the file, not the metadata `svn cat -r BASE`
+      -- answers from, so the render short-circuit may keep the signs.
+      helpers.write(dir .. '/base.txt', 'edited\n')
+      eq(svn.baseline_stamp(dir), before, 'the worktree is not part of the key')
+
+      -- A commit moves BASE, and svn records that in the single SQLite file —
+      -- there is no per-file metadata to watch.
+      helpers.sh({ 'svn', 'commit', '-q', '-m', 'second', dir .. '/base.txt' })
+      ok(svn.baseline_stamp(dir) ~= before, 'a BASE change is')
+    end,
+  },
+  {
+    name = 'baseline_stamp refuses an answer outside a working copy',
+    fn = function()
+      local dir = vim.fn.tempname()
+      vim.fn.mkdir(dir, 'p')
+      eq(svn.baseline_stamp(dir), nil, 'no answer is better than a stale one')
+      vim.fn.delete(dir, 'rf')
+    end,
+  },
 }
