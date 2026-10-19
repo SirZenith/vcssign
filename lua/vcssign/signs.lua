@@ -150,9 +150,29 @@ local function link_staged(ty)
   end
 end
 
+--- Whether the groups are already defined.
+---
+--- A flag, not a lookup: `hlexists` reports a *cleared* group as existing
+--- (measured on 0.12.4), so it cannot answer "is there work left to do", and
+--- reading every group back with `nvim_get_hl` would cost what the definition
+--- costs.  What can remove the groups behind our back is a colorscheme, and that
+--- is exactly what `ColorScheme` is for: `autocmds.setup` calls back with
+--- `force` (08 P2-4).
+local defined = false
+
 --- Define every group with `default = true` so a user theme can override, and
---- so calling it twice (or after a colorscheme reload) is harmless.
-function M.define_highlights()
+--- so calling it after a colorscheme reload is harmless.
+---
+--- The work (~30 `nvim_set_hl`, plus `nvim_get_hl` on `Normal` and the worktree
+--- groups and the fade arithmetic) used to run on every attach — 0.17 ms each
+--- time for a set of groups that only a colorscheme change can move (08 P2-4).
+---@param force? boolean  define again even though `defined` says otherwise
+function M.define_highlights(force)
+  if defined and not force then
+    return
+  end
+  defined = true
+
   local function link(name, target)
     api.nvim_set_hl(0, name, { link = target, default = true })
   end
@@ -210,6 +230,15 @@ function M.sign_line(h)
   return nil
 end
 
+--- How many extmarks a single untracked hunk may write.
+---
+--- An untracked file is *one* hunk covering every line, and this layer writes
+--- one mark per line: a 5000-line new file meant 5000 extmarks (3.8 ms plus the
+--- memory that goes with it — 08 P2-1).  Past this many lines the block is
+--- uniform anyway, so the layer says the same thing ("the whole file is new")
+--- with two marks: the first line and the last one.
+local UNTRACKED_MARK_LIMIT = 2000
+
 --- Draw `hunks` into one namespace, as a full re-render of that layer.
 ---
 --- The namespace is cleared first: `place` is "this layer's whole picture",
@@ -222,12 +251,15 @@ function M.place(bufnr, hunks, opts)
   opts = opts or {}
   local staged = opts.staged == true
   local ns = M.namespace(staged)
+  -- One read of the config for the whole placement (08 P2-2: it used to be
+  -- eight `config.get()` calls, one per field).
+  local conf = config.get()
   -- The staged layer only exists for git, whose `signs_staged` has no
   -- numhl/linehl/culhl of its own; those always come from the worktree set.
-  local cs = (staged and config.get().signs_staged or config.get().signs) or {}
-  local show_text = config.get().signcolumn
-  local numhl = config.get().signs.numhl
-  local linehl = config.get().signs.linehl
+  local cs = (staged and conf.signs_staged or conf.signs) or {}
+  local show_text = conf.signcolumn
+  local numhl = conf.signs.numhl
+  local linehl = conf.signs.linehl
   local priority = opts.priority or M.PRIORITY
   local line_count = api.nvim_buf_line_count(bufnr)
 
@@ -266,7 +298,10 @@ function M.place(bufnr, hunks, opts)
 
   for _, h in ipairs(hunks or {}) do
     local ty = h.type
-    if ty == 'add' or ty == 'change' or ty == 'untracked' then
+    if ty == 'untracked' and h.added.count > UNTRACKED_MARK_LIMIT then
+      put(h.added.start, ty)
+      put(h.added.start + h.added.count - 1, ty)
+    elseif ty == 'add' or ty == 'change' or ty == 'untracked' then
       local n = h.added.count
       for i = 0, n - 1 do
         local line_ty = ty

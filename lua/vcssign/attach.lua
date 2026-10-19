@@ -467,8 +467,10 @@ function M._render(st, force)
     clear_layers(st.bufnr)
     return
   end
-  -- Both previews read the same baseline as the signs, so it is split once.
-  local base_lines = diff.split(diff.normalize(st.base_text))
+  -- The signs and both previews read the same baseline: normalise it once and
+  -- split it once (08 P2-3: `diff.normalize` used to run twice per render).
+  local base_text = diff.normalize(st.base_text)
+  local base_lines = diff.split(base_text)
   if st.untracked then
     -- One hunk covering the whole file; `signs.place` puts one sign per line.
     st.hunks = {
@@ -480,7 +482,7 @@ function M._render(st, force)
     }
   else
     -- `diff.run` reads its defaults from `config.diff`; no opts needed here.
-    st.hunks = diff.run(diff.normalize(st.base_text), st.buf_text)
+    st.hunks = diff.run(base_text, st.buf_text)
     if st.head_text ~= nil then
       -- The staged layer (D40): what `HEAD`..buffer adds on top of what the
       -- worktree layer already paints.  `filter_common` drops the regions the

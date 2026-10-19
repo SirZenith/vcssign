@@ -72,6 +72,7 @@ local DEFAULT_SPECS = {
   'hunk_spec',
   'diff_spec',
   'signs_spec',
+  'util_spec',
   'doc_spec',
   'autocmds_spec',
   'attach_spec',

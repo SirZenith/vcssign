@@ -14,6 +14,7 @@ local attach = require('vcssign.attach')
 local config = require('vcssign.config')
 local log = require('vcssign.log')
 local manager = require('vcssign.repo_manager')
+local signs = require('vcssign.signs')
 
 local M = {}
 
@@ -130,6 +131,12 @@ function M.setup()
     for _, repo in ipairs(manager.all()) do
       repo:refresh()
     end
+  end)
+
+  -- A colorscheme change wipes the highlight groups; the definitions live in
+  -- the signs layer (08 P2-4) and are otherwise done once, at the first attach.
+  subscribe('ColorScheme', function()
+    signs.define_highlights(true)
   end)
 
   -- Nothing may outlive the session: forget the buffers and dispose of every
