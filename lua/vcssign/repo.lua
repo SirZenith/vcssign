@@ -8,6 +8,11 @@
 --- what it needs, when it needs it (D38).  That is what makes "10 rapid writes
 --- produce at most 2 probes" hold, and what keeps concurrent refreshes
 --- impossible.
+---
+--- What *is* cached here is the answer to "which files did the filesystem say
+--- moved": filesystem events name a path wherever libuv gives one, and that set
+--- travels with the `on_update` announcement (`changed_paths`, 08 P0-3), so the
+--- sign layer can refresh the affected buffers instead of all of them.
 --- See impl/init/02-repo-runtime.md §3.
 local config = require('vcssign.config')
 local debounce = require('vcssign.debounce')
@@ -47,6 +52,10 @@ M.__index = M
 ---@field fs_handles table<string, uv.uv_fs_event_t>
 ---@field fs_handle_pool uv.uv_fs_event_t[]
 ---@field watch_paths table<string, true>
+---@field changed_paths table<string, true>  absolute paths a filesystem event named since the
+---                                         last announcement; replaced, never reused (08 P0-3)
+---@field changed_all boolean  an event moved something that names no file (index / wc.db):
+---                            every baseline may be stale
 
 ---@param path string
 ---@return boolean
@@ -78,6 +87,8 @@ function M.new(system, root)
   self.fs_handles = {}
   self.fs_handle_pool = {}
   self.watch_paths = {}
+  self.changed_paths = {}
+  self.changed_all = false
   self._waiters = {}
   self._on_update = {}
   self._on_error = {}
@@ -94,7 +105,14 @@ end
 
 -- ▏ subscriptions ────────────────────────────────────────────────────────────
 
----@param fn fun(repo: vcssign.Repo)
+--- A successful liveness probe announcement.
+---
+--- The second argument is the changed-path channel (08 P0-3): a set of absolute
+--- paths for "these files moved", `nil` for "something moved that names no file
+--- — assume every baseline", and an empty set for "the probe found nothing
+--- moved".  Without that last case every `FocusGained` would re-run the whole
+--- pipeline for every buffer of the repository for no reason.
+---@param fn fun(repo: vcssign.Repo, changed: table<string, true>?)
 ---@return fun() unsubscribe
 function M:on_update(fn)
   return subscribe(self._on_update, fn)
@@ -246,8 +264,47 @@ function M:_on_alive(_root)
   self.last_error = nil
   self:_cancel_retry()
   self.has_loaded = true
+  local changed = self:_take_changes()
   log.debug('%s: alive', self.root)
-  util.emit(self._on_update, self)
+  util.emit(self._on_update, self, changed)
+end
+
+--- Remember what a filesystem event said moved, for the next announcement.
+---
+--- Only filesystem events feed this: `mark_dirty` / `refresh` mean "ask again",
+--- which is a request, not evidence of a change.
+---@private
+---@param paths string[]?  absolute paths the event named, or nil when it named
+---                        nothing usable (then every baseline may have moved)
+function M:_record_change(paths)
+  if not paths then
+    self.changed_all = true
+    return
+  end
+  for _, path in ipairs(paths) do
+    self.changed_paths[base.normalize(path)] = true
+  end
+end
+
+--- Snapshot the recorded changes and start a fresh set.
+---
+--- Swapped rather than cleared so a subscriber may keep the table it was
+--- handed, and an event arriving mid-announcement lands in the next round.
+---@private
+---@return table<string, true>?  paths, nil for "anything", {} for "nothing"
+function M:_take_changes()
+  -- Written out rather than `self.changed_all and nil or ...`: `and nil` is
+  -- falsy, so that idiom can never answer nil and would silently turn "every
+  -- baseline may have moved" into "nothing moved".
+  local changed
+  if self.changed_all then
+    changed = nil
+  else
+    changed = self.changed_paths
+  end
+  self.changed_all = false
+  self.changed_paths = {}
+  return changed
 end
 
 ---@private
@@ -470,6 +527,27 @@ function M:_on_fs_event(watch_path, err, filename, events)
     log.debug('repository gone: %s', self.root)
     return self:_mark_deleted()
   end
+  -- Record *what* moved before deciding anything else: the announcement after
+  -- the next probe is the only channel that tells a buffer whether it has to
+  -- do any work at all (08 P0-3).
+  local changed
+  if watch_path == self.metadata_path then
+    -- The index / wc.db is one store for the whole repository: a change there
+    -- can move the baseline of any file, so it names no path.
+    changed = nil
+  elseif filename and filename ~= '' then
+    local path = vim.fs.normalize(vim.fs.joinpath(self.root, filename))
+    local stat = uv.fs_stat(path)
+    -- A named *file* can only concern itself.  Anything else names no file, so
+    -- every baseline stays suspect: the marker (`.git` / `.svn`), a directory
+    -- whose contents libuv reports as the directory itself (verified: an edit
+    -- inside `.git` fires the root watch with `filename = '.git'`), or a path
+    -- that is already gone.
+    if stat and stat.type == 'file' then
+      changed = { path }
+    end
+  end
+  self:_record_change(changed)
   -- A probe can spawn a VCS command that rewrites `.git/index`; an event caused
   -- by our own command must not queue another probe.  (`--no-optional-locks`
   -- already prevents the rewrite in practice — this is the belt to that pair of

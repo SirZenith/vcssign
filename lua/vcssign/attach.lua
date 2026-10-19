@@ -491,8 +491,20 @@ function M.attach(bufnr)
     keymap.attach(bufnr)
     blame.attach(bufnr)
     st.unsubscribe = {
-      repo:on_update(function()
-        M.mark_dirty(bufnr)
+      repo:on_update(function(_, changed)
+        -- `changed` is the channel the repository announces what the
+        -- filesystem said moved (08 P0-3): a path set when the events named
+        -- files, `nil` when something moved that names no file (the index /
+        -- wc.db — every baseline may be stale), and empty when the probe found
+        -- nothing moved at all (a `FocusGained` sweep, an explicit refresh).
+        -- That last case is why this is not an unconditional `mark_dirty`.
+        -- `st.path` and the recorded keys are both `base.normalize`d through
+        -- the same root, so they compare directly: `:p` resolves the on-disk
+        -- casing even when the buffer was opened with a lowercase drive letter
+        -- (checked on Windows), so no `path_key` folding is needed here.
+        if not changed or changed[st.path] then
+          M.mark_dirty(bufnr)
+        end
       end),
       repo:on_error(function(e)
         log.debug('buffer %d: %s', bufnr, e)
