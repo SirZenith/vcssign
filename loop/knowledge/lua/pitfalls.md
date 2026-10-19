@@ -115,3 +115,26 @@
    `Repo:refresh(cb)` 调用方永久挂起（探针复现：`waiter called=false`）。
    现在 `_mark_deleted` 会先以 `repository deleted: <root>` 释放在排的 waiter，
    再广播 `on_delete`（顺序很重要：manager 在后者里才 `dispose` 并清空列表）。
+
+---
+
+## M7 补记（`08` §2.5）：两个「静默降级」的 Lua 写法
+
+- **`x and nil or y` 永远得不到 `nil`**（`and nil` 是假值，`or` 于是必取 `y`）。M7 步骤 2 用它表达
+  「全员失效还是只指认一个文件」，结果「全员」被静默降级成「一个文件」——四个新断言里两个当场超时。
+  改成显式 `if`：
+
+  ```lua
+  -- 错：changed 永远不是 nil
+  local changed = self.changed_all and nil or self.changed_paths
+  -- 对
+  local changed
+  if self.changed_all then
+    changed = nil
+  else
+    changed = self.changed_paths
+  end
+  ```
+
+- **局部变量遮蔽断言函数**：spec 里 `local ok, err = pcall(fn)` 会遮蔽全局 `ok(...)`，报错形式是
+  `attempt to call local 'ok' (a boolean value)`（不是断言失败，是「用例自己崩了」）。改名（`ran`）即可。

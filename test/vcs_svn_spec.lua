@@ -39,6 +39,17 @@ return {
     end,
   },
   {
+    name = 'metadata_dir names .svn, and the watch there needs no recursion',
+    fn = function()
+      -- Every baseline-moving operation rewrites `.svn/wc.db`; the pristine
+      -- store under `.svn/pristine/` is written by the same operations but no
+      -- baseline read looks at it, so recursing buys nothing but events
+      -- (perf §3.5 S1).
+      eq(svn.metadata_dir(repo), vim.fs.joinpath(vim.fs.normalize(repo), '.svn'))
+      eq(svn.metadata_recursive, false)
+    end,
+  },
+  {
     name = 'find_root_sync resolves a file path to its working copy root',
     fn = function()
       eq(svn.find_root_sync(repo .. '/base.txt'), repo)
@@ -262,6 +273,33 @@ return {
       eq(err, nil)
       eq(vim.fn.readfile(dir .. '/base.txt'), { 'base' })
       eq(helpers.sh({ 'svn', 'diff', dir .. '/base.txt' }), '', 'and svn agrees it is clean')
+    end,
+  },
+  {
+    name = 'baseline_stamp is wc.db, which every BASE change rewrites',
+    fn = function()
+      local dir = repo_named('vcs-svn-stamp')
+      local before = svn.baseline_stamp(dir)
+      ok(type(before) == 'string', 'a working copy has a stamp')
+
+      -- An unstaged edit touches the file, not the metadata `svn cat -r BASE`
+      -- answers from, so the render short-circuit may keep the signs.
+      helpers.write(dir .. '/base.txt', 'edited\n')
+      eq(svn.baseline_stamp(dir), before, 'the worktree is not part of the key')
+
+      -- A commit moves BASE, and svn records that in the single SQLite file —
+      -- there is no per-file metadata to watch.
+      helpers.sh({ 'svn', 'commit', '-q', '-m', 'second', dir .. '/base.txt' })
+      ok(svn.baseline_stamp(dir) ~= before, 'a BASE change is')
+    end,
+  },
+  {
+    name = 'baseline_stamp refuses an answer outside a working copy',
+    fn = function()
+      local dir = vim.fn.tempname()
+      vim.fn.mkdir(dir, 'p')
+      eq(svn.baseline_stamp(dir), nil, 'no answer is better than a stale one')
+      vim.fn.delete(dir, 'rf')
     end,
   },
 }

@@ -21,6 +21,7 @@
 ---     the only one a fresh repository can serve.
 local exec = require('vcssign.exec')
 local base = require('vcssign.vcs.base')
+local config = require('vcssign.config')
 
 local M = {}
 
@@ -125,6 +126,43 @@ function M.metadata_dir(root)
   return gitdir_at(base.normalize(root))
 end
 
+--- A free change-detection key for git's baseline store (perf P0-4 / §7-6).
+---
+--- `show(rev, rel)` answers from exactly two places: the index (`rev ==
+--- 'index'`, D42) and `HEAD`.  So the key is the stat of both, plus
+--- `packed-refs` and the branch file `HEAD` names — a commit rewrites
+--- `refs/heads/main` and leaves `HEAD` byte-identical (`ref: refs/heads/main`),
+--- so a stat of `HEAD` alone would miss it.  A detached `HEAD` holds the object
+--- name itself, which its own stat covers.
+---
+--- Objects never change (a rewrite is a new object), so nothing under
+--- `objects/` needs looking at.  Returns nil when the git directory cannot be
+--- resolved: the caller then re-reads unconditionally, which is always correct.
+---@param root string
+---@return string?
+function M.baseline_stamp(root)
+  local dir = gitdir_at(base.normalize(root))
+  if not dir then
+    return nil
+  end
+  local head_path = vim.fs.joinpath(dir, 'HEAD')
+  local parts = {
+    base.stat_key(vim.fs.joinpath(dir, 'index')),
+    base.stat_key(head_path),
+    base.stat_key(vim.fs.joinpath(dir, 'packed-refs')),
+  }
+  local fd = vim.uv.fs_open(head_path, 'r', 438)
+  if fd then
+    local data = vim.uv.fs_read(fd, 512, 0)
+    vim.uv.fs_close(fd)
+    local ref = type(data) == 'string' and data:match('^ref:%s*(%S+)') or nil
+    if ref then
+      parts[#parts + 1] = base.stat_key(vim.fs.joinpath(dir, ref))
+    end
+  end
+  return table.concat(parts, '|')
+end
+
 --- Synchronous fallback.  Cheap, but not authoritative — `get_root_async` is.
 ---@param path string
 ---@return string?
@@ -171,6 +209,213 @@ function M.show(root, rev, rel, cb)
   end)
 end
 
+-- ▏ one process for every blob read (M7 P0-2) ───────────────────────────────
+
+--- A `git cat-file --batch` child, kept for as long as its repository lives.
+---
+--- `show` costs one process per file — some 45 ms of start-up for a reply of a
+--- few kilobytes (perf §2.1) — and this protocol exists to avoid exactly that:
+--- `<rev>:<path>` in, `<sha> <type> <size>` + content out.  The byte count in
+--- the header delimits a reply, so the reader never has to guess where a file
+--- ends, and any content (binary included) parses as long as the count is right.
+---
+--- Lifetime belongs to the caller: `Repo:read_blob` owns one per repository and
+--- closes it on dispose.  A reader that dies answers everything in flight with
+--- an error and stays closed; the next caller spawns a fresh one, which is why
+--- `Repo:read_blob` retries a failed read through the plain `show` command.
+local CatFile = {}
+CatFile.__index = CatFile
+
+---@class vcssign.BlobReader
+---@field closed boolean  true once the child is gone or was closed
+---@field read fun(self: vcssign.BlobReader, rev: string, rel: string, cb: fun(err: string?, text: string?))
+
+---@param root string
+---@return vcssign.BlobReader
+function CatFile.new(root)
+  local self = setmetatable({
+    root = root,
+    queue = {},
+    buf = '',
+    stderr = '',
+    closed = false,
+    timer = nil,
+  }, CatFile)
+  local proc, err = exec.stream(build({ 'cat-file', '--batch' }), {
+    cwd = root,
+    on_stderr = function(data)
+      self.stderr = self.stderr .. data
+    end,
+  }, function(_, data)
+    if data and data ~= '' then
+      self:_receive(data)
+    end
+  end, function(res)
+    self:_died(res)
+  end)
+  if not proc then
+    -- A missing or unrunnable `git` degrades to the per-call command, not to an
+    -- error nobody sees (see `Repo:read_blob`).
+    self.closed = true
+    self.stderr = err or 'could not start'
+    return self
+  end
+  self.proc = proc
+  return self
+end
+
+---@private
+function CatFile:_arm()
+  self:_disarm()
+  local timeout = config.get().exec_timeout_ms
+  if not timeout or timeout <= 0 then
+    return
+  end
+  local timer = vim.uv.new_timer()
+  if not timer then
+    return
+  end
+  self.timer = timer
+  timer:start(timeout, 0, function()
+    -- A reader that stops answering would otherwise wedge every refresh of this
+    -- repository; killing it turns the stall into the error path, which retries
+    -- through `show`.  `vim.schedule` because the timer callback is a fast event.
+    vim.schedule(function()
+      self:timer_expired(timeout)
+    end)
+  end)
+end
+
+---@private
+function CatFile:_disarm()
+  local timer = self.timer
+  self.timer = nil
+  if timer and not timer:is_closing() then
+    timer:stop()
+    timer:close()
+  end
+end
+
+---@private
+---@param timeout integer
+function CatFile:timer_expired(timeout)
+  if self.closed then
+    return
+  end
+  self.closed = true
+  self:_fail_all(string.format('git cat-file --batch did not answer within %dms', timeout))
+  if self.proc then
+    pcall(function()
+      self.proc:kill('sigterm')
+    end)
+  end
+end
+
+---@private
+---@param reason string
+function CatFile:_fail_all(reason)
+  local queue = self.queue
+  self.queue = {}
+  self.buf = ''
+  self:_disarm()
+  for _, request in ipairs(queue) do
+    request.cb(reason)
+  end
+end
+
+---@private
+---@param res vcssign.ExecResult?
+function CatFile:_died(res)
+  if self.closed then
+    return
+  end
+  self.closed = true
+  local reason = self.stderr ~= '' and self.stderr or ('exit ' .. tostring(res and res.code))
+  self:_fail_all('git cat-file --batch exited: ' .. vim.trim(reason))
+end
+
+---@private
+---@param data string
+function CatFile:_receive(data)
+  self.buf = self.buf .. data
+  while #self.queue > 0 do
+    local nl = self.buf:find('\n', 1, true)
+    if not nl then
+      return
+    end
+    local header = self.buf:sub(1, nl - 1)
+    local size = tonumber(header:match('^%x+ %a+ (%d+)$'))
+    if not size then
+      -- `<object> missing` / `<object> ambiguous`: a real answer to the request,
+      -- not a protocol error.
+      local request = table.remove(self.queue, 1)
+      self.buf = self.buf:sub(nl + 1)
+      request.cb(header)
+      if #self.queue == 0 then
+        self:_disarm()
+      end
+    else
+      local from = nl + 1
+      if #self.buf - from + 1 < size + 1 then
+        return -- the content and its trailing newline have not arrived yet
+      end
+      local text = self.buf:sub(from, from + size - 1)
+      self.buf = self.buf:sub(from + size + 1)
+      local request = table.remove(self.queue, 1)
+      -- `show` (through `exec.run`, `text = true`) hands the caller CRLF-free
+      -- text, so the reader must too: otherwise the same file would produce two
+      -- different baselines depending on which path read it.
+      request.cb(nil, (text:gsub('\r\n', '\n')))
+      if #self.queue == 0 then
+        self:_disarm()
+      end
+    end
+  end
+end
+
+--- Read one blob through the persistent child.
+---@param rev string  a revision name, or 'index' for the staged blob
+---@param rel string  path relative to the repository root
+---@param cb fun(err: string?, text: string?)
+function CatFile:read(rev, rel, cb)
+  if self.closed then
+    return cb('git cat-file --batch is not running: ' .. self.stderr)
+  end
+  local object = rev == 'index' and (':' .. rel) or (rev .. ':' .. rel)
+  self.queue[#self.queue + 1] = { cb = cb }
+  if #self.queue == 1 then
+    self:_arm()
+  end
+  -- A failed write means the child is gone; its exit callback (or the timer)
+  -- answers the request, so there is nothing to do here.
+  pcall(self.proc.write, self.proc, object .. '\n')
+end
+
+--- Shut the child down.
+---
+--- Requests still in flight are answered with an error (never dropped): whoever
+--- asked retries through `show`, which is the path without a reader.
+function CatFile:close()
+  if self.closed then
+    return
+  end
+  self.closed = true
+  self:_fail_all('git cat-file --batch closed')
+  if self.proc then
+    pcall(function()
+      self.proc:kill('sigterm')
+    end)
+  end
+end
+
+--- Open a reader for `root` (perf P0-2).  Never fails: an unrunnable child comes
+--- back as a reader whose every read errors, and the caller falls back.
+---@param root string
+---@return vcssign.BlobReader
+function M.open_blob_reader(root)
+  return CatFile.new(root)
+end
+
 --- Whether `rel` is under version control.
 ---
 --- `git ls-files --error-unmatch` exits 1 with `error: pathspec '<rel>' did not
@@ -192,6 +437,91 @@ function M.is_tracked(root, rel, cb)
         return cb(err)
       end
       cb(nil, true)
+    end
+  )
+end
+
+--- Parse `git status --porcelain=v2 -z` output into
+--- `{[abspath] = vcssign.FileStatus}` (perf P0-1).
+---
+--- Record shapes with `-z --no-renames`: `1 <XY> <sub> <mH> <mI> <mW> <hH> <hI>
+--- <path>`, `u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>`, `? <path>`
+--- and `! <path>`.  Records are NUL-separated, so a path may hold spaces and
+--- even newlines with no quoting to undo — and it is always the *last* field,
+--- which is why it is matched as the tail instead of by splitting on blanks.
+---
+--- `X` is the index against `HEAD` (a staged change), `Y` the worktree against
+--- the index.  `.` means "same", so `1 .M …` is a worktree edit with nothing
+--- staged and `1 M. …` its mirror.  Unmerged (`u`) is reported as both, which is
+--- the conservative answer: a resolution touches both layers.
+---
+--- `!` records are ignored paths.  In `traditional` mode git collapses an
+--- ignored directory to one record with a trailing `/`, hence `dir` — walking
+--- those trees file by file would cost more than the reads it saves, and the
+--- only consumer is the "is this path ignored" question (`attach` draws nothing
+--- for such a path, D49).
+---@param stdout string
+---@param root string
+---@return table<string, vcssign.FileStatus>
+function M.parse_status(stdout, root)
+  local entries = {}
+  local function add(path, status)
+    if not path or path == '' then
+      return
+    end
+    if path:sub(-1) == '/' then
+      path = path:sub(1, -2)
+      status.dir = true
+    end
+    entries[base.normalize(vim.fs.joinpath(root, path))] = status
+  end
+  for record in stdout:gmatch('[^%z]+') do
+    local kind = record:sub(1, 1)
+    if kind == '1' then
+      local xy, path = record:match('^1 (%S%S) %S+ %S+ %S+ %S+ %S+ %S+ (.+)$')
+      if xy then
+        add(path, { tracked = true, staged = xy:sub(1, 1) ~= '.', worktree = xy:sub(2, 2) ~= '.' })
+      end
+    elseif kind == 'u' then
+      local path = record:match('^u %S%S %S+ %S+ %S+ %S+ %S+ %S+ %S+ %S+ (.+)$')
+      add(path, { tracked = true, staged = true, worktree = true })
+    elseif kind == '?' or kind == '!' then
+      add(record:match('^[^ ] ([^%z]+)$'), {
+        tracked = false,
+        staged = false,
+        worktree = false,
+        ignored = kind == '!',
+      })
+    end
+  end
+  return entries
+end
+
+--- One status query for the whole repository (perf P0-1).
+---
+--- `--untracked-files=all` because the per-file question it replaces was "is
+--- *this* path tracked", which a collapsed `dir/` record cannot answer;
+--- `--ignored=traditional` adds the ignored records back so that an ignored path
+--- can be told apart from an untracked one — it gets no signs at all (D49),
+--- while an untracked file still gets the whole-file layer (D42).
+---@param root string
+---@param cb fun(err: string?, entries: table<string, vcssign.FileStatus>?)
+function M.status(root, cb)
+  exec.run(
+    build({
+      'status',
+      '--porcelain=v2',
+      '-z',
+      '--untracked-files=all',
+      '--ignored=traditional',
+      '--no-renames',
+    }),
+    { cwd = root },
+    function(err, res)
+      if err then
+        return cb(err)
+      end
+      cb(nil, M.parse_status(res.stdout, root))
     end
   )
 end

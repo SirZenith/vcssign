@@ -68,6 +68,71 @@ function M.eq(actual, expected, msg)
   end
 end
 
+--- Every subprocess spawned while `fn` runs, as argv strings.
+---
+--- The budget assertions (perf §6 / A4) are about *processes*, and a process can
+--- start through either door: `exec.run` for a one-shot command, `exec.stream`
+--- for the resident `cat-file --batch` reader (M7 4b).  Counting only the first
+--- would read "one process per repository" as zero.
+---
+--- Nothing is filtered: a budget that only counts the commands it expects would
+--- be blind to exactly the command a regression adds.
+---@param fn function
+---@return string[]
+---@param fn function
+---@param only_cwd? string  count only spawns made inside this directory tree
+---@return string[]
+function M.spawns(fn, only_cwd)
+  local exec = require('vcssign.exec')
+  local real_run, real_stream = exec.run, exec.stream
+  local calls = {}
+  -- A budget is about ONE repository. Every other repository in the same
+  -- Neovim (`attach_spec` leaves a handful behind) keeps probing while this
+  -- case runs, so an unscoped count measures the suite rather than the change:
+  -- `-p` ordering used to turn a 3-process attach into 4 or 5.
+  local scope = only_cwd and vim.fs.normalize(vim.fn.fnamemodify(only_cwd, ':p')) or nil
+  local function record(cmd, opts)
+    if scope then
+      local cwd = opts and opts.cwd and vim.fs.normalize(vim.fn.fnamemodify(opts.cwd, ':p'))
+      if not cwd or (cwd ~= scope and cwd:sub(1, #scope + 1) ~= scope .. '/') then
+        return
+      end
+    end
+    calls[#calls + 1] = table.concat(cmd, ' ')
+  end
+  exec.run = function(cmd, opts, cb)
+    record(cmd, opts)
+    return real_run(cmd, opts, cb)
+  end
+  exec.stream = function(cmd, opts, on_stdout, on_exit)
+    record(cmd, opts)
+    return real_stream(cmd, opts, on_stdout, on_exit)
+  end
+  local ok, err = pcall(fn)
+  exec.run, exec.stream = real_run, real_stream
+  if not ok then
+    error(err, 0)
+  end
+  return calls
+end
+
+--- The commands in `calls` whose argv runs `subcommand`, e.g. `'show'`.
+---
+--- Matched as a whole word between spaces, so `'cat-file'` matches the reader and
+--- `'cat'` does not (a substring test would confuse the two).
+---@param calls string[]
+---@param subcommand string
+---@return string[]
+function M.running(calls, subcommand)
+  local found = {}
+  for _, cmd in ipairs(calls) do
+    if cmd:find(' ' .. subcommand .. ' ', 1, true) then
+      found[#found + 1] = cmd
+    end
+  end
+  return found
+end
+
 --- Watch how many refresh passes a repository starts.
 ---
 --- `Repo` stopped caching status in M6 (D38), so "the refresh landed" can no
@@ -283,6 +348,76 @@ function M.capture_notify(fn, is_done)
     error(err, 0)
   end
   return captured
+end
+
+--- `capture_notify`, but waiting for the message a case is about.
+---
+--- Waiting for "any notification" and then asserting on `seen[1]` makes the
+--- assertion depend on *which* asynchronous chain answers first.  A case is not
+--- alone in the process: a repository an earlier case left behind can still emit
+--- a warning of its own (its watcher fires, its probe fails), and that warning
+--- would win the race and be asserted on instead of the message the command just
+--- produced — a flake whose failure signature is `expected: 2, actual: 4`:
+--- INFO asserted, ERROR arrived.
+---
+--- The needle is the *subject* of the case, not a filter for unexpected
+--- messages: the other captured entries belong to other cases and stay
+--- unasserted here.  What the notification layer promises is one message per
+--- command, naming what happened, so that is what gets waited for.
+---@param fn function
+---@param needle string  substring the wanted message must contain
+---@return vcssign.CapturedNotify
+function M.capture_notify_one(fn, needle)
+  ---@param captured vcssign.CapturedNotify[]
+  ---@return vcssign.CapturedNotify?
+  local function match(captured)
+    for _, notification in ipairs(captured) do
+      if notification.message:find(needle, 1, true) then
+        return notification
+      end
+    end
+    return nil
+  end
+
+  local captured = M.capture_notify(fn, function(list)
+    return match(list) ~= nil
+  end)
+  local found = match(captured)
+  if not found then
+    -- Unreachable: the wait above only returns once something matched.
+    error('no notification mentions ' .. vim.inspect(needle), 2)
+  end
+  return found
+end
+
+--- The captured notifications whose message contains `needle`, in arrival order.
+---
+--- For the cases that expect *more than one* answer (two commands in one window,
+--- a warning followed by the real one): asserting on `captured[1]` / `[2]`
+--- would make the case depend on who else is answering.
+---@param captured vcssign.CapturedNotify[]
+---@param needle string
+---@return vcssign.CapturedNotify[]
+function M.select_notifications(captured, needle)
+  local found = {}
+  for _, notification in ipairs(captured) do
+    if notification.message:find(needle, 1, true) then
+      found[#found + 1] = notification
+    end
+  end
+  return found
+end
+
+--- The captured messages, for a failure that would otherwise only report a
+--- count (`expected 0, actual 1` says nothing about *what* arrived).
+---@param captured vcssign.CapturedNotify[]
+---@return string
+function M.describe_notifications(captured)
+  local lines = {}
+  for _, notification in ipairs(captured) do
+    lines[#lines + 1] = string.format('[%d] %s', notification.level, notification.message)
+  end
+  return table.concat(lines, '\n')
 end
 
 --- One rendered screen row of `win`, as a string.

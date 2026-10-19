@@ -163,3 +163,23 @@
 - headless 的 `:helptags` 会真的写 `tags` 文件：`doc_spec` 把它写到 `temp/_spec/` 的副本上（仓库里同时 `.gitignore` 了 `doc/tags`）。
 - 手写长文件在本机工具链下会被截断（一次 heredoc 超过约 7KB 时）：`doc/vcssign.txt` 实际踩到过（在 245 行处断句），
   最后是「先写、再按行号补齐」落地的；写文档时按小节分开写更稳。
+
+---
+
+## M7 补记（`08` §6.1）：进程预算就是回归 spec
+
+性能优化最容易被悄悄改回去的地方是「进程数」，所以它被固化成断言：`test/proc_budget_spec.lua` 给 git / svn
+各一套 `BUDGET`（attach、干净文件、focus、外部改写、stage、commit、blame），A/B 证据是
+`git checkout 3675b24 -- lua/` 让同一用例报 `git: 26 processes for 8 files, budget 5`。
+
+三条写这类断言的规矩：
+
+- **`helpers.spawns(fn)` 同时拦 `exec.run` 与 `exec.stream`**：只数前者会把「每仓库一个常驻
+  `cat-file --batch`」看成 0。
+- **计数必须限定到本用例的仓库**：`helpers.spawns(fn, only_cwd)` 只记 `opts.cwd` 在给定目录树内的 spawn。
+  不限定就会把别的 spec 留下的仓库探测算进来，用例顺序一变就假红（实测同一个用例从 3 变成 4、5）。
+- **先 `autocmds.setup()` 再 `nvim_exec_autocmds('FocusGained', {})`**：没注册时执行 autocmd 是**空操作**，
+  预算写 0 也能假通过。
+
+等待用 `settle(max_ms)`：轮询 `manager.all()` 的 `is_updating` / `is_dirty`，静默 500 ms 收手；通知类断言用
+`helpers.capture_notify_one(fn, needle)`（等「本用例要断言的那条」）而不是取 `captured[1]`。

@@ -35,7 +35,14 @@ function M.emit(list, ...)
     return
   end
   -- Copy first: a listener is allowed to unsubscribe itself while being called.
-  for _, fn in ipairs(vim.deepcopy(list)) do
+  -- A shallow copy is what the job needs — the list is a fresh table of the same
+  -- functions, and functions are copied by reference anyway, so `vim.deepcopy`
+  -- bought nothing but two table allocations per emit (perf P2-5).
+  local current = {}
+  for i, fn in ipairs(list) do
+    current[i] = fn
+  end
+  for _, fn in ipairs(current) do
     local ok, err = pcall(fn, ...)
     if not ok then
       log.error('subscriber failed: %s', tostring(err))

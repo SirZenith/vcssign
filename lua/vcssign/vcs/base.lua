@@ -63,6 +63,30 @@ local NORMALIZE_OPTS = { expand_env = false }
 
 ---@alias vcssign.BlameCb fun(err: string?, result: vcssign.BlameResult?)
 
+--- What one `status` entry says about a path.
+---
+--- "Staged" means the staging baseline (git's index, svn's BASE) differs from
+--- `HEAD` — i.e. the second layer of signs has something to say.  svn has no
+--- staging area, so it never sets it (`capabilities.staged_signs == false`).
+---@class vcssign.FileStatus
+---@field tracked boolean   false for an untracked *or* ignored path
+---@field staged boolean    the index/BASE differs from HEAD
+---@field worktree boolean  the worktree differs from the index/BASE
+---@field ignored boolean?  not under version control because it is ignored
+---@field dir boolean?      the entry is an ignored directory, not a file
+
+--- A long-lived child that answers `show`'s question without one process per
+--- file (perf P0-2).
+---
+--- The protocol is the adapter's business; what callers may rely on is that a
+--- failed read reports an error rather than answering with something, and that
+--- `closed` becomes true once the child is gone — a caller holding a reader must
+--- then drop it instead of retrying through it.
+---@class vcssign.BlobReader
+---@field closed boolean  no more reads will be answered
+---@field read fun(self: vcssign.BlobReader, rev: string, rel: string, cb: fun(err: string?, text: string?))
+---@field close fun(self: vcssign.BlobReader)  shut the child down; safe to call twice
+
 --- How `apply_patch` should apply its patch.
 ---@class vcssign.PatchOpts
 ---@field cached boolean?   apply to the index instead of the worktree (git only)
@@ -84,11 +108,56 @@ local NORMALIZE_OPTS = { expand_env = false }
 --- a *file* whose `gitdir:` target (outside the worktree) holds the real index —
 --- the only place a staging change can be observed.
 ---@field metadata_dir? fun(root: string): string?
+
+-- Whether `metadata_dir` has to be watched *recursively* to see every baseline
+-- change.  Defaults to true: git keeps its index, `HEAD` and `refs/` spread
+-- across the git directory, and a worktree's `logs/` moves independently.  An
+-- adapter whose baseline store is a single file directly inside `metadata_dir`
+-- sets this to false -- svn's `.svn/wc.db` is one file, and on a big working
+-- copy the tree under `.svn/pristine/` holds thousands of files whose events
+-- nothing reads (measured: 3135 callbacks for a 300-file `svn commit` recursive,
+-- 1225 non-recursive, `wc.db` alone 1; see perf §3.5 S1).
+---@field metadata_recursive? boolean
+--- A free (no subprocess) change-detection key for the baseline store — the
+--- entries `show(rev, rel)` answers from — or nil when the adapter cannot
+--- produce a trustworthy one.
+---
+--- It is what lets a refresh skip re-reading a baseline that cannot have moved
+--- (perf P0-4): `attach` compares it against the value recorded when the current
+--- `base_text` was read, and re-reads on any difference.  Returning nil is
+--- always safe — the caller then re-reads every time, which is the behaviour
+--- without a fingerprint — while a key that misses one of the inputs makes the
+--- signs stale, so when in doubt return nil.
+---@field baseline_stamp? fun(root: string): string?
 --- Authoritative root lookup through the VCS itself.
 ---@field get_root_async fun(path: string, cb: fun(err: string?, root: string?))
+--- One whole-repository status query: which paths differ from what, and how.
+---
+--- Optional, and the point is arithmetic: without it every attached buffer
+--- costs its own `is_tracked` + `show` (3 processes for git), while one answer
+--- covers the whole repository — and a path the answer stays silent about is
+--- by definition in sync with its baseline, so it needs no baseline read at
+--- all (perf P0-1).
+---
+--- Keys of `entries` are absolute, normalised paths.  A path that is *absent*
+--- is "tracked and unmodified"; everything else says otherwise.  An entry whose
+--- `dir` flag is set is an ignored **directory**: paths below it are untracked
+--- even though the query names only the directory (git collapses ignored trees
+--- to one record, `traditional` mode — walking them individually would cost
+--- more than the reads it saves).
+---@field status? fun(root: string, cb: fun(err: string?, entries: table<string, vcssign.FileStatus>?))
 --- Baseline text of `rel` as of `rev`; `rev == 'index'` means the staging
 --- baseline (git's index, svn's BASE — D42).
 ---@field show fun(root: string, rev: string, rel: string, cb: fun(err: string?, text: string?))
+--- Open a reader for `show`'s answers — the same text through one process
+--- instead of one process per file.
+---
+--- Optional, and only worth it where the VCS has a batch protocol (git's
+--- `cat-file --batch`); svn has none, so its adapter leaves this out and every
+--- read stays a `svn cat`.  Never returns nil: a reader that could not start
+--- comes back closed, which is the same thing to the caller as an adapter
+--- without the hook.
+---@field open_blob_reader? fun(root: string): vcssign.BlobReader
 --- Whether `rel` is under version control.  Untracked is `false`, not an error.
 ---@field is_tracked fun(root: string, rel: string, cb: fun(err: string?, tracked: boolean?))
 --- Per-line attribution.  svn ignores `opts` (no line window).
@@ -109,6 +178,52 @@ local NORMALIZE_OPTS = { expand_env = false }
 ---@return string
 function M.normalize(path)
   return vim.fs.normalize(vim.fn.fnamemodify(path, ':p'), NORMALIZE_OPTS)
+end
+
+--- A cheap change-detection key for one filesystem entry, for the baseline
+--- fingerprints in `attach.lua` (perf P0-4): a missing entry is `-`, and every
+--- other answer carries inode, size and nanosecond mtime, so a rewrite that
+--- keeps the size still produces a different key.
+---
+--- `vim.uv.fs_stat` is a syscall, not a subprocess: this is the whole reason a
+--- refresh can answer "did the baseline store move" for free.
+---@param path string
+---@return string
+function M.stat_key(path)
+  local stat = vim.uv.fs_stat(path)
+  if not stat then
+    return '-'
+  end
+  local mtime = stat.mtime or {}
+  return string.format(
+    '%s:%s:%s:%s.%s',
+    tostring(stat.ino or 0),
+    tostring(stat.size or 0),
+    tostring(mtime.sec or 0),
+    tostring(mtime.nsec or 0),
+    tostring(stat.type or '?')
+  )
+end
+
+--- The adapter's baseline fingerprint, or `nil` when it cannot answer.
+---
+--- The optional `baseline_stamp` hook is pcall'd **here** and nowhere else: an
+--- adapter that raises must degrade to "no fingerprint", and every caller (the
+--- render short-circuit, the blame cache) wants the same answer to the question
+--- "did the store move".  `nil` always means "cannot tell", never "unchanged".
+---@param system vcssign.VcsSystem
+---@param root string
+---@return string?
+function M.stamp(system, root)
+  local fn = system and system.baseline_stamp
+  if not fn then
+    return nil
+  end
+  local ok, stamp = pcall(fn, root)
+  if ok and type(stamp) == 'string' then
+    return stamp
+  end
+  return nil
 end
 
 --- Directory to run VCS commands in for `path`: the path itself when it is an

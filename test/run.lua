@@ -59,6 +59,7 @@ local REQUIRES = {
   autocmds_spec = { 'git' },
   actions_spec = { 'git', 'svn', 'svnadmin' },
   cli_spec = { 'git', 'svn', 'svnadmin' },
+  proc_budget_spec = { 'git', 'svn', 'svnadmin' },
 }
 
 local DEFAULT_SPECS = {
@@ -71,6 +72,7 @@ local DEFAULT_SPECS = {
   'hunk_spec',
   'diff_spec',
   'signs_spec',
+  'util_spec',
   'doc_spec',
   'autocmds_spec',
   'attach_spec',
@@ -82,6 +84,7 @@ local DEFAULT_SPECS = {
   'revdiff_spec',
   'actions_spec',
   'cli_spec',
+  'proc_budget_spec',
 }
 
 local requested = {}

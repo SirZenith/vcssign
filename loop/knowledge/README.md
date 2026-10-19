@@ -36,7 +36,20 @@ API 语义、生态先例、测试方法。`knowledge/` 回答 **"为什么这�
 - 命令注册从 `plugin/vcssign.vim` 改为 `plugin/vcssign.lua`（Neovim 启动时会 source
   `plugin/**/*.lua`）；知识文档正文里出现旧文件名的以这里为准。
 - 计划文档的引用路径从早期的 `impl` 目录改为 `loop/archive/` 下按模块归档的文档
-  （`00`–`07` 与路径的对照表见 [`../archive/README.md`](../archive/README.md)）。
+  （`00`–`08` 与路径的对照表见 [`../archive/README.md`](../archive/README.md)）。
+
+## M7 追加（`08`）
+
+2026-10-19 的性能/架构审查（[`08`](../archive/perf/2026-10-19T11-33-42-m7-performance-review.md)）
+又实测出一批与实现强绑定的事实，作为**追加小节**写在对应文档末尾（正文仍旧原文抽取、不改写）：
+
+| 文档 | 追加内容 |
+|---|---|
+| [`./lua/pitfalls.md`](./lua/pitfalls.md) | `x and nil or y` 永远得不到 `nil`（「全员失效」被静默降级成一个文件）；局部 `ok` 遮蔽断言函数 |
+| [`./nvim/libuv-and-vim-system.md`](./nvim/libuv-and-vim-system.md) | `stdin = true` 才可写（漏了静默失败）；流式回调收尾给 `nil`；非递归 watch 的 `filename` 可能是目录名；`recursive` 是标志而非句柄数（S1 实测） |
+| [`./vcs/git-output-formats.md`](./vcs/git-output-formats.md) | `--porcelain=v2 -z` 记录形状与忽略目录折叠；`cat-file --batch` 每个进程只解析一次 index、正文需去 CRLF |
+| [`./testing/headless-nvim.md`](./testing/headless-nvim.md) | 进程预算回归 spec（`proc_budget_spec`）、`spawns(fn, only_cwd)` 必须限定仓库、`autocmds.setup()` 缺失会让 autocmd 断言假通过 |
+
 
 ## 速查
 

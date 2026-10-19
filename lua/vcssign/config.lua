@@ -29,7 +29,7 @@ local M = {}
 ---@field keymaps table<string, string|false>  lhs -> action name; `false` disables every default mapping
 ---@field diff vcssign.DiffConfig
 ---@field commit vcssign.CommitConfig
---- Called when a repository becomes attached / detached (04 §4).  Optional,
+--- Called when a repository becomes attached / detached (actions §4).  Optional,
 --- looked up on every call so a later `setup()` still takes effect.
 ---@field on_attach? fun(repo: vcssign.Repo)
 ---@field on_detach? fun(repo: vcssign.Repo)

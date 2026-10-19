@@ -271,7 +271,7 @@ return {
     fn = function()
       local dir = repo_named('vcs-git-patch-eol')
       -- The patch arrives on stdin as one string; git needs the final `\n` to
-      -- tell the last line from a truncated stream (B4 in 07 §8).
+      -- tell the last line from a truncated stream (B4 in signs §8).
       local err = helpers.wait(function(cb)
         git.apply_patch(dir, PATCH:sub(1, -2), {}, cb)
       end)
@@ -294,6 +294,110 @@ return {
       eq(err, nil)
       -- The index holds `changed`, HEAD holds `base`: revert is the index.
       eq(vim.fn.readfile(dir .. '/base.txt'), { 'changed' })
+    end,
+  },
+  {
+    name = 'baseline_stamp is the index and the branch, never the worktree',
+    fn = function()
+      local dir = repo_named('vcs-git-stamp')
+      local before = git.baseline_stamp(dir)
+      ok(type(before) == 'string', 'a repository has a stamp')
+
+      -- An unstaged edit is invisible to the baseline: `show(:rel)` does not
+      -- read the worktree, so the render short-circuit may keep the signs it
+      -- already has.
+      helpers.write(dir .. '/base.txt', 'edited\n')
+      eq(git.baseline_stamp(dir), before, 'the worktree is not part of the key')
+
+      -- Staging rewrites `.git/index` (through a lock file and a rename).
+      helpers.sh({ 'git', '-C', dir, 'add', 'base.txt' })
+      local staged = git.baseline_stamp(dir)
+      ok(staged ~= before, 'the index is part of the key')
+
+      -- A commit leaves `.git/HEAD` byte-identical (`ref: refs/heads/main`) and
+      -- moves the branch file instead, which is why statting HEAD alone would
+      -- miss it.
+      helpers.sh({ 'git', '-C', dir, 'commit', '-qm', 'second', 'base.txt' })
+      ok(git.baseline_stamp(dir) ~= staged, 'and so is the branch ref')
+    end,
+  },
+  {
+    name = 'baseline_stamp refuses an answer outside a repository',
+    fn = function()
+      -- Not `scratch_dir`: `temp/` lives inside this plugin's own repository,
+      -- so detection would legitimately find a root above it.
+      local dir = vim.fn.tempname()
+      vim.fn.mkdir(dir, 'p')
+      eq(git.baseline_stamp(dir), nil, 'no answer is better than a stale one')
+      vim.fn.delete(dir, 'rf')
+    end,
+  },
+  {
+    name = 'open_blob_reader answers every revision through one process',
+    fn = function()
+      -- perf P0-2: the whole point is process *arithmetic*, so this case counts
+      -- spawns as well as asserting the text, and it pins the two edges that
+      -- matter to callers: a missing object is an error, and a closed reader
+      -- refuses to read (the caller then falls back to `show`).
+      local dir = repo_named('git-reader')
+      local exec = require('vcssign.exec')
+      local real_stream = exec.stream
+      local spawns = 0
+      exec.stream = function(cmd, opts, on_stdout, on_exit)
+        spawns = spawns + 1
+        return real_stream(cmd, opts, on_stdout, on_exit)
+      end
+      local ok_call, err = pcall(function()
+        local reader = git.open_blob_reader(dir)
+        local _, head = helpers.wait(function(cb)
+          reader:read('HEAD', 'base.txt', cb)
+        end)
+        eq(head, 'base\n', 'the committed text')
+        local _, index = helpers.wait(function(cb)
+          reader:read('index', 'base.txt', cb)
+        end)
+        eq(index, 'base\n', 'and the staged text, from the same child')
+        local missing = helpers.wait(function(cb)
+          reader:read('HEAD', 'nope.txt', cb)
+        end)
+        ok(
+          missing and missing:find('missing', 1, true),
+          'a missing blob is an error: ' .. tostring(missing)
+        )
+        eq(spawns, 1, 'one process for all of it')
+        reader:close()
+        local after = helpers.wait(function(cb)
+          reader:read('HEAD', 'base.txt', cb)
+        end)
+        ok(after and after:find('not running', 1, true), 'a closed reader refuses to read')
+      end)
+      exec.stream = real_stream
+      if not ok_call then
+        error(err, 0)
+      end
+    end,
+  },
+  {
+    -- D49 rests on this: the view has to keep ignored records *apart* from
+    -- untracked ones, and keep the folded `dir` record for an ignored tree.
+    name = 'parse_status keeps ignored records apart from untracked ones',
+    fn = function()
+      local base = require('vcssign.vcs.base')
+      local root = repo_named('git-parse-status')
+      local entries = git.parse_status('! secret.txt\0? loose.txt\0! logs/\0', root)
+
+      local secret = entries[base.normalize(root .. '/secret.txt')]
+      ok(secret, 'the ignored file is in the view')
+      eq(secret.ignored, true, 'and says it is ignored')
+      eq(secret.tracked, false)
+
+      local loose = entries[base.normalize(root .. '/loose.txt')]
+      ok(not loose.ignored, 'an untracked file is not ignored')
+      eq(loose.tracked, false)
+
+      local logs = entries[base.normalize(root .. '/logs')]
+      eq(logs.dir, true, 'a folded directory record carries the flag')
+      eq(logs.ignored, true)
     end,
   },
 }

@@ -96,22 +96,99 @@ end
 --- Count how many *liveness probes* `fn` triggers (`repo_spec.lua:27` pattern).
 ---@param fn fun()
 ---@return integer
-local function count_probes(fn)
-  local real_run = exec.run
-  local calls = 0
+--- Patch both spawn paths for the duration of `fn`.
+---
+--- A command that runs and returns is `exec.run`; the batch reader (perf P0-2) is
+--- `exec.stream`, a child that outlives the call.  Counting only the first would
+--- make "one process per repository" look like "no process at all".
+---@param record fun(cmd: string[])
+---@return fun() restore
+local function patch_spawns(record)
+  local real_run, real_stream = exec.run, exec.stream
   exec.run = function(cmd, opts, cb)
+    record(cmd)
+    return real_run(cmd, opts, cb)
+  end
+  exec.stream = function(cmd, opts, on_stdout, on_exit)
+    record(cmd)
+    return real_stream(cmd, opts, on_stdout, on_exit)
+  end
+  return function()
+    exec.run, exec.stream = real_run, real_stream
+  end
+end
+
+local function count_probes(fn)
+  local calls = 0
+  local restore = patch_spawns(function(cmd)
     local joined = table.concat(cmd, ' ')
     if joined:find('rev-parse', 1, true) or joined:find('wc-root', 1, true) then
       calls = calls + 1
     end
-    return real_run(cmd, opts, cb)
-  end
+  end)
   local ok, err = pcall(fn)
-  exec.run = real_run
+  restore()
   if not ok then
     error(err, 0)
   end
   return calls
+end
+
+--- Count how many subprocesses `fn` spawns.  No filtering, unlike
+--- `count_probes`: this is the "costs nothing" assertion of the render
+--- short-circuit (perf P0-4), where one stray `show` already fails it.
+---@param fn fun()
+---@return integer
+local function count_procs(fn)
+  local calls = 0
+  local restore = patch_spawns(function()
+    calls = calls + 1
+  end)
+  local ok, err = pcall(fn)
+  restore()
+  if not ok then
+    error(err, 0)
+  end
+  return calls
+end
+
+--- Every command `fn` spawns, as `argv` strings, in order.
+---
+--- `count_procs` above answers "how many"; this answers "which ones", which is
+--- what the status-cache cases need: the claim is not just that a clean file is
+--- cheap, it is that no baseline was read for it.
+---@param fn fun()
+---@return string[]
+local function spawned(fn)
+  local calls = {}
+  local restore = patch_spawns(function(cmd)
+    calls[#calls + 1] = table.concat(cmd, ' ')
+  end)
+  local ok, err = pcall(fn)
+  restore()
+  if not ok then
+    error(err, 0)
+  end
+  return calls
+end
+
+--- Start counting `attach._render` entries per buffer, until `stop()`.
+---
+--- *Entries*, not draws: the short-circuit (perf P0-4) returns from inside
+--- `_render`, so an entry means "this buffer was told something moved" — which
+--- is exactly what the changed-path channel (perf P0-3) decides.
+---@return table<integer, integer> seen
+---@return fun() stop
+local function watch_renders()
+  local real = attach._render
+  local seen = {}
+  attach._render = function(st, force)
+    seen[st.bufnr] = (seen[st.bufnr] or 0) + 1
+    return real(st, force)
+  end
+  return seen, function()
+    attach._render = real
+  end
 end
 
 return {
@@ -194,6 +271,65 @@ return {
     end),
   },
   {
+    -- D49: an ignored path is not "untracked with a twist".  `attach_to_untracked`
+    -- answers "let me see the files I have not added yet"; it does not answer
+    -- "show me the files I explicitly told the repository to leave alone".
+    name = 'an ignored file gets no signs, even with attach_to_untracked on',
+    fn = guarded(function()
+      local dir = helpers.git_repo('attach-ignored')
+      helpers.write(dir .. '/.gitignore', 'secret.txt\n')
+      helpers.write(dir .. '/secret.txt', 'a\nb\n')
+      helpers.write(dir .. '/loose.txt', 'a\nb\n')
+
+      local ibuf = open(dir .. '/secret.txt')
+      local ist = attach_now(ibuf)
+      ok(ist.attached, 'the buffer still attaches, so the commands keep working')
+      eq(ist.ignored, true, 'the status view says the path is ignored')
+      eq(ist.untracked, false, 'which is not the same thing as untracked')
+      eq(ist.base_text, nil, 'there is no baseline to diff against')
+      eq(#attach.hunks(ibuf), 0)
+      eq(signs.sign_count(ibuf), 0, 'and nothing is drawn')
+
+      -- The control: an untracked file next door keeps its whole-file layer.
+      local lbuf = open(dir .. '/loose.txt')
+      local lst = attach_now(lbuf)
+      eq(lst.untracked, true, 'a plain untracked file is still untracked')
+      eq(signs.sign_count(lbuf), 2)
+    end),
+  },
+  {
+    name = 'a file inside an ignored directory is drawn with nothing too',
+    fn = guarded(function()
+      local dir = helpers.git_repo('attach-ignored-dir')
+      helpers.write(dir .. '/.gitignore', 'logs/\n')
+      helpers.write(dir .. '/logs/a.log', 'a\nb\nc\n')
+
+      local bufnr = open(dir .. '/logs/a.log')
+      local st = attach_now(bufnr)
+      eq(st.ignored, true, 'the folded `dir` record covers the file below it')
+      eq(st.untracked, false)
+      eq(st.base_text, nil)
+      eq(#attach.hunks(bufnr), 0)
+      eq(signs.sign_count(bufnr), 0)
+    end),
+  },
+  {
+    name = 'svn:ignore leaves the file bare as well',
+    fn = guarded(function()
+      local dir = helpers.svn_repo('attach-svn-ignored')
+      helpers.sh({ 'svn', 'propset', 'svn:ignore', 'secret.txt\nlogs', dir })
+      helpers.write(dir .. '/secret.txt', 'a\nb\n')
+
+      local bufnr = open(dir .. '/secret.txt')
+      local st = attach_now(bufnr)
+      eq(st.ignored, true, 'svn reports the path as ignored under --no-ignore')
+      eq(st.untracked, false)
+      eq(st.base_text, nil)
+      eq(#attach.hunks(bufnr), 0)
+      eq(signs.sign_count(bufnr), 0)
+    end),
+  },
+  {
     name = 'max_file_length refuses a long buffer',
     fn = guarded(function()
       config.setup({ max_file_length = 2 })
@@ -244,7 +380,7 @@ return {
       -- written at all.  vcssign never touches the window's `'signcolumn'` --
       -- writing that option from a `WinEnter` handler fires `OptionSet` even for
       -- the value the window already has, which is how `:Noice history` broke
-      -- (07 §6.3).
+      -- (signs §6.3).
       config.setup({ signcolumn = false })
       local dir = helpers.git_repo('attach-signcolumn-off')
       helpers.write(dir .. '/base.txt', 'base\nnew\n')
@@ -294,7 +430,11 @@ return {
       end)
 
       eq(attach.count(), 0)
-      for _, msg in ipairs(seen) do
+      -- Only what mentions *this* file: a repository an earlier case left behind
+      -- can still be chatting, and this case is not about it (the same reason
+      -- the other specs wait through `capture_notify_one`).
+      local about = helpers.select_notifications(seen, vim.fs.basename(file))
+      for _, msg in ipairs(about) do
         ok(msg.level < vim.log.levels.WARN, 'unexpected notification: ' .. msg.message)
       end
       vim.fn.delete(file)
@@ -572,6 +712,344 @@ return {
       -- next buffer change, and the runner shows that on stderr.
       api.nvim_buf_delete(bufnr, { force = true })
       vim.fn.delete(dir, 'rf')
+    end),
+  },
+
+  -- ▏ the render short-circuit (perf P0-4) ──────────────────────────────────────
+
+  {
+    name = 'an edit with no disk change spawns nothing to re-render',
+    fn = guarded(function()
+      -- The baseline is answered by a stat of the repository metadata, not by
+      -- `show`, so a buffer with a modified line still needs no subprocess to
+      -- redraw: the fingerprint (`changedtick` + baseline stamp) says only the
+      -- buffer half moved.
+      local dir = helpers.git_repo('attach-short-circuit-edit')
+      helpers.write(dir .. '/base.txt', 'base\n')
+      local bufnr = open(dir .. '/base.txt')
+      attach_now(bufnr)
+      eq(#attach.hunks(bufnr), 0, 'a clean file has no hunks')
+
+      local procs = count_procs(function()
+        api.nvim_buf_set_lines(bufnr, 1, 1, false, { 'added' })
+        helpers.wait_for(function()
+          return #attach.hunks(bufnr) == 1
+        end, 'the debounced render to land')
+      end)
+      eq(procs, 0, 'the baseline did not move, so nothing may be spawned')
+      eq(attach.hunks(bufnr)[1].added.start, 2)
+      eq(signs.sign_count(bufnr), 1, 'and the sign is drawn')
+    end),
+  },
+
+  {
+    name = 'the focus sweep skips a baseline that did not move',
+    fn = guarded(function()
+      local dir = helpers.git_repo('attach-short-circuit-sweep')
+      helpers.write(dir .. '/base.txt', 'base\nnew\n')
+      local bufnr = open(dir .. '/base.txt')
+      attach_now(bufnr)
+      eq(#attach.hunks(bufnr), 1)
+
+      local procs = count_procs(function()
+        attach.refresh_all()
+      end)
+      eq(procs, 0, 'FocusGained with nothing changed re-reads no baseline')
+      eq(#attach.hunks(bufnr), 1, 'and the hunks we had are still the ones we have')
+      eq(signs.sign_count(bufnr), 1)
+    end),
+  },
+
+  {
+    name = 'the focus sweep re-reads a baseline the index moved under',
+    fn = guarded(function()
+      -- The whole reason the sweep exists: another program stages the change.
+      local dir = helpers.git_repo('attach-short-circuit-staged')
+      helpers.write(dir .. '/base.txt', 'base\nnew\n')
+      local bufnr = open(dir .. '/base.txt')
+      local st = attach_now(bufnr)
+      eq(#st.hunks, 1)
+      eq(#st.hunks_staged, 0)
+
+      helpers.sh({ 'git', '-C', dir, 'add', 'base.txt' })
+      local procs = count_procs(function()
+        attach.refresh_all()
+      end)
+      ok(procs > 0, 'a moved index is re-read')
+      helpers.wait_for(function()
+        return #st.hunks == 0 and #st.hunks_staged == 1
+      end, 'the staged layer to appear')
+      eq(signs.sign_count(bufnr), 0, 'the worktree layer is empty')
+      eq(signs.sign_count(bufnr, true), 1, 'and the staged one is not')
+    end),
+  },
+
+  {
+    name = 'the short-circuit still redraws when an option it read changes',
+    fn = guarded(function()
+      local dir = helpers.git_repo('attach-short-circuit-config')
+      helpers.write(dir .. '/base.txt', 'base\nnew\n')
+      local bufnr = open(dir .. '/base.txt')
+      attach_now(bufnr)
+      eq(vim.trim(rows(bufnr)[1].sign_text or ''), '▎', 'the default sign text')
+
+      -- `config.setup` replaces the table instead of mutating it, so the render
+      -- fingerprint sees a different `signs`/`signcolumn`.  Without that half of
+      -- the key, this would be the one way to freeze the signs for good.
+      config.setup({ signcolumn = false, signs = { numhl = true } })
+      attach.refresh_all()
+      eq(rows(bufnr)[1].sign_text, nil, 'the sign text is gone')
+      eq(rows(bufnr)[1].number_hl_group, 'VcssignAddNr', 'the number highlight is not')
+    end),
+  },
+
+  -- ▏ the changed-path channel (perf P0-3) ─────────────────────────────────────
+
+  {
+    name = 'a work tree event enters only the buffer it names',
+    fn = guarded(function()
+      local dir = helpers.git_repo('attach-changed-path')
+      helpers.write(dir .. '/base.txt', 'base\n')
+      local first = open(dir .. '/base.txt')
+      attach_now(first)
+      local second = open(dir .. '/sub/nested.txt')
+      attach_now(second)
+      eq(attach.count(), 2)
+
+      -- Another program writes one of the two files.  The root watch is
+      -- non-recursive, so libuv names the file, and the buffer that file
+      -- belongs to is the only one with anything to do (perf P0-3).
+      local renders, stop = watch_renders()
+      local ran, err = pcall(function()
+        helpers.write(dir .. '/base.txt', 'base\nreplaced on disk\n')
+        helpers.wait_for(function()
+          return (renders[first] or 0) > 0
+        end, 'the event to reach the buffer')
+        vim.wait(400, function()
+          return false
+        end)
+      end)
+      stop()
+      if not ran then
+        error(err, 0)
+      end
+      ok((renders[first] or 0) >= 1, 'the named buffer is entered')
+      eq(renders[second], nil, 'the buffer the event did not name is left alone')
+    end),
+  },
+
+  {
+    name = 'a probe with nothing behind it enters no buffer at all',
+    fn = guarded(function()
+      local dir = helpers.git_repo('attach-changed-path-none')
+      helpers.write(dir .. '/base.txt', 'base\nnew\n')
+      local bufnr = open(dir .. '/base.txt')
+      local st = attach_now(bufnr)
+      eq(#st.hunks, 1)
+
+      local updates = 0
+      st.repo:on_update(function()
+        updates = updates + 1
+      end)
+      local renders, stop = watch_renders()
+      local ran, err = pcall(function()
+        -- This is `FocusGained` in one line: the liveness probe every focus
+        -- gain runs.  It is the only thing that notices a repository that went
+        -- away, so it stays — but with no filesystem event behind it there is
+        -- nothing for any buffer to do (perf P0-3).
+        st.repo:refresh()
+        helpers.wait_for(function()
+          return updates > 0
+        end, 'the probe to announce')
+        vim.wait(300, function()
+          return false
+        end)
+      end)
+      stop()
+      if not ran then
+        error(err, 0)
+      end
+      ok(updates >= 1, 'the probe still announces itself')
+      eq(next(renders), nil, 'and no buffer is told to do anything')
+      eq(#st.hunks, 1, 'the signs are what they were')
+    end),
+  },
+
+  {
+    name = 'a metadata change enters every buffer, because it names no path',
+    fn = guarded(function()
+      -- The other half of the rule: a staging change moves the baseline of the
+      -- whole repository, so the announcement carries no path at all and every
+      -- buffer re-reads.
+      local dir = helpers.git_repo('attach-changed-path-index')
+      helpers.write(dir .. '/base.txt', 'base\nnew\n')
+      local first = open(dir .. '/base.txt')
+      attach_now(first)
+      helpers.write(dir .. '/sub/nested.txt', 'nested\nmore\n')
+      local second = open(dir .. '/sub/nested.txt')
+      attach_now(second)
+      -- Let the work tree events of the two writes above drain first, so the
+      -- window below can only see what `git add` causes.
+      vim.wait(400, function()
+        return false
+      end)
+
+      local renders, stop = watch_renders()
+      local ran, err = pcall(function()
+        helpers.sh({ 'git', '-C', dir, 'add', 'base.txt' })
+        helpers.wait_for(function()
+          return (renders[first] or 0) > 0 and (renders[second] or 0) > 0
+        end, 'both buffers to be re-read')
+      end)
+      stop()
+      if not ran then
+        error(err, 0)
+      end
+    end),
+  },
+  {
+    name = 'a clean file costs one status query and no baseline read',
+    fn = guarded(function()
+      -- The whole point of P0-1: nothing per file.  `rev-parse` is the
+      -- detector's own root lookup, `status` is the repository-wide view, and
+      -- the baseline is the buffer's own text because the view says the file is
+      -- in sync with its index.
+      local dir = helpers.git_repo('attach-status-clean')
+      local bufnr = open(dir .. '/base.txt')
+      local argv = spawned(function()
+        attach_now(bufnr)
+      end)
+      eq(#argv, 2, 'two commands: ' .. table.concat(argv, ' | '))
+      ok(argv[1]:find('rev%-parse'), 'first the root lookup: ' .. argv[1])
+      ok(argv[2]:find('status', 1, true), 'then the status view: ' .. argv[2])
+      local st = attach._bufs[bufnr]
+      eq(#st.hunks, 0, 'a clean file has no hunks')
+      eq(st.base_text, 'base', 'the baseline is the buffer text')
+    end),
+  },
+
+  {
+    name = 'an untracked file is answered by the view too, with no probe of its own',
+    fn = guarded(function()
+      local dir = helpers.git_repo('attach-status-untracked')
+      helpers.write(dir .. '/loose.txt', 'one\ntwo\n')
+      local bufnr = open(dir .. '/loose.txt')
+      local argv = spawned(function()
+        attach_now(bufnr)
+      end)
+      eq(#argv, 2, 'two commands: ' .. table.concat(argv, ' | '))
+      local st = attach._bufs[bufnr]
+      eq(st.untracked, true)
+      eq(st.base_text, '', 'an untracked baseline is the empty file')
+      eq(#st.hunks, 1)
+    end),
+  },
+
+  {
+    name = 'a dirty file reads its baseline, and staging it reads HEAD as well',
+    fn = guarded(function()
+      local dir = helpers.git_repo('attach-status-dirty')
+      helpers.write(dir .. '/base.txt', 'base\nnew\n')
+      local bufnr = open(dir .. '/base.txt')
+      local argv = spawned(function()
+        attach_now(bufnr)
+      end)
+      -- rev-parse + status + one spawn of the batch reader (perf P0-2); HEAD is
+      -- not read because the view says the index matches it.
+      eq(#argv, 3, 'three commands: ' .. table.concat(argv, ' | '))
+      ok(argv[3]:find('cat-file', 1, true), 'the baseline comes through the reader: ' .. argv[3])
+      local st = attach._bufs[bufnr]
+      eq(#st.hunks, 1)
+      eq(#st.hunks_staged, 0)
+
+      helpers.sh({ 'git', '-C', dir, 'add', 'base.txt' })
+      local staged_argv = spawned(function()
+        refresh_now(bufnr)
+      end)
+      -- The index moved, so the cached view is retired (one status query) and so
+      -- is the batch reader: a `cat-file --batch` child resolves `:<path>`
+      -- against the index it started on, so it would answer with the previous
+      -- blob (measured).  The baseline itself is the buffer's text — worktree in
+      -- sync — and HEAD rides on the fresh reader, so nothing else is spawned.
+      eq(#staged_argv, 2, 'two commands: ' .. table.concat(staged_argv, ' | '))
+      ok(staged_argv[1]:find('status', 1, true), 'the view is asked again: ' .. staged_argv[1])
+      ok(
+        staged_argv[2]:find('cat-file', 1, true),
+        'a fresh reader answers HEAD: ' .. staged_argv[2]
+      )
+      eq(#st.hunks, 0, 'the worktree layer is empty again')
+      eq(#st.hunks_staged, 1, 'and the staged layer has the hunk')
+    end),
+  },
+
+  {
+    name = 'a status query that fails falls back to the per-file questions',
+    fn = guarded(function()
+      local dir = helpers.git_repo('attach-status-failure')
+      helpers.write(dir .. '/base.txt', 'base\nnew\n')
+      local bufnr = open(dir .. '/base.txt')
+
+      -- The view is optional: an adapter, or a working copy, that cannot answer
+      -- it must lose the shortcut, not the signs.
+      local system = require('vcssign.vcs.git')
+      local real_status, real_tracked = system.status, system.is_tracked
+      local asked = 0
+      system.status = function(_, cb)
+        cb('boom')
+      end
+      system.is_tracked = function(...)
+        asked = asked + 1
+        return real_tracked(...)
+      end
+      local ok_attach, attach_err = pcall(attach_now, bufnr)
+      system.status, system.is_tracked = real_status, real_tracked
+      if not ok_attach then
+        error(attach_err, 0)
+      end
+      eq(asked, 1, 'the per-file question is asked instead')
+      eq(#attach.hunks(bufnr), 1, 'and the signs are still right')
+    end),
+  },
+
+  {
+    name = 'two dirty files in one repository cost one baseline process between them',
+    fn = guarded(function()
+      -- The arithmetic perf P0-2 is about: the first buffer pays for the reader,
+      -- the second one pays for nothing at all.
+      local dir = helpers.git_repo('attach-batch-shared')
+      helpers.write(dir .. '/base.txt', 'base\nnew\n')
+      helpers.write(dir .. '/sub/nested.txt', 'nested\nmore\n')
+      local first = open(dir .. '/base.txt')
+      local second = open(dir .. '/sub/nested.txt')
+      local argv = spawned(function()
+        attach_now(first)
+        attach_now(second)
+      end)
+      eq(#argv, 3, 'three commands for both buffers: ' .. table.concat(argv, ' | '))
+      eq(attach._bufs[second].repo, attach._bufs[first].repo, 'one repository')
+      eq(#attach.hunks(first), 1)
+      eq(#attach.hunks(second), 1)
+    end),
+  },
+
+  {
+    name = 'a reader that dies is dropped, and the read still answers',
+    fn = guarded(function()
+      -- A dead child must never turn into "no signs": the answer falls back to
+      -- the per-file command, and the corpse is not reused.
+      local dir = helpers.git_repo('attach-batch-dead')
+      helpers.write(dir .. '/base.txt', 'base\nnew\n')
+      local bufnr = open(dir .. '/base.txt')
+      attach_now(bufnr)
+      local repo = attach._bufs[bufnr].repo
+      local reader = repo._reader
+      ok(reader ~= nil and not reader.closed, 'the first read opened a reader')
+
+      reader.closed = true -- what a crashed child looks like to its holder
+      helpers.sh({ 'git', '-C', dir, 'add', 'base.txt' })
+      refresh_now(bufnr)
+      ok(repo._reader ~= reader, 'the dead reader is not kept')
+      eq(#attach._bufs[bufnr].hunks_staged, 1, 'and the staged layer still appeared')
     end),
   },
 }

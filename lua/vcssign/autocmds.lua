@@ -5,7 +5,7 @@
 --- `attach.lua`; what is left here is only the *trigger* layer.  That split is
 --- what keeps `setup()` safe to run twice: this module owns nothing but the
 --- augroup and the two manager hooks, so there is no state to leak.
---- The plan (04 §4) put a 100ms debounce around attach calls to absorb
+--- The plan (actions §4) put a 100ms debounce around attach calls to absorb
 --- `BufEnter` storms; `attach.attach` answers a second call for a buffer it
 --- already holds with a table lookup instead, which does not delay the very
 --- first attach after opening a file — the one the user is waiting for.
@@ -20,6 +20,7 @@ local attach = require('vcssign.attach')
 local config = require('vcssign.config')
 local log = require('vcssign.log')
 local manager = require('vcssign.repo_manager')
+local signs = require('vcssign.signs')
 
 local M = {}
 
@@ -101,7 +102,7 @@ function M.setup()
   end)
 
   -- No `WinEnter` hook here: vcssign never writes the window's `'signcolumn'`
-  -- (07 §6.3).  `config.signcolumn` is a boolean that decides whether the sign
+  -- (signs §6.3).  `config.signcolumn` is a boolean that decides whether the sign
   -- text is drawn, and `signs.place` reads it on every render.
   -- The worktree and the index may disagree again the moment the file lands on
   -- disk.  `on_lines` already covers an edit, but `:w` can happen with no text
@@ -127,15 +128,6 @@ function M.setup()
     end
   end)
 
-  -- A colorscheme loaded (or switched) after the first attach must re-resolve
-  -- the sign groups' candidate chain: `signs.define_highlights` picks the
-  -- theme's git-sign group when it runs, and it only fills groups that are
-  -- still default definitions, so a user's own overrides survive the re-run.
-  -- gitsigns re-runs its highlight setup on the same event (`highlight.lua`).
-  subscribe('ColorScheme', function()
-    attach.define_highlights()
-  end)
-
   -- Focus is the reliable fallback on Windows, where a file changed by another
   -- program (`git checkout` in a terminal, an editor outside nvim) may produce
   -- no event we can see.  Both halves are needed: the repositories re-probe
@@ -146,6 +138,15 @@ function M.setup()
     for _, repo in ipairs(manager.all()) do
       repo:refresh()
     end
+  end)
+
+  -- A colorscheme change wipes the highlight groups; the definitions live in
+  -- the signs layer (perf P2-4) and are otherwise done once, at the first
+  -- attach.  The re-run has to be forced: plain `define_highlights()` is a
+  -- no-op after the first definition.  gitsigns re-runs its highlight setup on
+  -- the same event (`highlight.lua`).
+  subscribe('ColorScheme', function()
+    signs.define_highlights(true)
   end)
 
   -- Nothing may outlive the session: forget the buffers and dispose of every

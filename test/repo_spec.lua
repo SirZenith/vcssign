@@ -58,6 +58,30 @@ local function count_probes(fn)
   return calls
 end
 
+--- Count how many *status queries* `fn` spawns.
+---
+--- Same trick as `count_probes` above — `repo.lua` reaches the adapters through
+--- module tables, so wrapping `exec.run` sees every command — with the filter
+--- being the subcommand only the status view uses (`git status` / `svn status`).
+---@param fn fun()
+---@return integer
+local function count_status(fn)
+  local real_run = exec.run
+  local calls = 0
+  exec.run = function(cmd, opts, cb)
+    if table.concat(cmd, ' '):find('status', 1, true) then
+      calls = calls + 1
+    end
+    return real_run(cmd, opts, cb)
+  end
+  local ok, err = pcall(fn)
+  exec.run = real_run
+  if not ok then
+    error(err, 0)
+  end
+  return calls
+end
+
 --- Run `fn` with a config override, restoring the previous options afterwards.
 ---@param opts table
 ---@param fn fun()
@@ -87,21 +111,56 @@ end
 
 return {
   {
-    name = 'the first probe marks the repository loaded, with no status cache',
+    name = 'a root the detector resolved costs no second probe (M7 P0-5)',
     fn = guarded(function()
       local dir = helpers.git_repo('runtime-first')
-      helpers.with_repo('spec:first', dir, function(repo)
-        eq(repo.system.name, 'git')
-        eq(repo.root, dir)
-        ok(repo.has_loaded, 'has_loaded must be set by the first successful probe')
+      local probes = count_probes(function()
+        helpers.with_repo('spec:first', dir, function(repo)
+          eq(repo.system.name, 'git')
+          eq(repo.root, dir)
+          -- `detect_async` asked git for this root one command ago, so the
+          -- runtime starts out loaded and `_bind` may answer without spawning.
+          ok(repo.has_loaded, 'the handed-over root counts as loaded')
+          eq(repo.is_dirty, false, 'nothing is outstanding, so no probe is owed')
+          eq(repo.error_count, 0)
+          -- No `entries()`/`get_status()` any more (D38); the metadata watch is
+          -- the only handle it keeps.
+          ok(
+            repo.watch_paths[vim.fs.normalize(repo.metadata_path)],
+            'the metadata directory must be watched'
+          )
+        end)
+      end)
+      eq(probes, 1, 'the first attach spawns the detector probe and nothing more')
+    end),
+  },
+  {
+    name = 'a working copy is resolved once too, not once per layer',
+    fn = guarded(function()
+      local dir = helpers.svn_repo('runtime-first-svn')
+      local probes = count_probes(function()
+        helpers.with_repo('spec:first-svn', dir, function(repo)
+          eq(repo.system.name, 'svn')
+          ok(repo.has_loaded, 'the handed-over working copy root counts as loaded')
+        end)
+      end)
+      eq(probes, 1, 'one `svn info --show-item wc-root`, from the detector only')
+    end),
+  },
+  {
+    name = 'a later trigger still probes a repository that skipped its first one',
+    fn = guarded(function()
+      -- The liveness answer was borrowed from detection, not skipped forever.
+      local dir = helpers.git_repo('runtime-first-later')
+      helpers.with_repo('spec:later', dir, function(repo)
+        eq(repo.has_loaded, true)
+        local probes = count_probes(function()
+          helpers.wait(function(cb)
+            repo:refresh_now(cb)
+          end)
+        end)
+        eq(probes, 1, 'an explicit refresh asks the VCS again')
         eq(repo.is_dirty, false)
-        eq(repo.error_count, 0)
-        -- No `entries()`/`get_status()` any more (D38); the metadata watch is
-        -- the only handle it keeps.
-        ok(
-          repo.watch_paths[vim.fs.normalize(repo.metadata_path)],
-          'the metadata directory must be watched'
-        )
       end)
     end),
   },
@@ -365,6 +424,14 @@ return {
       -- directory itself never reports that directory going away.
       ok(repo.watch_paths[repo.metadata_path], 'the metadata directory must be watched')
       ok(repo.watch_paths[vim.fs.normalize(dir)], 'the root must be watched for liveness')
+      -- git spreads its store over the git directory (index, HEAD, refs), so
+      -- the metadata watch is recursive wherever libuv can do that
+      -- (perf §3.5 S1).
+      eq(
+        repo.watch_recursive[repo.metadata_path],
+        vim.uv.os_uname().sysname ~= 'Linux',
+        'git needs the recursive watch, svn does not'
+      )
 
       -- Renaming the metadata directory away is what a deleted worktree looks
       -- like from the outside, and it is what Windows allows while a handle is
@@ -703,6 +770,292 @@ return {
       vim.cmd('enew')
       eq(repo_manager.active(), nil, 'a scratch buffer belongs to no repository')
       repo_manager.detach('spec:active')
+    end),
+  },
+
+  {
+    name = 'a work tree event announces the file it touched',
+    fn = guarded(function()
+      local dir = helpers.git_repo('runtime-changed-path')
+      helpers.with_repo('spec:changed-path', dir, function(repo)
+        vim.wait(300, function()
+          return false
+        end)
+        local announced = {}
+        repo:on_update(function(_, changed)
+          announced[#announced + 1] = changed
+        end)
+        -- The root watch is non-recursive, which is the one place libuv hands
+        -- us a filename (perf P0-3).  The metadata watch never does: the index /
+        -- wc.db is one store for every file in the repository.
+        helpers.write(dir .. '/base.txt', 'edited on disk\n')
+        helpers.wait_for(function()
+          return #announced > 0
+        end, 'the work tree event')
+        vim.wait(400, function()
+          return false
+        end)
+
+        local named, saw_all = {}, false
+        for _, changed in ipairs(announced) do
+          if changed == nil then
+            saw_all = true
+          else
+            for path in pairs(changed) do
+              named[path] = true
+            end
+          end
+        end
+        eq(saw_all, false, 'a work tree event names a path, it does not shrug')
+        eq(named[vim.fs.normalize(dir .. '/base.txt')], true, 'the file the event named')
+        eq(vim.tbl_count(named), 1, 'and no other file')
+      end)
+    end),
+  },
+  {
+    name = 'a metadata change announces no path, because it moves every baseline',
+    fn = guarded(function()
+      local dir = helpers.git_repo('runtime-changed-meta')
+      helpers.with_repo('spec:changed-meta', dir, function(repo)
+        vim.wait(300, function()
+          return false
+        end)
+        local saw_all = false
+        repo:on_update(function(_, changed)
+          saw_all = saw_all or changed == nil
+        end)
+        -- `git add` rewrites `.git/index`.  The write before it names a path,
+        -- the staging does not — and the staging is the one every buffer has to
+        -- react to.
+        helpers.write(dir .. '/base.txt', 'edited\n')
+        helpers.sh({ 'git', '-C', dir, 'add', 'base.txt' })
+        helpers.wait_for(function()
+          return saw_all
+        end, 'the metadata event')
+        eq(saw_all, true, 'the index is one store for the whole repository')
+      end)
+    end),
+  },
+  {
+    name = 'a probe with no filesystem event behind it announces an empty set',
+    fn = guarded(function()
+      local dir = helpers.git_repo('runtime-changed-none')
+      helpers.with_repo('spec:changed-none', dir, function(repo)
+        vim.wait(300, function()
+          return false
+        end)
+        local answered, changed_at = false, nil
+        repo:on_update(function(_, changed)
+          answered, changed_at = true, changed
+        end)
+        -- `FocusGained`, `:Vcssign refresh`, an action's post-step: all of them
+        -- ask "look again" without claiming anything moved.  An empty set is
+        -- how that is said, so the sign layer can skip every buffer.
+        repo:refresh()
+        helpers.wait_for(function()
+          return answered
+        end, 'the announcement')
+        eq(type(changed_at), 'table', 'nothing moved must not mean "assume everything"')
+        eq(next(changed_at), nil, 'an empty set of paths')
+      end)
+    end),
+  },
+  {
+    name = 'an svn metadata change announces no path either',
+    fn = guarded(function()
+      local dir = helpers.svn_repo('runtime-changed-svn')
+      helpers.with_repo('spec:changed-svn', dir, function(repo)
+        eq(repo.system.name, 'svn')
+        vim.wait(400, function()
+          return false
+        end)
+        local saw_all = false
+        repo:on_update(function(_, changed)
+          saw_all = saw_all or changed == nil
+        end)
+        -- A commit rewrites `.svn/wc.db`, the file BASE is read through — the
+        -- svn anchor of the same rule (perf §3.5).
+        helpers.write(dir .. '/base.txt', 'committed\n')
+        helpers.sh({ 'svn', 'commit', '-q', '-m', 'changed', dir .. '/base.txt' })
+        helpers.wait_for(function()
+          return saw_all
+        end, 'the svn metadata event')
+        eq(saw_all, true)
+      end)
+    end),
+  },
+
+  {
+    name = 'one status query answers the whole repository, and it is cached',
+    fn = guarded(function()
+      local dir = helpers.git_repo('repo-status-cache')
+      helpers.write(dir .. '/base.txt', 'base\none\n')
+      helpers.with_repo('spec:status-cache', dir, function(repo)
+        local calls = count_status(function()
+          local _, first, trusted = helpers.wait(function(cb)
+            repo:status(cb)
+          end)
+          ok(trusted, 'the answer is trusted: the store did not move')
+          eq(first[dir .. '/base.txt'].worktree, true, 'and it can see the change')
+
+          local _, second = helpers.wait(function(cb)
+            repo:status(cb)
+          end)
+          ok(second == first, 'the second caller is handed the cached table')
+        end)
+        eq(calls, 1, 'two callers, one query')
+      end)
+    end),
+  },
+
+  {
+    name = 'a worktree event is folded into the cached view instead of retiring it',
+    fn = guarded(function()
+      local dir = helpers.git_repo('repo-status-patch')
+      helpers.write(dir .. '/base.txt', 'base\none\n')
+      helpers.with_repo('spec:status-patch', dir, function(repo)
+        local _, entries = helpers.wait(function(cb)
+          repo:status(cb)
+        end)
+        local path = dir .. '/base.txt'
+        eq(entries[path].worktree, true)
+
+        local folded = {}
+        local real_note = repo._note_status_change
+        repo._note_status_change = function(self, changed)
+          folded[#folded + 1] = changed
+          return real_note(self, changed)
+        end
+        helpers.write(path, 'base\ntwo\n')
+        local ok_note, note_err = pcall(helpers.wait_for, function()
+          return #folded > 0
+        end, 'the event to be folded into the view')
+        repo._note_status_change = real_note
+        if not ok_note then
+          error(note_err, 0)
+        end
+        eq(folded[1], path, 'the event named the file')
+
+        local calls = count_status(function()
+          local _, again = helpers.wait(function(cb)
+            repo:status(cb)
+          end)
+          ok(again == entries, 'the same table survived the write')
+        end)
+        eq(calls, 0, 'a save costs no query at all')
+      end)
+    end),
+  },
+
+  {
+    name = 'a metadata change retires the view, because it can move everything',
+    fn = guarded(function()
+      local dir = helpers.git_repo('repo-status-retire')
+      helpers.write(dir .. '/base.txt', 'base\none\n')
+      helpers.with_repo('spec:status-retire', dir, function(repo)
+        local _, first, trusted = helpers.wait(function(cb)
+          repo:status(cb)
+        end)
+        ok(trusted)
+        eq(first[dir .. '/base.txt'].staged, false, 'the change is unstaged')
+
+        helpers.sh({ 'git', '-C', dir, 'add', 'base.txt' })
+        helpers.wait_for(function()
+          return repo.status_cache == nil
+        end, 'the view to be retired by the index event')
+
+        local calls = count_status(function()
+          local _, second, again_trusted = helpers.wait(function(cb)
+            repo:status(cb)
+          end)
+          ok(again_trusted, 'the fresh answer is trusted again')
+          eq(second[dir .. '/base.txt'].staged, true, 'and it sees the staging')
+        end)
+        eq(calls, 1, 'the retired view is asked again, once')
+      end)
+    end),
+  },
+
+  {
+    name = 'a view taken before the store moved is never believed about staging',
+    fn = guarded(function()
+      local dir = helpers.git_repo('repo-status-stale')
+      helpers.with_repo('spec:status-stale', dir, function(repo)
+        local _, first = helpers.wait(function(cb)
+          repo:status(cb)
+        end)
+        eq(first[dir .. '/base.txt'], nil, 'a clean file has no entry at all')
+
+        -- Staged behind the watcher's back: whether or not the event has landed
+        -- by the time of the next call, the answer must not claim "not staged".
+        helpers.write(dir .. '/base.txt', 'base\none\n')
+        helpers.sh({ 'git', '-C', dir, 'add', 'base.txt' })
+        local _, second, trusted = helpers.wait(function(cb)
+          repo:status(cb)
+        end)
+        ok(trusted, 'the store is quiet now, so the answer is trusted')
+        eq(second[dir .. '/base.txt'].staged, true, 'the staging is visible')
+      end)
+    end),
+  },
+
+  {
+    name = 'the batch reader serves every read, and is closed with the repository',
+    fn = guarded(function()
+      local dir = helpers.git_repo('runtime-reader')
+      helpers.with_repo('spec:reader', dir, function(repo)
+        local git = require('vcssign.vcs.git')
+        local _, shown = helpers.wait(function(cb)
+          git.show(dir, 'HEAD', 'base.txt', cb)
+        end)
+        local _, first = helpers.wait(function(cb)
+          repo:read_blob('HEAD', 'base.txt', cb)
+        end)
+        eq(first, shown, 'the reader answers exactly what the command answers')
+        local reader = repo._reader
+        ok(reader ~= nil and not reader.closed, 'a reader is open')
+
+        local _, second = helpers.wait(function(cb)
+          repo:read_blob('index', 'base.txt', cb)
+        end)
+        eq(second, first, 'the staged blob is the same text')
+        eq(repo._reader, reader, 'the same child answered both')
+
+        repo:dispose()
+        ok(reader.closed, 'dispose closes the child instead of leaking it')
+      end)
+    end),
+  },
+  {
+    name = 'a reader started before the index moved is replaced, not believed',
+    fn = guarded(function()
+      -- Measured, and the reason this case exists: a `cat-file --batch` child
+      -- reads the index once, so after `git apply --cached` the same child keeps
+      -- answering with the *previous* blob.  Staging a hunk looked like it had
+      -- not happened at all (attach_spec "the sign layers to split" timed out)
+      -- until the reader started being retired when the store moves.
+      local dir = helpers.git_repo('runtime-reader-stale')
+      helpers.with_repo('spec:reader-stale', dir, function(repo)
+        local _, before = helpers.wait(function(cb)
+          repo:read_blob('index', 'base.txt', cb)
+        end)
+        local first = repo._reader
+        ok(first ~= nil and not first.closed, 'a reader is open')
+
+        helpers.write(dir .. '/base.txt', 'staged text' .. string.char(10))
+        helpers.sh({ 'git', '-C', dir, 'add', 'base.txt' })
+        local _, after = helpers.wait(function(cb)
+          repo:read_blob('index', 'base.txt', cb)
+        end)
+        eq(
+          after,
+          'staged text' .. string.char(10),
+          'the moved index is what is read, not the cached one'
+        )
+        ok(after ~= before, 'which is a different answer from before')
+        ok(repo._reader ~= first, 'the stale child is not reused')
+        ok(first.closed, 'and it is closed rather than leaked')
+      end)
     end),
   },
 }

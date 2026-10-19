@@ -1,4 +1,4 @@
---- Blame formatting: gitsigns' `<specifier>` formatter (07 §4).
+--- Blame formatting: gitsigns' `<specifier>` formatter (signs §4).
 ---
 --- gitsigns renders the inline blame through `current_line_blame_formatter`, a
 --- string of `<specifiers>` expanded against the commit behind the line, and

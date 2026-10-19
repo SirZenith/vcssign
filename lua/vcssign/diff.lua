@@ -68,10 +68,11 @@ end
 ---
 --- Note on `linematch`: `true` means "run linematch on every hunk, however
 --- large", and linematch is quadratic in hunk size — an all-changed 20k-line
---- buffer effectively hangs.  `config.diff.linematch` is `true` by default, so
---- a caller diffing a huge buffer should override it with a bounded integer
---- ("only hunks up to this many lines").  Kept as a caller concern until the
---- config surface is revised.
+--- buffer effectively hangs.  `config.diff.linematch` therefore defaults to
+--- `false` (see the measurement in `lua/vcssign/config.lua`), so the default
+--- path never runs it; a caller that turns it on should pass a bounded integer
+--- ("only hunks up to this many lines") rather than `true`.  Kept as a caller
+--- concern until the config surface is revised.
 ---@param a_text string
 ---@param b_text string
 ---@param opts? vcssign.DiffOpts

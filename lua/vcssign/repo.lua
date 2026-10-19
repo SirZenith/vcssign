@@ -41,12 +41,23 @@ M.__index = M
 ---@field is_updating boolean
 ---@field has_pending boolean   a refresh was requested while one was running
 ---@field is_deleted boolean    the repository vanished / was disposed
----@field has_loaded boolean    at least one successful liveness probe happened
+---@field has_loaded boolean    at least one successful liveness probe happened, or the
+---                             root was handed over already verified (`M.new`'s `opts`)
 ---@field error_count integer   consecutive failures (backoff exponent)
 ---@field last_error string?
 ---@field fs_handles table<string, uv.uv_fs_event_t>
 ---@field fs_handle_pool uv.uv_fs_event_t[]
 ---@field watch_paths table<string, true>
+---@field watch_recursive table<string, boolean>  how each watched path was started
+---@field changed_paths table<string, true>  absolute paths a filesystem event named since the
+---                                         last announcement; replaced, never reused (perf P0-3)
+---@field changed_all boolean  an event moved something that names no file (index / wc.db):
+---                            every baseline may be stale
+---@field status_cache table<string, vcssign.FileStatus>?  the repository's status view, or nil
+---@field _reader vcssign.BlobReader?  the batch reader, once some baseline was read through it
+---@field _reader_stamp string?  the baseline stamp that reader was started on (see `read_blob`)
+---                            when it has to be asked again (perf P0-1).  Absence of a
+---                            path means "tracked and in sync with its baseline".
 
 ---@param path string
 ---@return boolean
@@ -61,23 +72,40 @@ local subscribe = util.subscribe
 --- manager calls `:start()`, actions call `:refresh_now()`.
 ---@param system vcssign.VcsSystem
 ---@param root string
+---@param opts? { verified: boolean }  `verified`: `root` came straight out of this
+---  system's own command (`registry.detect_async`), so it is already known to exist and
+---  the first liveness probe would only repeat that command.  Skipping it saves one
+---  process — and one round trip of first-sign latency — per repository.  Nothing is
+---  lost: `start()` still watches for the repository disappearing, and the next real
+---  trigger (fs event, `FocusGained`, an action) probes as usual.
 ---@return vcssign.Repo
-function M.new(system, root)
+function M.new(system, root, opts)
+  local verified = opts ~= nil and opts.verified == true
   local self = setmetatable({}, M)
   self.system = system
   self.root = base.normalize(root)
   self.marker_path = vim.fs.normalize(vim.fs.joinpath(self.root, system.keyfile))
   self.refs = {}
-  self.is_dirty = true -- the first refresh is always wanted
+  self.is_dirty = not verified -- the first refresh is always wanted, unless the root was
+  --                             just verified by the VCS itself (perf P0-5)
   self.is_updating = false
   self.has_pending = false
   self.is_deleted = false
-  self.has_loaded = false
+  self.has_loaded = verified
   self.error_count = 0
   self.last_error = nil
   self.fs_handles = {}
   self.fs_handle_pool = {}
   self.watch_paths = {}
+  self.watch_recursive = {}
+  self.changed_paths = {}
+  self.changed_all = false
+  self.status_cache = nil
+  self.status_stamp = nil
+  self._reader = nil
+  self._reader_stamp = nil
+  self._status_waiters = {}
+  self._status_generation = 0
   self._waiters = {}
   self._on_update = {}
   self._on_error = {}
@@ -94,7 +122,14 @@ end
 
 -- ▏ subscriptions ────────────────────────────────────────────────────────────
 
----@param fn fun(repo: vcssign.Repo)
+--- A successful liveness probe announcement.
+---
+--- The second argument is the changed-path channel (perf P0-3): a set of absolute
+--- paths for "these files moved", `nil` for "something moved that names no file
+--- — assume every baseline", and an empty set for "the probe found nothing
+--- moved".  Without that last case every `FocusGained` would re-run the whole
+--- pipeline for every buffer of the repository for no reason.
+---@param fn fun(repo: vcssign.Repo, changed: table<string, true>?)
 ---@return fun() unsubscribe
 function M:on_update(fn)
   return subscribe(self._on_update, fn)
@@ -112,9 +147,203 @@ function M:on_delete(fn)
   return subscribe(self._on_delete, fn)
 end
 
+-- ▏ status view ──────────────────────────────────────────────────────────────
+
+--- Whether this system can answer "which paths differ" in one query.
+---@return boolean
+function M:has_status()
+  return self.system.status ~= nil
+end
+
+--- The adapter's baseline key right now, or nil when it has none (perf P0-4).
+---
+--- This is the same free syscall family `attach` uses for its render
+--- fingerprint, and here it answers a second question: has the store that
+--- decides "staged" moved since the cached view was taken.
+---@private
+---@return string?
+function M:_stamp()
+  local fn = self.system.baseline_stamp
+  if not fn then
+    return nil
+  end
+  local ok, stamp = pcall(fn, self.root)
+  return (ok and type(stamp) == 'string') and stamp or nil
+end
+
+--- The repository's status view, asked at most once per invalidation (perf P0-1).
+---
+--- Coalesced on purpose: every caller arriving while a query is in flight is
+--- answered by that same query, which is the whole point — twenty buffers
+--- attaching at once must cost one subprocess, not twenty.
+---
+--- The third argument says whether the answer may be *trusted about staging*.
+--- That is a different question from "is it fresh": another program can stage a
+--- file without any filesystem event reaching us in time, so the cached view's
+--- `staged` answer is only believed while the baseline key it was taken under
+--- is still the current one.  `false` means "ask the baseline itself", which is
+--- one `show HEAD` — never a wrong sign.
+---
+--- A failed query is not cached: the next caller asks again, and `attach` falls
+--- back to its per-file questions in the meantime.
+---@param cb fun(err: string?, entries: table<string, vcssign.FileStatus>?, trusted: boolean)
+function M:status(cb)
+  local stamp = self:_stamp()
+  local cached = self.status_cache
+  if cached then
+    if stamp == self.status_stamp then
+      return cb(nil, cached, stamp ~= nil)
+    end
+    -- The store moved under this view, so its staged answers are stale.
+    self:_drop_status()
+  end
+  local waiters = self._status_waiters
+  local entry = { cb = cb, stamp = stamp }
+  waiters[#waiters + 1] = entry
+  if #waiters > 1 then
+    return
+  end
+  self:_query_status(waiters)
+end
+
+---@private
+---@class vcssign.StatusWaiter
+---@field cb fun(err: string?, entries: table<string, vcssign.FileStatus>?, trusted: boolean)
+---@field stamp string?
+
+---@param waiters vcssign.StatusWaiter[]
+function M:_query_status(waiters)
+  local generation = self._status_generation
+  local stamp = waiters[1].stamp
+  self.system.status(self.root, function(err, entries)
+    -- `stamp` was taken *before* the query: if the store moved while the query
+    -- was in flight, the answer describes a world that is already gone.  It is
+    -- still the best answer anyone has (and the refresh the event triggered is
+    -- on its way), so it is handed out — but never cached, and never trusted
+    -- about staging.  Re-querying here would be the alternative; it is not done
+    -- because a store the query itself disturbs would then feed itself a loop.
+    local trusted = stamp ~= nil and self:_stamp() == stamp
+    if trusted and not err and entries and self._status_generation == generation then
+      self.status_cache = entries
+      self.status_stamp = stamp
+    end
+    -- Reset before answering: a callback may ask again, and by then the cache
+    -- is either in place (answered without another subprocess) or correctly
+    -- absent.
+    if self._status_waiters == waiters then
+      self._status_waiters = {}
+    end
+    for _, waiter in ipairs(waiters) do
+      waiter.cb(err, entries, trusted)
+    end
+  end)
+end
+
+---@private
+function M:_drop_status()
+  self.status_cache = nil
+  self.status_stamp = nil
+  -- Retires any query in flight: see `_query_status`.
+  self._status_generation = self._status_generation + 1
+end
+
+--- Fold one named worktree event into the cached view.
+---
+--- A known *tracked* file can only have moved in its worktree — the second
+--- layer lives in the metadata store, and that is a different event — so the
+--- entry is patched instead of thrown away, which is what keeps a save from
+--- costing a whole-repository query.  Anything else (the path is absent, i.e.
+--- it was in sync, or it was untracked) has no entry that can describe the new
+--- state, so the next caller asks again.
+---@private
+---@param path string
+function M:_note_status_change(path)
+  local cached = self.status_cache
+  if not cached then
+    return
+  end
+  local entry = cached[path]
+  if entry and entry.tracked then
+    entry.worktree = true
+    return
+  end
+  self:_drop_status()
+end
+
 -- ▏ refresh pipeline ──────────────────────────────────────────────────────────
 
 --- Note a change and coalesce a refresh behind the debounce window.
+-- ▏ blob reads ──────────────────────────────────────────────────────────────
+
+--- Read `rel` as of `rev` through the repository's batch reader, when its
+--- adapter has one (perf P0-2).
+---
+--- Why: a per-file `show` costs a process each (~45 ms of start-up for a reply of
+--- a few kilobytes), while one `cat-file --batch` child answers every file of
+--- this repository for the price of a single spawn.  The reader is created on
+--- first use and lives as long as the repository does.
+---
+--- A read that fails on a **closed** reader drops it and retries once through the
+--- plain command: a dead child must degrade to the slow path, never to "no
+--- signs".  A read that fails while the reader is still open is a real error and
+--- is reported as one.
+---@param rev string
+---@param rel string
+---@param cb fun(err: string?, text: string?)
+function M:read_blob(rev, rel, cb)
+  local open = self.system.open_blob_reader
+  if not open then
+    return self.system.show(self.root, rev, rel, cb)
+  end
+  local stamp = self:_stamp()
+  if rev == 'index' and stamp == nil then
+    -- The child resolves `:<path>` against the index it read when it started, so
+    -- without a way to tell that the index moved, a staged baseline could be
+    -- answered from a stale one.  One command is the honest answer then.
+    return self.system.show(self.root, rev, rel, cb)
+  end
+  local reader = self._reader
+  if reader and not reader.closed and stamp ~= self._reader_stamp then
+    -- Measured: after `git apply --cached` the same `cat-file --batch` child
+    -- keeps answering with the *previous* index blob, because git reads the
+    -- index once per process.  So a reader only outlives a store that is not
+    -- moving; when it moves, this next read pays for a fresh one.
+    self:_close_reader()
+    reader = nil
+  end
+  if not reader or reader.closed then
+    reader = open(self.root)
+    if reader.closed then
+      -- Could not start at all (no VCS on PATH?): the plain command is all that
+      -- is left, and it is what the caller would have used without this hook.
+      self._reader = nil
+      return self.system.show(self.root, rev, rel, cb)
+    end
+    self._reader = reader
+    self._reader_stamp = stamp
+  end
+  reader:read(rev, rel, function(err, text)
+    if err and reader.closed then
+      if self._reader == reader then
+        self._reader = nil
+      end
+      return self.system.show(self.root, rev, rel, cb)
+    end
+    cb(err, text)
+  end)
+end
+
+---@private
+function M:_close_reader()
+  local reader = self._reader
+  self._reader = nil
+  self._reader_stamp = nil
+  local close = reader and reader.close
+  if close then
+    pcall(close, reader)
+  end
+end
+
 function M:mark_dirty()
   if self.is_deleted then
     return
@@ -246,8 +475,47 @@ function M:_on_alive(_root)
   self.last_error = nil
   self:_cancel_retry()
   self.has_loaded = true
+  local changed = self:_take_changes()
   log.debug('%s: alive', self.root)
-  util.emit(self._on_update, self)
+  util.emit(self._on_update, self, changed)
+end
+
+--- Remember what a filesystem event said moved, for the next announcement.
+---
+--- Only filesystem events feed this: `mark_dirty` / `refresh` mean "ask again",
+--- which is a request, not evidence of a change.
+---@private
+---@param paths string[]?  absolute paths the event named, or nil when it named
+---                        nothing usable (then every baseline may have moved)
+function M:_record_change(paths)
+  if not paths then
+    self.changed_all = true
+    return
+  end
+  for _, path in ipairs(paths) do
+    self.changed_paths[base.normalize(path)] = true
+  end
+end
+
+--- Snapshot the recorded changes and start a fresh set.
+---
+--- Swapped rather than cleared so a subscriber may keep the table it was
+--- handed, and an event arriving mid-announcement lands in the next round.
+---@private
+---@return table<string, true>?  paths, nil for "anything", {} for "nothing"
+function M:_take_changes()
+  -- Written out rather than `self.changed_all and nil or ...`: `and nil` is
+  -- falsy, so that idiom can never answer nil and would silently turn "every
+  -- baseline may have moved" into "nothing moved".
+  local changed
+  if self.changed_all then
+    changed = nil
+  else
+    changed = self.changed_paths
+  end
+  self.changed_all = false
+  self.changed_paths = {}
+  return changed
 end
 
 ---@private
@@ -366,7 +634,11 @@ function M:_init_watch()
   -- Metadata only (D38): the work tree is not watched.  A hunk is computed
   -- when a buffer is signed, from the index/HEAD the VCS exposes, so no
   -- directory under the root needs a handle of its own any more.
-  self:_watch(self.metadata_path, RECURSIVE_FS_EVENT)
+  -- Recursive only when the adapter says its store is spread over the tree:
+  -- svn's `wc.db` is one file, and recursing into `.svn/pristine/` buys nothing
+  -- but events (perf §3.5 S1).
+  local recursive = self.system.metadata_recursive ~= false and RECURSIVE_FS_EVENT
+  self:_watch(self.metadata_path, recursive)
   -- Liveness watch.  libuv never reports the *watched directory itself*
   -- going away (verified on Windows: renaming `.git` away fires nothing on
   -- a handler watching `.git`, while a non-recursive handler on the root
@@ -410,6 +682,7 @@ function M:_watch(path, recursive)
   end
   self.fs_handles[path] = handle
   self.watch_paths[path] = true
+  self.watch_recursive[path] = recursive
   log.debug('watching %s (recursive=%s)', path, tostring(recursive))
 end
 
@@ -422,6 +695,7 @@ function M:_unwatch(path)
   end
   self.fs_handles[path] = nil
   self.watch_paths[path] = nil
+  self.watch_recursive[path] = nil
   handle:stop()
   if not handle:is_closing() then
     self.fs_handle_pool[#self.fs_handle_pool + 1] = handle
@@ -444,6 +718,7 @@ function M:_stop_watching()
   end
   self.fs_handle_pool = {}
   self.watch_paths = {}
+  self.watch_recursive = {}
 end
 
 ---@private
@@ -469,6 +744,38 @@ function M:_on_fs_event(watch_path, err, filename, events)
   if not is_dir(self.root) or uv.fs_stat(self.marker_path) == nil then
     log.debug('repository gone: %s', self.root)
     return self:_mark_deleted()
+  end
+  -- Record *what* moved before deciding anything else: the announcement after
+  -- the next probe is the only channel that tells a buffer whether it has to
+  -- do any work at all (perf P0-3).
+  local changed
+  if watch_path == self.metadata_path then
+    -- The index / wc.db is one store for the whole repository: a change there
+    -- can move the baseline of any file, so it names no path.
+    changed = nil
+  elseif filename and filename ~= '' then
+    local path = vim.fs.normalize(vim.fs.joinpath(self.root, filename))
+    local stat = uv.fs_stat(path)
+    -- A named *file* can only concern itself.  Anything else names no file, so
+    -- every baseline stays suspect: the marker (`.git` / `.svn`), a directory
+    -- whose contents libuv reports as the directory itself (verified: an edit
+    -- inside `.git` fires the root watch with `filename = '.git'`), or a path
+    -- that is already gone.
+    if stat and stat.type == 'file' then
+      changed = { path }
+    end
+  end
+  self:_record_change(changed)
+  -- Keep the status view in step with what the filesystem just said: a named
+  -- file is a worktree change (the second layer lives in the metadata store),
+  -- while a metadata event or a directory-summarised one can move any baseline
+  -- and so retires the whole view (perf P0-1).
+  if changed == nil then
+    self:_drop_status()
+  else
+    for _, path in ipairs(changed) do
+      self:_note_status_change(path)
+    end
   end
   -- A probe can spawn a VCS command that rewrites `.git/index`; an event caused
   -- by our own command must not queue another probe.  (`--no-optional-locks`
@@ -517,6 +824,9 @@ end
 --- about it (and `_remove` is idempotent).
 function M:dispose()
   self:_mark_deleted()
+  -- Before the waiter list is cleared: a pending read is answered with an error
+  -- and retried through the plain command by whoever asked.
+  self:_close_reader()
   self._waiters = {}
   self._on_update = {}
   self._on_error = {}

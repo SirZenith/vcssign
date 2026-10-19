@@ -50,10 +50,45 @@ local function marker_at(dir)
   return stat and stat.type == 'directory' and dir or nil
 end
 
+--- Where svn keeps the working copy's own bookkeeping.  Every operation that
+--- moves the baseline (`update`, `switch`, `revert`, `add`, `commit`) rewrites
+--- `<root>/.svn/wc.db`; nothing else in there needs watching, because the
+--- pristine store under `.svn/pristine/` holds content-addressed copies that no
+--- baseline read ever looks at.
+---@param root string
+---@return string
+function M.metadata_dir(root)
+  return vim.fs.joinpath(base.normalize(root), M.keyfile)
+end
+
+--- svn's baseline store is the single file `wc.db` in that directory, so the
+--- watch is not recursive (see `vcssign.VcsSystem.metadata_recursive`).  Without
+--- this, a `svn commit` in a big working copy wakes the pipeline ~2500 extra
+--- times for events nothing reads (perf §3.5 S1).
+M.metadata_recursive = false
+
 ---@param path string
 ---@return string?
 function M.find_root_sync(path)
   return base.find_root_upwards(path, marker_at)
+end
+
+--- A free change-detection key for svn's baseline store (perf P0-4).
+---
+--- `svn cat -r BASE` resolves through `.svn/wc.db`, and every operation that
+--- can change what BASE holds — `update`, `switch`, `revert`, `add`, the
+--- post-commit bump — rewrites that SQLite file, so one stat covers the whole
+--- baseline.  (There is no index: D42's `index` baseline *is* BASE.)  A working
+--- copy without a `wc.db` answers nil, so the caller re-reads and lets svn
+--- report the damage.
+---@param root string
+---@return string?
+function M.baseline_stamp(root)
+  local db = vim.fs.joinpath(base.normalize(root), '.svn', 'wc.db')
+  local key = base.stat_key(db)
+  -- `stat_key` answers '-' for a missing entry; without wc.db there is no
+  -- baseline to speak of, so the caller re-reads and lets svn report it.
+  return key ~= '-' and key or nil
 end
 
 ---@type boolean
@@ -168,6 +203,98 @@ function M.is_tracked(root, rel, cb)
   end)
 end
 
+--- Undo the XML entity quoting svn applies to paths.
+---@param text string
+---@return string
+local function unescape(text)
+  return (
+    text:gsub('&(%a+);', {
+      amp = '&',
+      lt = '<',
+      gt = '>',
+      quot = '"',
+      apos = "'",
+    })
+  )
+end
+
+--- What a `wc-status` `item` means for the sign layers.
+---
+--- `normal` and `none` are the "matches its BASE" answers, and `external` is
+--- another working copy altogether — all three stay *out* of the map, because a
+--- path the map does not mention is the one that needs no baseline read.
+---@type table<string, vcssign.FileStatus?>
+local SVN_ITEM = {
+  modified = { tracked = true, staged = false, worktree = true },
+  conflicted = { tracked = true, staged = false, worktree = true },
+  missing = { tracked = true, staged = false, worktree = true },
+  obstructed = { tracked = true, staged = false, worktree = true },
+  incomplete = { tracked = true, staged = false, worktree = true },
+  added = { tracked = true, staged = false, worktree = true },
+  replaced = { tracked = true, staged = false, worktree = true },
+  deleted = { tracked = true, staged = false, worktree = true },
+  unversioned = { tracked = false, staged = false, worktree = false },
+  ignored = { tracked = false, staged = false, worktree = false, ignored = true },
+}
+
+--- Parse `svn status --xml` output into `{[abspath] = vcssign.FileStatus}`
+--- (perf P0-1).
+---
+--- Measured shape (svn 1.14.5): attributes come out one per line, and the
+--- document is `<status><target path="."><entry path="REL"><wc-status …
+--- item="modified">…` — with the command run in the working copy root, `path`
+--- is relative to it.
+---
+--- svn has no staging area, so no entry ever sets `staged`: BASE is both the
+--- comparison baseline and the second layer, which is why `capabilities`
+--- declares `staged_signs = false` (D42).
+---
+--- The `dir` flag is *not* set here — it needs a `stat`, so `M.status` fills it
+--- in for the untracked entries only, keeping this function pure.
+---@param xml string
+---@param root string
+---@return table<string, vcssign.FileStatus>
+function M.parse_status(xml, root)
+  local entries = {}
+  for chunk in xml:gmatch('<entry%s(.-)</entry>') do
+    local path = chunk:match('path="([^"]*)"')
+    local item = chunk:match('item="([%a_]*)"')
+    local status = item and SVN_ITEM[item]
+    if path and status then
+      entries[base.normalize(vim.fs.joinpath(root, unescape(path)))] = vim.deepcopy(status)
+    end
+  end
+  return entries
+end
+
+--- One status query for the whole working copy (perf P0-1).
+---
+--- `--no-ignore` is not an optimisation knob but a fidelity one: without it an
+--- ignored file is simply absent from the answer, and "absent" means "in sync
+--- with BASE".  The signs would come out the same — D49 draws nothing for an
+--- ignored path either way — but the answer would no longer say *why*, and a
+--- clean file would be indistinguishable from one the working copy was told to
+--- leave alone.  The price is a walk of ignored trees, so an ignored entry that
+--- turns out to be a directory gets the `dir` flag (one `stat`, no recursion) and
+--- is then handled by the same prefix rule as git's `traditional` records.
+---@param root string
+---@param cb fun(err: string?, entries: table<string, vcssign.FileStatus>?)
+function M.status(root, cb)
+  exec.run(build({ 'status', '--xml', '--no-ignore' }), { cwd = root }, function(err, res)
+    if err then
+      return cb(err)
+    end
+    local entries = M.parse_status(res.stdout, root)
+    for path, status in pairs(entries) do
+      if not status.tracked then
+        local stat = vim.uv.fs_stat(path)
+        status.dir = stat ~= nil and stat.type == 'directory'
+      end
+    end
+    cb(nil, entries)
+  end)
+end
+
 --- `2026-10-16T09:00:00.000000Z` (svn always reports UTC) as Unix seconds.
 ---
 --- `os.time` reads its table as *local* time, so the offset it applied is added
@@ -265,7 +392,7 @@ M.unstage = base.unsupported('unstage')
 ---
 --- The patch goes through a temporary file because svn 1.14.5 refuses stdin.
 --- `--strip N` drops N leading path components.  Measured with svn 1.14.5
---- (07 §11.2, reshaped in Step 9): `--strip 0` accepts *both* dialects — a bare
+--- (signs §11.2, reshaped in Step 9): `--strip 0` accepts *both* dialects — a bare
 --- unidiff (`--- f`), svn's own format (with `Index:`) and git's headers
 --- (`--- a/f` / `+++ b/f`, which is what `hunk.build_patch` emits) all apply
 --- and print `U <path>` — while `--strip 1` conflicts and `--strip 2` fails

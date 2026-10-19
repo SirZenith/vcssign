@@ -141,3 +141,24 @@ M.run(cmd, opts, cb)
   `diff(joined, joined) = {}`；`diff(joined..'\n', joined) = {{3,1,3,1}}`；`diff("x","x\n") = {{1,1,1,1}}`。
   **结论**：buffer 侧与 git blob 侧必须用**同一约定**（推荐两边都 `concat(lines,'\n')`、末尾都不带 `\n`），
   否则末行永远凭空多一个假 hunk；`ignore_cr_at_eol=true` 可消除 CRLF/A 差异。
+
+---
+
+## M7 补记：长驻子进程与目录事件（`08` §2.7–§2.8、§3.5 S1）
+
+**`vim.system` 的 stdin 默认不是可写管道。** `exec.stream(cmd, { cwd = root }, on_stdout, on_exit)` 要显式写
+`stdin = true` 才能 `proc:write(…)`。漏掉它不会报错：`write` 静默失败（外层 `pcall` 吞掉），于是每个请求都等到
+超时才回退到一次性 `show` —— 进程数看着正常、延迟翻倍，argv 直方图里 `git show` 与 `git cat-file` 同时出现
+就是信号。另外流式回调**收尾时会给 `data == nil`**（不是空串），拼接前必须判空。
+
+**非递归 watch 的 `filename` 可以是目录名。** Windows 上一次 `git add` 会让根 watch 依次收到
+`(root, 'base.txt')`、`(root, '.git')`、`(<root>/.git, 'index.lock')`、`(<root>/.git, 'index')` 以及一堆
+`objects\xx\tmp_obj_*`。想把「变了什么」收窄到具体文件，必须 `uv.fs_stat(path).type == 'file'`；把
+`(root, '.git')` 当成某个文件路径，会把 `.git` 下面的 buffer 全部跳过——静默漏刷新。
+
+**`recursive` 只是一个标志，不是 N 个句柄**（S1 实测，与最初猜测相反）：1200 文件的 svn 工作副本、
+`.svn/pristine` 分 255 个分片，`uv_fs_event_t` 句柄数**始终是 2**（元数据 + root 存活探针），递归与否都是 2。
+差别在**事件量**：一次 300 文件的 `svn commit` 里，`.svn` 递归收到 3135 次回调、非递归 1225 次、只听
+`.svn/wc.db` 只有 1 次；多出来的全在 `.svn/pristine/**`，那里没有任何基线读取会看。所以适配器加了
+`metadata_dir` + `metadata_recursive = false`（插件侧 `_on_fs_event` 调用 2985 → 1108），但没有走到「只听单个
+文件」——目录监听对「文件被替换/移走」免疫，文件监听在各平台的寿命语义不一，不值得用静默变聋换最后一个数量级。

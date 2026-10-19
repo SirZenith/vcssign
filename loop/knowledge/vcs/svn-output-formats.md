@@ -66,7 +66,7 @@
 | `?` | untracked |
 | `X` | external |
 | `~` | obstructed |
-| `I` | ignored（`svn status --no-ignore` 时出现；初版默认不带 `--no-ignore`，不采集） |
+| `I` | ignored（`svn status --no-ignore` 时出现；M7 起采集，用于 `FileStatus.ignored` → D49 不给标志） |
 | 列7 `C` | conflicted（tree conflict，优先于列 1） |
 | 列2 `M`（列1 为空格） | modified（纯属性修改） |
 | 列2 `C` | conflicted（属性冲突） |

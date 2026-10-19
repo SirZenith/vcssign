@@ -82,3 +82,29 @@ NUL 分隔（下文以换行代替 NUL 展示；中文路径按 UTF-8 原样传�
 冲突仓库 `temp/git-repo-conflict`：`UU conflict.txt`（upstream U + local U → conflicted）。
 
 `git rev-parse --show-toplevel`（`temp/git-worktree`）输出：`D:/Developer/nvim-plugins/vcssign/temp/git-worktree` —— 正斜杠绝对路径，直接可作 root 键（统一 `vim.fs.normalize`）。
+
+---
+
+## M7 补记（`08` §2.7–§2.8）：`--porcelain=v2` 与 `cat-file --batch`
+
+**状态视图**：`git status --porcelain=v2 -z --untracked-files=all --ignored=traditional --no-renames`，
+一次回答整个仓库（20 个改动文件从 60 次单文件提问降到 1 次）。记录形状：
+
+- `1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>` —— `XY` 两列分别是 index 与 worktree 域的改动；
+- `u …` —— 未合并（冲突）：两边都算「有」；
+- `? <path>` / `! <path>` —— 未跟踪 / 被忽略；`!` 里以 `/` 结尾的是**被折叠的忽略目录**，解析时剥掉
+  尾斜杠并标 `dir`，`attach` 用前缀匹配判断「这个 buffer 落在哪个被忽略目录下」。
+- 两者在 `FileStatus` 里靠 `ignored` 区分：被忽略的路径不画任何标志（D49），未跟踪的才拿整文件层（D42）。
+
+**读 blob**：单文件一次 `show <rev>:<path>` 是一个进程（≈43 ms）；常驻 `git cat-file --batch` 能把它压到零。
+但有两个必须记住的坑：
+
+1. **`cat-file --batch` 每个进程只在启动时解析一次 index**：`git apply --cached` 之后同一个子进程仍返回
+   **旧** blob（实测 stage 前后 sha 相同）。所以 reader 的寿命必须绑基线指纹（`.git/index` + `HEAD` + `HEAD`
+   指向的分支文件），指纹变了就换新进程；拿不到指纹时 `index` 读一律走一次性 `show`。
+2. **正文是原始字节**：`--batch` 回答 `<oid> blob <size>` + 换行 + 内容 + 换行，要 `gsub('\r\n', '\n')` 才能与
+   `show`（`text = true`）逐字节一致，否则 Windows 上每个 CRLF 文件都会凭空多出 hunk。
+
+**多目标**：`git ls-files -- a b c` 支持多路径，但它回答「是否被跟踪」而不是「状态」，且
+`--error-unmatch` 只要有一个未跟踪就整体非零——不适合当「批量问状态」的过渡步（svn 的 `info a b c`
+才真的可以，见 `loop/knowledge/vcs/svn-output-formats.md`）。

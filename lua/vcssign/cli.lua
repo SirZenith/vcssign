@@ -57,10 +57,10 @@ function M.report_no_repo(path, err)
   end
   local message = string.format('no repository found for %s', path)
   -- "No repository" is an answer, not a failure (most directories are not
-  -- repositories, 04 §6.1); anything else — a missing binary, a permission
+  -- repositories, actions §6.1); anything else — a missing binary, a permission
   -- problem, a timeout — is environmental and worth an error.
   if err == nil or registry.is_definitive_negative(err) then
-    -- Not an error: most directories are not repositories (04 §6).
+    -- Not an error: most directories are not repositories (actions §6).
     log.notify(message)
   else
     log.notify_error(message .. ': ' .. err)

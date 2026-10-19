@@ -322,19 +322,22 @@ return {
     fn = guarded(function()
       local dir = helpers.git_repo('nav_todo')
       local bufnr = open(dir .. '/base.txt')
-      -- `setqflist` is the action 07 §10 keeps on the backlog, so this case
+      -- `setqflist` is the action signs §10 keeps on the backlog, so this case
       -- keeps its meaning for the rest of M6: whichever action is named here,
       -- pressing it twice must warn once and not blow up.
       local seen = helpers.capture_notify(function()
         keymap.dispatch('setqflist', { bufnr = bufnr })
         keymap.dispatch('setqflist', { bufnr = bufnr })
+      end, function(s)
+        return #helpers.select_notifications(s, 'setqflist') > 0
       end)
-      eq(#seen, 1, 'one notice per action, not one per key press')
+      local warnings = helpers.select_notifications(seen, 'setqflist')
+      eq(#warnings, 1, 'one notice per action, not one per key press')
       ok(
-        seen[1].message:find('setqflist', 1, true) ~= nil,
-        'it names the action: ' .. seen[1].message
+        warnings[1].message:find('setqflist', 1, true) ~= nil,
+        'it names the action: ' .. warnings[1].message
       )
-      eq(seen[1].level, vim.log.levels.WARN)
+      eq(warnings[1].level, vim.log.levels.WARN)
     end),
   },
 }

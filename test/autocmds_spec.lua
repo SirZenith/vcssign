@@ -102,10 +102,10 @@ return {
         'BufWritePost',
         'BufDelete',
         'BufWipeout',
-        -- `ColorScheme` re-resolves the sign groups' candidate chain.
-        'ColorScheme',
         'DirChanged',
         'FocusGained',
+        -- `ColorScheme` re-resolves the sign groups' candidate chain.
+        'ColorScheme',
         'VimLeavePre',
       }) do
         eq(events[event], true, event .. ' is watched')
@@ -282,7 +282,12 @@ return {
       eq(attach.count(), 0, 'no sign pipeline either')
       -- And nothing was said about it either: most files are not in a
       -- repository, and a notification per file would be unusable.
-      eq(#seen, 0, 'no message about a file that is simply not in a repository')
+      eq(
+        #seen,
+        0,
+        'no message about a file that is simply not in a repository: '
+          .. helpers.describe_notifications(seen)
+      )
       vim.fn.delete(file)
     end),
   },
@@ -391,21 +396,19 @@ return {
         end, 'on_attach to fire')
         eq(attached_repos[1]:lower(), dir:lower())
 
-        local seen = collect(function()
+        local notification = helpers.capture_notify_one(function()
           vim.cmd('enew')
           vim.api.nvim_buf_delete(vim.fn.bufnr(dir .. '/base.txt'), { force = true })
           helpers.wait_for(function()
             return #detached_repos > 0
           end, 'on_detach to fire')
-        end, function(s)
-          return #s > 0
-        end)
+        end, 'on_detach hook failed')
         eq(detached_repos[1]:lower(), dir:lower())
         -- The hook raised inside the detach path: the repository still went, and
         -- the failure was reported (an ERROR, not a silent swallow).
         eq(manager.get_by_path(dir), nil)
-        eq(seen[1].level, vim.log.levels.ERROR)
-        ok(seen[1].message:find('on_detach hook failed', 1, true), seen[1].message)
+        eq(notification.level, vim.log.levels.ERROR)
+        ok(notification.message:find('on_detach hook failed', 1, true), notification.message)
       end)
     end),
   },

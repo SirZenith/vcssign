@@ -40,3 +40,19 @@
 - 「不做 `:Gitsigns` 那类命令族」是有意差异，理由见
   `loop/knowledge/ecosystem/prior-art.md`；本文件里的 `setqflist` / `select_hunk` 等正是当时
   列入 backlog、「等用户点名」的那些。
+
+---
+
+## `08` §5–§6 的遗留（M7 明确不做，留档）
+
+M7 结束时还剩三件，都写在 [`08`](../../archive/perf/2026-10-19T11-33-42-m7-performance-review.md) 的
+§5「不是不想优化，而是不值得」与 §6「还没做的」里：
+
+- **`P1-4` `repo_manager.get_by_path` 的线性扫描**：仓库数是各位数，单次 `0.032 ms`，
+  10 个 root 也才 `0.25 ms`。真要动就顺手做，不值得单独立项。
+- **`S2` 多目标合并**：`svn info a b c` 一次 54.2 ms（单目标 82.5 ms）、`git ls-files -- a b c` 也行，
+  可以把 N 次「这个文件在不在版本控制里」压成 1 次。它是「批量问状态」的**过渡步**，
+  而 `status` 视图（M7 4a）已经把这个问题整体解决，所以只在需要逐个路径判定时才值得做；
+  注意 `git ls-files --error-unmatch` 只要有一个未跟踪就整体非零。
+- **`S3` svn `apply_patch` 的临时文件**：svn 1.14.5 不吃 stdin（`svn.EXE: invalid option:`），
+  写临时文件是**能力差异**，不是缺陷——不要「顺手统一成 stdin」。

@@ -133,13 +133,16 @@ return {
       local passed, err = pcall(function()
         api.nvim_set_hl(0, 'Normal', {})
         clear_staged()
-        signs.define_highlights()
+        -- `:highlight clear` leaves the group *existing* but empty, so the
+        -- "already defined" flag cannot notice: this is the forced path a
+        -- `ColorScheme` takes.
+        signs.define_highlights(true)
         eq(api.nvim_get_hl(0, { name = 'VcssignAddStaged', link = true }).link, 'VcssignAdd')
       end)
       -- Put the theme and the fade back for the specs that run after this one.
       api.nvim_set_hl(0, 'Normal', saved_normal)
       clear_staged()
-      signs.define_highlights()
+      signs.define_highlights(true)
       if not passed then
         error(err, 0)
       end
@@ -163,7 +166,9 @@ return {
           vim.cmd('highlight clear ' .. signs.hl_name(ty))
         end
         vim.cmd('highlight clear ' .. signs.hl_name('add', true))
-        signs.define_highlights()
+        -- `define_highlights` runs once per session, so a re-definition after
+        -- clearing the groups has to be forced.
+        signs.define_highlights(true)
       end
 
       local passed, err = pcall(function()
@@ -392,6 +397,51 @@ return {
         eq(signs.sign_count(bufnr, false), 0)
         eq(signs.sign_count(bufnr, true), 0)
       end)
+    end),
+  },
+
+  {
+    name = 'a whole-file untracked hunk is signposted by its ends, not by every line',
+    fn = guarded(function()
+      -- One hunk covering the whole file, the way an untracked file arrives.
+      -- 5000 lines used to mean 5000 extmarks (3.8 ms and the memory that goes
+      -- with them, perf P2-1).
+      local lines = {}
+      for i = 1, 5000 do
+        lines[i] = 'line ' .. i
+      end
+      with_buf(lines, function(bufnr)
+        local placed = signs.place(bufnr, { hunk('untracked', 1, 5000) })
+        eq(placed, 2, 'two marks, not one per line')
+        local r = rows(bufnr)
+        eq(signtext(r[0]), '┆', 'the first line')
+        eq(signtext(r[4999]), '┆', 'and the last one')
+        eq(r[1], nil, 'nothing in between')
+      end)
+    end),
+  },
+  {
+    name = 'define_highlights does the work once, and again when forced',
+    fn = guarded(function()
+      signs.define_highlights()
+      -- The groups are a fixed set that only a colorscheme change can remove,
+      -- so the per-attach call must be free (perf P2-4).
+      local real = api.nvim_set_hl
+      local calls = 0
+      api.nvim_set_hl = function(...)
+        calls = calls + 1
+        return real(...)
+      end
+      local passed, err = pcall(function()
+        signs.define_highlights()
+        eq(calls, 0, 'a second call writes nothing')
+        signs.define_highlights(true)
+        ok(calls > 0, 'a forced pass writes them again')
+      end)
+      api.nvim_set_hl = real
+      if not passed then
+        error(err, 0)
+      end
     end),
   },
 }

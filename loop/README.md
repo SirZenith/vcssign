@@ -29,7 +29,7 @@ loop/
 
 ## 简写约定
 
-归档文档、workspace 文档与代码注释里用 `00`–`07` 指代归档文档、`D<n>` 指代 ADR
+归档文档、workspace 文档与代码注释里用 `00`–`08` 指代归档文档、`D<n>` 指代 ADR
 （如 `03 §7.3`、`05 §4`、`07 §10`）。对照表见
 [`archive/README.md`](./archive/README.md)；`D<n>` 的一行摘要见
 [`knowledge/decisions.md`](./knowledge/decisions.md)。
