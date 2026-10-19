@@ -104,6 +104,7 @@ return {
         'BufWipeout',
         'DirChanged',
         'FocusGained',
+        'ColorScheme',
         'VimLeavePre',
       }) do
         eq(events[event], true, event .. ' is watched')
