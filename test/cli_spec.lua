@@ -50,6 +50,14 @@ end
 -- is still in place.
 local collect = helpers.capture_notify
 
+-- The same, waiting for the message the case is about: a repository an earlier
+-- case left behind can emit a notification of its own, and asserting on
+-- `captured[1]` would make the outcome depend on which chain answers first.
+local collect_one = helpers.capture_notify_one
+
+-- For the "said nothing" cases: a count says nothing about *what* arrived.
+local messages = helpers.describe_notifications
+
 --- A git repo with one modified file, *not* attached yet.
 ---@param name string
 ---@return string dir
@@ -113,13 +121,13 @@ return {
     name = 'an unknown subcommand lists the ones that exist',
     fn = guarded(function()
       reset()
-      local seen = collect(function()
+      local notification = collect_one(function()
         cli.run({ 'stgae' })
-      end)
-      eq(seen[1].level, vim.log.levels.ERROR)
-      ok(seen[1].message:find('unknown command', 1, true), seen[1].message)
+      end, 'unknown command')
+      eq(notification.level, vim.log.levels.ERROR)
+      ok(notification.message:find('unknown command', 1, true), notification.message)
       for _, name in ipairs(cli.subcommands) do
-        ok(seen[1].message:find(name, 1, true), 'the message names ' .. name)
+        ok(notification.message:find(name, 1, true), 'the message names ' .. name)
       end
     end),
   },
@@ -151,16 +159,18 @@ return {
       vim.cmd('cd ' .. vim.fn.fnameescape(elsewhere))
       vim.cmd('enew')
 
-      local seen = collect(function()
+      local notification = collect_one(function()
         cli.run({ 'refresh' })
-      end, function(s)
-        return #s > 0
-      end)
-      eq(seen[1].level, vim.log.levels.INFO, 'not an error: most directories are not repositories')
-      ok(seen[1].message:find('no repository found', 1, true), seen[1].message)
+      end, 'no repository found')
+      eq(
+        notification.level,
+        vim.log.levels.INFO,
+        'not an error: most directories are not repositories'
+      )
+      ok(notification.message:find('no repository found', 1, true), notification.message)
       ok(
-        seen[1].message:find(elsewhere, 1, true),
-        'and it names the path it looked at: ' .. seen[1].message
+        notification.message:find(elsewhere, 1, true),
+        'and it names the path it looked at: ' .. notification.message
       )
       vim.fn.delete(elsewhere, 'rf')
     end),
@@ -176,11 +186,11 @@ return {
         return manager.count() == 1
       end, 'the repository to attach')
 
-      local seen = collect(function()
+      local notification = collect_one(function()
         cli.run({ 'debug' })
-      end)
-      local report = seen[1].message
-      eq(seen[1].level, vim.log.levels.INFO)
+      end, 'repositories')
+      local report = notification.message
+      eq(notification.level, vim.log.levels.INFO)
       ok(report:find('repositories', 1, true), report)
       ok(report:find(dir, 1, true), report)
       ok(report:find('refs=', 1, true), report)
@@ -255,16 +265,14 @@ return {
       vim.cmd('enew')
 
       local vcssign = require('vcssign')
-      local seen = collect(function()
+      local notification = collect_one(function()
         vcssign.refresh()
-      end, function(s)
-        return #s > 0
-      end)
+      end, 'no repository found')
       -- INFO with the path, exactly like `:Vcssign refresh` (one implementation
       -- in `cli.report_no_repo`), not a bare unclassified message.
-      eq(seen[1].level, vim.log.levels.INFO)
-      ok(seen[1].message:find('no repository found', 1, true), seen[1].message)
-      ok(seen[1].message:find(elsewhere, 1, true), seen[1].message)
+      eq(notification.level, vim.log.levels.INFO)
+      ok(notification.message:find('no repository found', 1, true), notification.message)
+      ok(notification.message:find(elsewhere, 1, true), notification.message)
       vim.fn.delete(elsewhere, 'rf')
     end),
   },
@@ -287,7 +295,7 @@ return {
       local seen = collect(function()
         cli.run({ 'toggle' })
       end)
-      eq(#seen, 0, 'toggling off is not an error')
+      eq(#seen, 0, 'toggling off is not an error:\n' .. messages(seen))
       eq(attach.state(bufnr).shown, false)
       eq(signs.sign_count(bufnr), 0, 'and the signs are gone')
 
@@ -314,11 +322,11 @@ return {
       reset()
       -- Unnamed buffer, nothing to attach to.
       vim.cmd('enew')
-      local seen = collect(function()
+      local notification = collect_one(function()
         cli.run({ 'toggle' })
-      end)
-      eq(seen[1].level, vim.log.levels.ERROR, seen[1].message)
-      ok(seen[1].message:find('cannot toggle signs', 1, true), seen[1].message)
+      end, 'cannot toggle signs')
+      eq(notification.level, vim.log.levels.ERROR, notification.message)
+      ok(notification.message:find('cannot toggle signs', 1, true), notification.message)
     end),
   },
   {
@@ -367,15 +375,15 @@ return {
       edit_file(dir)
       -- `debug` deliberately attaches nothing, so this is also the proof that
       -- the shim reaches Lua at all: a bare session reports zero repositories.
-      local seen = collect(function()
+      local notification = collect_one(function()
         vim.cmd('Vcssign debug')
-      end)
-      ok(seen[1].message:find('0 repositories', 1, true), seen[1].message)
+      end, '0 repositories')
+      ok(notification.message:find('0 repositories', 1, true), notification.message)
 
-      seen = collect(function()
+      local seen = collect(function()
         vim.cmd('Vcssign refresh')
       end)
-      eq(#seen, 0, 'a successful refresh says nothing')
+      eq(#seen, 0, 'a successful refresh says nothing:\n' .. messages(seen))
     end),
   },
 }

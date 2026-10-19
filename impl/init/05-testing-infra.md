@@ -295,6 +295,12 @@ Summary of conflicts:
   `exec.run` 返回前就跑，`exec_spec` 用它钉住「定时器先建后 spawn」这条不变量——旧实现下这个用例会红）。
 - 通知类断言统一用 `helpers.capture_notify(fn, is_done?)`：不给谓词时只排空 50ms（同步回答够用），
   给谓词时等到达（VCS 命令的回答都是异步的）。三份 spec 早先各抄了一份，M4 审查后收敛到 helpers。
+- **要断言的那条通知用 `helpers.capture_notify_one(fn, needle)` 取，不要取 `captured[1]`**。
+  用例并非独占进程：上一个用例留下的仓库可能还在发自己的通知（watcher 触发、探测失败），
+  它会抢在命令的回答前面被断言到 —— 实测签名是 `expected: 2, actual: 4`（断言 INFO，来了 ERROR）。
+  needle 是这条用例的**主题**（`'no repository found'`、`'cannot toggle signs'`），不是「过滤掉意外消息」；
+  其余捕获项属于别的用例，这里不断言。「静默」类断言（`#captured == 0`）用
+  `helpers.describe_notifications` 把内容带进失败信息，否则「expected 0, actual 1」什么也说明不了。
 
 ### M5 之后的实况（174 用例）
 
