@@ -204,7 +204,13 @@ function M.attach(ref, path, cb)
     local key = base.path_key(root)
     local repo = M._by_root[key]
     if not repo then
-      repo = Repo.new(system, root)
+      -- `root` is not a guess: `detect_async` asked this system's own command for it
+      -- (a marker scan only decided *which* system to ask).  So the first liveness
+      -- probe would repeat the command that just ran, and `_bind` may hand the repo
+      -- back without spawning anything (08 P0-5).  A working copy whose marker is
+      -- stale still ends up deleted: the watcher notices, and the next probe after
+      -- any real trigger answers it too.
+      repo = Repo.new(system, root, { verified = true })
       M._by_root[key] = repo
       -- The watcher notices when the repository itself disappears (`rm -rf
       -- .git`, a deleted worktree) and hands it back for teardown.

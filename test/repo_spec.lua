@@ -87,21 +87,56 @@ end
 
 return {
   {
-    name = 'the first probe marks the repository loaded, with no status cache',
+    name = 'a root the detector resolved costs no second probe (M7 P0-5)',
     fn = guarded(function()
       local dir = helpers.git_repo('runtime-first')
-      helpers.with_repo('spec:first', dir, function(repo)
-        eq(repo.system.name, 'git')
-        eq(repo.root, dir)
-        ok(repo.has_loaded, 'has_loaded must be set by the first successful probe')
+      local probes = count_probes(function()
+        helpers.with_repo('spec:first', dir, function(repo)
+          eq(repo.system.name, 'git')
+          eq(repo.root, dir)
+          -- `detect_async` asked git for this root one command ago, so the
+          -- runtime starts out loaded and `_bind` may answer without spawning.
+          ok(repo.has_loaded, 'the handed-over root counts as loaded')
+          eq(repo.is_dirty, false, 'nothing is outstanding, so no probe is owed')
+          eq(repo.error_count, 0)
+          -- No `entries()`/`get_status()` any more (D38); the metadata watch is
+          -- the only handle it keeps.
+          ok(
+            repo.watch_paths[vim.fs.normalize(repo.metadata_path)],
+            'the metadata directory must be watched'
+          )
+        end)
+      end)
+      eq(probes, 1, 'the first attach spawns the detector probe and nothing more')
+    end),
+  },
+  {
+    name = 'a working copy is resolved once too, not once per layer',
+    fn = guarded(function()
+      local dir = helpers.svn_repo('runtime-first-svn')
+      local probes = count_probes(function()
+        helpers.with_repo('spec:first-svn', dir, function(repo)
+          eq(repo.system.name, 'svn')
+          ok(repo.has_loaded, 'the handed-over working copy root counts as loaded')
+        end)
+      end)
+      eq(probes, 1, 'one `svn info --show-item wc-root`, from the detector only')
+    end),
+  },
+  {
+    name = 'a later trigger still probes a repository that skipped its first one',
+    fn = guarded(function()
+      -- The liveness answer was borrowed from detection, not skipped forever.
+      local dir = helpers.git_repo('runtime-first-later')
+      helpers.with_repo('spec:later', dir, function(repo)
+        eq(repo.has_loaded, true)
+        local probes = count_probes(function()
+          helpers.wait(function(cb)
+            repo:refresh_now(cb)
+          end)
+        end)
+        eq(probes, 1, 'an explicit refresh asks the VCS again')
         eq(repo.is_dirty, false)
-        eq(repo.error_count, 0)
-        -- No `entries()`/`get_status()` any more (D38); the metadata watch is
-        -- the only handle it keeps.
-        ok(
-          repo.watch_paths[vim.fs.normalize(repo.metadata_path)],
-          'the metadata directory must be watched'
-        )
       end)
     end),
   },

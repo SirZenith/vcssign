@@ -46,7 +46,8 @@ M.__index = M
 ---@field is_updating boolean
 ---@field has_pending boolean   a refresh was requested while one was running
 ---@field is_deleted boolean    the repository vanished / was disposed
----@field has_loaded boolean    at least one successful liveness probe happened
+---@field has_loaded boolean    at least one successful liveness probe happened, or the
+---                             root was handed over already verified (`M.new`'s `opts`)
 ---@field error_count integer   consecutive failures (backoff exponent)
 ---@field last_error string?
 ---@field fs_handles table<string, uv.uv_fs_event_t>
@@ -70,18 +71,26 @@ local subscribe = util.subscribe
 --- manager calls `:start()`, actions call `:refresh_now()`.
 ---@param system vcssign.VcsSystem
 ---@param root string
+---@param opts? { verified: boolean }  `verified`: `root` came straight out of this
+---  system's own command (`registry.detect_async`), so it is already known to exist and
+---  the first liveness probe would only repeat that command.  Skipping it saves one
+---  process — and one round trip of first-sign latency — per repository.  Nothing is
+---  lost: `start()` still watches for the repository disappearing, and the next real
+---  trigger (fs event, `FocusGained`, an action) probes as usual.
 ---@return vcssign.Repo
-function M.new(system, root)
+function M.new(system, root, opts)
+  local verified = opts ~= nil and opts.verified == true
   local self = setmetatable({}, M)
   self.system = system
   self.root = base.normalize(root)
   self.marker_path = vim.fs.normalize(vim.fs.joinpath(self.root, system.keyfile))
   self.refs = {}
-  self.is_dirty = true -- the first refresh is always wanted
+  self.is_dirty = not verified -- the first refresh is always wanted, unless the root was
+  --                             just verified by the VCS itself (08 P0-5)
   self.is_updating = false
   self.has_pending = false
   self.is_deleted = false
-  self.has_loaded = false
+  self.has_loaded = verified
   self.error_count = 0
   self.last_error = nil
   self.fs_handles = {}
