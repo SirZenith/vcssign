@@ -235,8 +235,21 @@ M4 期间修掉的三个既有缺陷（都在 04 §7.1 有完整记录）：
       index**，`git apply --cached` 后仍回答旧 blob（sha 不变）→ stage 一个 hunk 后 staged 层恒空，
       `actions_spec` 两例超时。修法：reader 寿命绑 `baseline_stamp`（变了就换新），
       没有指纹的适配器对 `index` 读取直接走 `show`。
-- [ ] 5. P1 动作层三处（stage 双刷新二选一——svn 侧只核 revert/reset 路径 / `has_staged_change`
-      改 `--cached --quiet`（仅 git）/ blame 带 `-L`（git）+ 按行缓存（两类都受益，svn 无 `-L`））
+- [x] 5. P1 动作层三处（08 §2.9 有前后表；`temp/probe_stage.lua` / `probe_commit.lua` / `probe_blame.lua` 保留）
+      - **P1-1**：`stage_hunk` / `unstage_hunk` 只留 `attach.refresh`，删 `repo:refresh_now()`
+        ——应答时进程 4 → 3、应答耗时在噪声内、`hs` 后立刻 `hu` 仍作用于新层（08 §7-5 结案）。
+        `commit`/`stage`/`unstage` 的 `refresh_now` **保留**（无「下一动作读屏幕层」约束，svn 亦无索引事件）。
+      - **P1-2**：`has_staged_change` 先问 `Repo:status`（`trusted` 为真才信 `entry.staged`），
+        不可信才回退两次整文件 `show`；commit 一个已 stage 文件 5 → 3 进程、`show` 2 → 0。
+        没用 `git diff --cached --quiet`：视图已经在那儿了，再多一条命令反而更贵。
+      - **P1-3**：`blame_for` 带 `-L l,l`（`ask(window, retried)`，窗口被拒退回整文件）+ 按行缓存
+        + key 加基线指纹（新增 `base.stamp(system, root)`，`stamp_of` 与 blame 共用一份 pcall 口径）。
+        2000 行首看 211 → 63 ms；**代价**「换到没看过的行」0 → 1 进程（gitsigns 同款，缓解：`delay`
+        默认 1000 ms、回头免费、svn 整文件答案按行摊开）。顺手修掉「外部 commit 后永远显示
+        `Not Committed Yet`」的正确性问题。
+      - 回归：`actions_spec` 32 → 34（`spawned_commands`/`running` 辅助同时拦 `exec.run` 与 `exec.stream`），
+        `blame_spec` 10 → 13（改 1 加 3），全文 290 → **294**。坑：`helpers.git_repo` 的
+        `user.name = 't'`，断言 blame 文本时别写 'Ada Lovelace'。
 - [ ] 6. A4 进程计数探针固化为回归 spec（08 §6 的验收断言表；**git/svn 各一套**）
 - [ ] S1 svn `.svn` 递归 watch 的句柄数（`metadata_dir` 钩子 + 非递归）——先按 08 §7-7 在大 wc 上量
 - [ ] P2 六项随顺路提交捎带（含 P2-6 `diff.lua:71` 文档漂移）

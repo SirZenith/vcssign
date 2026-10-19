@@ -30,7 +30,7 @@ git/svn 适用矩阵**，并把三条 git-only 的结论（P0-2 / P1-2 / P1-3 �
 | 环境 | Windows 11 · NVIM v0.12.4（Release，LuaJIT 2.1.1774638290）· git 2.55.0.windows.2 · svn 1.14.5 |
 | 范围 | `lua/vcssign/` 全量（含 `vcs/` 子层）+ 生命周期（attach / autocmd / actions / repo / manager） |
 | 探针 fixture | git：`temp/bench-repo`（新建，20 个已跟踪文件、每个都有改动；用后已删）。svn：`temp/svn-repo`（`scripts/make_test_repos.sh` 生成的共享 fixture，6 个可读文件、1 个已修改） |
-| 探针形态 | 见下；探针是一次性脚本，用完删除，**复现方法以此文为准**。git 侧：`temp/bench.lua` / `bench2.lua` / `e2e.lua` / `e2e2.lua` / `e2e3.lua` / `proc.lua`；svn 侧：`temp/svnbench.lua`（单价）/ `temp/svne2e.lua`（计数）。**例外：`temp/probe_p04.lua`、`temp/probe_lat.lua`、`temp/probe_clean.lua` 保留**——前者服务 §2.4–§2.6 的进程/渲染对比（`nvim --headless -u NONE -l temp/probe_p04.lua git|svn`），后两者只量「打开一个文件到画出第一个 sign」的延迟与进程构成（`-l temp/probe_lat.lua git|svn` 量脏文件、`-l temp/probe_clean.lua git|svn` 量干净文件，各连跑 5 次取中位）。两者都一次只跑一类 VCS；**M7 步骤 4b 起两者都同时统计 `exec.run` 与 `exec.stream`**（后者是 `cat-file --batch` 的 spawn，只数前者会把「每仓库 1 个进程」看成 0） |
+| 探针形态 | 见下；探针是一次性脚本，用完删除，**复现方法以此文为准**。git 侧：`temp/bench.lua` / `bench2.lua` / `e2e.lua` / `e2e2.lua` / `e2e3.lua` / `proc.lua`；svn 侧：`temp/svnbench.lua`（单价）/ `temp/svne2e.lua`（计数）。**例外（都是某张实测表的来源，保留）：`temp/probe_p04.lua`、`temp/probe_lat.lua`、`temp/probe_clean.lua`、`temp/probe_stage.lua`（§2.9 的 P1-1）、`temp/probe_commit.lua`（§2.9 的 P1-2）、`temp/probe_blame.lua`（§2.9 的 P1-3，`-l temp/probe_blame.lua git|svn [行数]`）**——前者服务 §2.4–§2.6 的进程/渲染对比（`nvim --headless -u NONE -l temp/probe_p04.lua git|svn`），后两者只量「打开一个文件到画出第一个 sign」的延迟与进程构成（`-l temp/probe_lat.lua git|svn` 量脏文件、`-l temp/probe_clean.lua git|svn` 量干净文件，各连跑 5 次取中位）。两者都一次只跑一类 VCS；**M7 步骤 4b 起两者都同时统计 `exec.run` 与 `exec.stream`**（后者是 `cat-file --batch` 的 spawn，只数前者会把「每仓库 1 个进程」看成 0） |
 
 进程/渲染计数探针的核心形态（M7 落地时应固化为回归测试，见 A4）：
 
@@ -346,6 +346,60 @@ staged 层仍然出现），三个计数辅助（`count_probes` / `count_procs` 
 reader）；`test/vcs_git_spec.lua` 新增 1 例（一个进程回答 `HEAD` 与 `index`、缺失对象报错、关闭后
 拒绝读取）。全文 290 例通过。
 
+### §2.9 P1 修复后复测（动作层三处）
+
+三条各自有探针（`temp/probe_stage.lua` / `temp/probe_commit.lua` / `temp/probe_blame.lua`），
+「前」列同样是 `git stash push -- lua/` 量的（步骤 1–4 已提交，所以前基线里 status 视图、
+blob reader、渲染短路都还在——这三条量的就是步骤 5 的增量）。
+
+**P1-1 一次 hunk 动作刷几次**（`temp/probe_stage.lua`，12 行文件、两个 hunk）：
+
+| 指标 | 前 | 后 |
+|------|-----|-----|
+| `stage_hunk` 应答那一刻已发生的进程数 | 4 | **3** |
+| 应答之后到静默的总进程数 | 4 | 4 |
+| 应答耗时（stage / unstage） | 177.8 / 142.7 ms | 152.2 / 190.8 ms |
+| `hs` 之后立刻 `hu` 是否作用于刚更新的层 | 是 | 是 |
+
+少掉的那一个是 `repo:refresh_now()` 的存活探测。**总进程数没变**，因为索引写自身会产生
+fs 事件、去抖之后仍会探测一次——那是仓库级失效的正当成本，不是重复刷新。应答耗时在噪声内
+（svn 侧同理：`reset_hunk`→`revert` 后仍留 `refresh_now`，那条路径没有索引事件可依赖）。
+§7-5 的结论因此是**留 `attach.refresh`、删 `refresh_now`**：前者同步满足「下一个 hunk 动作要
+读屏幕上的层」，后者本来就由事件接管。
+
+**P1-2 问「索引里有没有变更」花几个进程**（`temp/probe_commit.lua`，一个已 stage 的文件）：
+
+| 指标 | 前 | 后 |
+|------|-----|-----|
+| `commit` 一个已 stage 的文件：进程数 | 5 | **3** |
+| 其中整文件 `show` | 2（`:rel` 与 `HEAD:rel`） | **0** |
+
+两次全文 `show` 变成一次 status 视图的哈希查询。**视图不可信时仍回退那两次 `show`**
+（指纹对不上 = 别人可能已经改过索引而事件还没到），所以这不是「用缓存换正确性」，
+而是「用缓存换常见路径」——`actions_spec` 与 `repo_spec` 都有对应用例钉住两种走向。
+
+**P1-3 行内 blame 一次看一行**（`temp/probe_blame.lua`，中位数内的一次运行）：
+
+| 指标 | git 200 行 前 → 后 | git 2000 行 前 → 后 | svn 200 行 前 → 后 |
+|------|--------------------|----------------------|---------------------|
+| 首次看某行 | 80.9 → 70.8 ms | **211.4 → 62.7 ms** | 164.4 ms（前 165～170） |
+| 同一行再看 | 0.1 → 0.4 ms | 0 → 0.3 ms | 0.1 ms |
+| 换到相邻、没看过的行 | **0.1 ms / 0 进程 → 62.4 ms / 1 进程** | 0.1 / 0 → 88.0 / 1 | 0.2 ms / **0 进程** |
+
+四条读法，包含一条**代价**：
+
+- **大文件首次看一行快 3.4 倍**：整文件 `blame` 的解析成本随行数长（2000 行 211 ms），
+  `-L l,l` 不随（63 ms，其中 ~60 ms 是 spawn）。
+- **小文件首次没有收益**（80.9 → 70.8 ms，两个数都是 spawn 主导），这一点不要写进收益。
+- **代价是「换到没看过的行」要多一个进程**（0 → 62～88 ms）。这是按行缓存的直接后果，
+  gitsigns 也是同款设计。三条缓解都在代码里：`current_line_blame_opts.delay` 默认 1000 ms，
+  只有光标**停住**才取；回头看同一行免费；svn 的整文件答案被 `store()` 按行摊开，任何行都免费。
+  若日后认为这个代价不可接受，`lua/vcssign/blame.lua` 的 `ask` 改成给窗口
+  （`-L lnum,lnum+199`）即可，`store()` 已经支持合并多片——一行常量的取舍，不是结构问题。
+- **指纹进 key 顺手修掉了一个正确性问题**：缓存 key 原来只有 `changedtick`，外部
+  `git add` / commit 改了归属而缓冲区文本没动时，那一行会永远显示 `Not Committed Yet`。
+  现在基线指纹一变就重取（`blame_spec` 的 `a commit retires the cached answer` 钉住）。
+
 ## §3 发现清单（按影响降序）
 
 ### P0 · 进程数量（性能的主要来源）
@@ -420,6 +474,11 @@ svn 侧的对应收益全部来自 P0-1 的 status 缓存：**干净文件不取
 
 ### P1 · 动作层的重复工作
 
+> **状态：已修（M7 步骤 5）**。`stage_hunk` / `unstage_hunk` 只留 `attach.refresh`，
+> `refresh_now` 交给索引事件（§2.9：应答时进程 4 → 3，答案仍即时，§7-5 结案）。
+> `commit` / `stage` / `unstage` 的 `refresh_now` **保留**——它们没有「下一次动作要读屏幕上的层」
+> 这个约束，而 `refresh_now` 是它们唯一的刷新手段。
+
 **P1-1 stage 类动作后的双重刷新（git；svn 只剩 revert 路径）**。`lua/vcssign/actions.lua:370-371`（`stage_hunk`）与
 `:403-404`（`unstage_hunk`）同时调 `attach.refresh(ctx.bufnr)`（重拉基线 + 2×diff + 2–3 进程）
 **和** `t.repo:refresh_now()`（1 个 `rev-parse`，其 `on_update` 又会触发 buffer 刷新——§2.2
@@ -430,9 +489,15 @@ svn 侧的对应收益全部来自 P0-1 的 status 缓存：**干净文件不取
 `reset` / `commit` / `stage` / `unstage` 的 `repo:refresh_now()`（`actions.lua:442/478/481/616`）
 同理可核一遍。
 
+> **状态：已修（M7 步骤 5）**。先问 status 视图（`entry.staged`），视图不可信时才回退
+> 两次 `show`；实测 commit 一个已 stage 文件 5 → 3 进程、整文件 `show` 2 → 0（§2.9）。
+
 **P1-2 `has_staged_change` 两次 `show` 全文比较（仅 git）**。`lua/vcssign/actions.lua:565-576` 拉 index
 与 HEAD 两份**全文**再字符串比较。`git diff --cached --quiet -- rel`（或 `git status` 缓存，
 见 P0-1）一次就能回答，还省两份全文的内存。svn 无 index，此函数不会被调到。
+
+> **状态：已修（M7 步骤 5）**。`blame_for` 带行窗口、按行缓存、key 加基线指纹；
+> 大文件首看 211 → 63 ms，代价是「换到没看过的行」多一个进程（§2.9 已如实记录）。
 
 **P1-3 行内 blame 每次编辑都全文件 blame（git 可带 `-L`，svn 不能）**。缓存 key 含 `changedtick`
 （`lua/vcssign/blame.lua:179`），而 `blame_for`（`lua/vcssign/blame.lua:174`）从不传
@@ -477,9 +542,9 @@ svn 侧的对应收益全部来自 P0-1 的 status 缓存：**干净文件不取
 | P0-3 `changed_paths` | ✅ **已修** | ✅ **已修** | 锚点不同（`.git/index`+HEAD / `.svn/wc.db`），代码同一条；实测外部改写一个文件 git 20→1、svn 6→1 个 buffer（§2.5）；svn 的 watch 落点见 S1 |
 | P0-4 渲染短路 | ✅ **已修** | ✅ **已修** | 同一代码路径，**双收益**；实测 git 121→1 进程、svn 25→1（§2.4） |
 | P0-5 首次 attach 去重 root | ✅ **已修** `rev-parse`×2 → ×1（首标 −40 ms） | ✅ **已修** `info`×3 → ×2（同样 2 次问的是同一件事，§2.6） | 同一条修法（`Repo.new` 的 `verified`） |
-| P1-1 stage 双刷新 | ✅ `stage_hunk`/`unstage_hunk` | ⚠️ 无 staging（`actions.lua:162` 直接 `refuse`），但 `reset_hunk`→`revert` 后的 `repo:refresh_now()`（`actions.lua:442`）是同一个模式的残留 | svn 侧只核 revert/reset 路径 |
-| P1-2 `has_staged_change` | ✅ | ❌ 无 index（函数不会被调用） | git-only |
-| P1-3 blame `-L` | ✅ 支持 `-L` | ❌ `svn blame` 无行窗口（适配器 `_opts` 已忽略） | svn 只能靠缓存，见 P1-3 |
+| P1-1 stage 双刷新 | ✅ **已修**：应答时 4 → 3 进程，`hs`→`hu` 仍即时（§2.9） | ⚠️ 无 staging（`actions.lua:162` 直接 `refuse`）；`reset_hunk`→`revert`（`actions.lua:442`）**保留** `refresh_now`——svn 没有索引事件可依赖 | 同一条思路，但 svn 只走 revert/reset |
+| P1-2 `has_staged_change` | ✅ **已修**：commit 5 → 3 进程、`show` 2 → 0（§2.9） | ❌ 无 index（函数不会被调用） | git-only |
+| P1-3 blame `-L` | ✅ **已修**：2000 行首看 211 → 63 ms，按行缓存 | ✅ **同样受益**（靠缓存而非 `-L`）：整文件答案被按行摊开，换行 0 进程 | svn 无行窗口（适配器 `_opts` 忽略），收益全来自缓存 + 基线指纹 |
 | P1-4 `get_by_path` 线性 | ✅ | ✅ | 与 VCS 无关 |
 | P2-1…P2-5 | ✅ | ✅ | 与 VCS 无关（P2-6 文档漂移跨两者） |
 
@@ -578,8 +643,10 @@ staged 变更由批量 `status` 缓存（失效面小：只在索引/HEAD 变动
 - [x] **4b. P0-2 `read_blobs`（仅 git）**——`git cat-file --batch` 常驻替掉每文件那次 `show`
       （落成可选钩子 `open_blob_reader`，实测 20 文件 22 → 3 进程、1661 → 759 ms；见 §2.8）
       （§2.7 的 22 进程里 20 个是它）。svn 无等价协议（见 §3.5），不做。
-- [ ] **5. P1 动作层三处**——stage 双刷新二选一（先做 §7-5 的探针；svn 侧只核 revert/reset 路径）、
-      `has_staged_change` 改 `--cached --quiet`（仅 git）、blame 带 `-L`（git）+ 按行缓存（两类都受益）。
+- [x] **5. P1 动作层三处**——已落地（§2.9）：`stage_hunk`/`unstage_hunk` 只留 `attach.refresh`
+      （应答时进程 4 → 3，`hs`→`hu` 仍即时；§7-5 结案）、`has_staged_change` 先问 status 视图
+      （commit 5 → 3 进程、整文件 `show` 2 → 0，视图不可信时仍回退两次 `show`）、`blame_for` 带
+      `-L l,l` + 按行缓存 + 基线指纹（2000 行首看 211 → 63 ms；代价「换到没看过的行」多 1 进程）。
 - [ ] **6. A4 探针固化**——`test/exec_spec` 加进程计数断言；§6 每步收尾时更新本文实测表。
 - [ ] P2 六项在顺路提交里捎带（尤其 P2-6 的文档漂移——独立一个 `docs(diff)` 提交也行）。
 
@@ -593,7 +660,9 @@ FocusGained 渲染进入次数     ≤ buffer 数（原 git 40 / svn 12）→ �
 纯 buffer 编辑          0 进程（当前 git 3 / svn 2）    → ✅ 0 / 0
 首次 attach 单文件      ≤ 3 进程（原 git 5 / svn 4）→ ✅ 脏文件 git 3 / svn 3，干净文件各 2（§2.7）
 干净文件（status 无记录） 0 个 show/cat（当前 git 0 / svn 0）→ ✅ 达到（§2.7：干净文件各 2 进程，只有 `rev-parse`+`status`）
-stage_hunk 一次         ≤ 6 进程（当前双路径 ≈7；svn 无此动作）
+stage_hunk 一次         ≤ 6 进程（当前双路径 ≈7；svn 无此动作）→ ✅ 3（+1 去抖探测，§2.9）
+commit 一个已 stage 文件  ≤ 4 进程、0 个整文件 show（原 5 / 2）→ ✅ 3 / 0（§2.9）
+行内 blame 一次看一行    1 进程、同一行再看 0 进程（原 1 进程看整文件）→ ✅（§2.9）
 ```
 
 两类 VCS 都要有对应断言——**svn 的计数天然比 git 少一个，别把 git 的数字写死成通用门限**。
@@ -610,9 +679,11 @@ stage_hunk 一次         ≤ 6 进程（当前双路径 ≈7；svn 无此动作
    `item="modified"`、1369 字节/6 文件），剩下是 tree conflict（列 7 C）/ switch（列 5 S）在 XML 里
    长什么样：用 `temp/svn-conflict-a`、`temp/svn-switch` 两个既有 fixture 探（06 附录 A2 的固定列
    经验要平移成 XML 属性）。
-5. **`attach.refresh` 与 `repo:refresh_now` 的双路径**——`FocusGained` 每 buffer 2 渲染
-   已是「两条都在跑」的证据，但 stage_hunk 场景删哪一半、删后「`hs`→`hu` 连按」是否仍即时，
-   要在 `temp/git-repo` 上实测（`actions.lua:367-369` 注释是这条的约束）。
+5. ~~**`attach.refresh` 与 `repo:refresh_now` 的双路径**~~——**已解决（M7 步骤 5）**：
+   留 `attach.refresh`（同步满足 `actions.lua:367-369` 的「下一个动作要读屏幕上的层」），
+   删 `refresh_now`；`temp/probe_stage.lua` 实测应答时进程 4 → 3、应答耗时在噪声内、
+   `hs` 后立刻 `hu` 仍作用于新层（§2.9）。`commit` / `stage` / `unstage` 的 `refresh_now`
+   **保留**——它们没有这个约束，且没有索引事件之外的手段。
 6. ~~**P0-4 的指纹取法**~~——**已解决（M7 步骤 1）**：基线侧不查 `git status`、不算内容 hash，
    直接 stat 元数据——git 是 `.git/index` + `HEAD` + `HEAD` 指向的分支文件（提交只改分支文件，
    `HEAD` 本身字节不变，只 stat `HEAD` 会漏），svn 是 `.svn/wc.db`（update/switch/revert/add/commit
