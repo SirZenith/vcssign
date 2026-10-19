@@ -325,6 +325,24 @@ function M.capture_notify_one(fn, needle)
   return found
 end
 
+--- The captured notifications whose message contains `needle`, in arrival order.
+---
+--- For the cases that expect *more than one* answer (two commands in one window,
+--- a warning followed by the real one): asserting on `captured[1]` / `[2]`
+--- would make the case depend on who else is answering.
+---@param captured vcssign.CapturedNotify[]
+---@param needle string
+---@return vcssign.CapturedNotify[]
+function M.select_notifications(captured, needle)
+  local found = {}
+  for _, notification in ipairs(captured) do
+    if notification.message:find(needle, 1, true) then
+      found[#found + 1] = notification
+    end
+  end
+  return found
+end
+
 --- The captured messages, for a failure that would otherwise only report a
 --- count (`expected 0, actual 1` says nothing about *what* arrived).
 ---@param captured vcssign.CapturedNotify[]

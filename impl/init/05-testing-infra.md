@@ -301,6 +301,9 @@ Summary of conflicts:
   needle 是这条用例的**主题**（`'no repository found'`、`'cannot toggle signs'`），不是「过滤掉意外消息」；
   其余捕获项属于别的用例，这里不断言。「静默」类断言（`#captured == 0`）用
   `helpers.describe_notifications` 把内容带进失败信息，否则「expected 0, actual 1」什么也说明不了。
+- **一个窗口里有多条答案时用 `helpers.select_notifications(captured, needle)`**，再断言「几条、各是什么」，
+  不要靠下标区分到达顺序（`svn` 的 stage+unstage 同窗口、`message_input = 'buffer'` 先 WARN 后 INFO
+  这两处都是这个形状）。谓词里要等的那条也从它算：`#select_notifications(s, 'no staging area') >= 2`。
 
 ### M5 之后的实况（174 用例）
 
