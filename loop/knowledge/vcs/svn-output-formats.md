@@ -118,6 +118,11 @@ R       repl.txt
   `-r 99` → `svn: E160006: No such revision 99`。
 - **`svn blame`** 原始：未提交/修改行用 `-` 代替 rev 与 author（`     -          - MODIFIED-l1`），字段 `%6s` 版本 + 右对齐 author + 内容。
   `svn blame -r BASE <file>` 可用。**耗时：200 行纯文本 141.1 ms，`--xml` 43.9 ms（更快 → 建议解析 XML）**。
+- **`svn log --xml`**：`blame --xml` 的 `<commit>` 只有 `revision`/`author`/`date`
+  （schema `subversion/svn/schema/common.rnc`），**没有 `<msg>`**；commit subject 只能从
+  `svn log --xml` 取。一次 `svn log --xml -r MAX:MIN -- <wc path>` 覆盖 blame 用到的所有 rev
+  （WC 路径以 BASE 为 peg，默认跟随 copy 历史）；`<msg>` 里的 XML 实体需反转义，
+  subject 取第一行，空 `<msg/>` 视为没有 summary。
 - `svn status -- <file>`：已改 → `M       <abs path>`；未纳管 → `?       <abs path>`（首字符 `?`）。
 - **`svn info -- <abs>` 的退出码就是「是否纳管」**：已纳管 → code 0；未纳管或路径不存在 →
   code 1，stderr `svn: warning: W155010: The node '<abs>' was not found.`（空行）+

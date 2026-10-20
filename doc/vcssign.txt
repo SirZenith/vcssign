@@ -475,9 +475,14 @@ current_line_blame_formatter     *vcssign-config-current_line_blame_formatter*
       the addition of `%R` for the relative form (`2 hours ago`,
       `a while ago`); a bare `<author_time>` shortens to `%Y-%m-%d`.
 
-      A specifier the VCS cannot answer is left as written (svn has no
-      `<summary>`); the default format collapses to
-      `' <author>, <author_time:%R> '` on svn.
+      A specifier the VCS cannot answer is left as written, so a custom
+      formatter naming one stays diagnosable.  The *default* format is the
+      exception: a line with no commit subject (an adapter that cannot
+      answer `<summary>`, or an empty commit message) collapses to
+      `' <author>, <author_time:%R> '`, so the literal `<summary>` never
+      ends up on screen.  svn fills `<summary>` from one `svn log` per file
+      baseline (`blame --xml` carries no message); the answer is cached, so
+      moving the cursor does not run it again.
 
     When a function:
       Parameters: ~

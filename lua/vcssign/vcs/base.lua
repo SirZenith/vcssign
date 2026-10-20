@@ -37,10 +37,10 @@ local NORMALIZE_OPTS = { expand_env = false }
 ---@field rev string       git: the 40-hex object id; svn: the revision number as text ('-' = locally modified)
 ---@field author string
 ---@field time integer?    Unix seconds, when the VCS reports one (git: the *author* time)
----@field summary string?  git: the commit summary line
+---@field summary string?  the commit summary line (first line of the message)
 --- The fields below mirror what gitsigns hands to `current_line_blame_formatter`
 --- (expanded by `vcssign.blame_formatter`).  All of them are optional: no single
---- adapter fills every one in (svn has no `summary`, git has no `kind`, ...).
+--- adapter fills every one in (svn has no `author_mail` or `previous`, git has no `kind`, ...).
 ---@field filename string?     the path the VCS reports for the blamed file
 ---@field orig_lnum integer?   the line's number in the commit that introduced it
 ---@field final_lnum integer?  the line's number in the blamed file

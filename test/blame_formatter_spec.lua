@@ -90,7 +90,8 @@ return {
   {
     name = 'a specifier the VCS cannot answer stays visible',
     fn = function()
-      -- svn keeps no commit subject: `<summary>` must not silently vanish.
+      -- An adapter may have no subject (or a commit may have an empty
+      -- message): `<summary>` must not silently vanish.
       local got = info({ summary = false, author_mail = false })
       eq(blame_formatter.expand(' <author> <summary>', got), ' Ada Lovelace <summary>')
       -- Which is why the default format has a variant without it.

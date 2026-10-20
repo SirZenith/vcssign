@@ -30,7 +30,8 @@
 - `diff.linematch` 默认已改成 `false`：它是二次型，实测 500 行全改 1.1s、2000 行 69s、5000 行 OOM。
 - **`signcolumn` 是窗口选项**：`vim.wo[bufnr]` 写不进，要对 `win_findbuf(bufnr)` 的每个窗口设置。
 - **`on_lines` / `on_reload` 在 textlock 里**：只能置标记，刷新必须经 `debounce` 回主循环（D19）。
-- svn blame 没有 time/summary，本地未提交行的 revision 是 `-`；`svn log` 在 WC 上只到 BASE（要看 URL）。
+- `svn blame --xml` 有 rev/author/date，但**没有 log message**；`<summary>` 要从 `svn log --xml` 补；
+  未提交行的 revision 是 `-`；`svn log` 在 WC 上以 BASE 为 peg（不含工作副本改动）。
 - headless nvim **不发** `VimResized` / `FocusGained` 等事件 → 测试用 `nvim_exec_autocmds` 驱动；
   `DirChanged` 的 scope 在 `v:event` 里（回调参数里没有）。
 - **headless 不会自己触发 `CursorMoved`**：`nvim_win_set_cursor` 不产生事件，所以「移动光标 →

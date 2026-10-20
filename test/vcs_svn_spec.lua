@@ -39,6 +39,25 @@ return {
     end,
   },
   {
+    name = 'log parsing keeps the first line of an XML-unescaped message',
+    fn = function()
+      local xml = table.concat({
+        '<?xml version="1.0"?>',
+        '<log>',
+        '<logentry revision="7">',
+        '<author>ada</author>',
+        '<date>2026-10-16T09:00:00.000000Z</date>',
+        '<msg>fix the &amp; bug\n\nlonger body</msg>',
+        '</logentry>',
+        '<logentry revision="8"><msg/></logentry>',
+        '</log>',
+      }, '\n')
+      local subjects = svn.parse_log(xml)
+      eq(subjects['7'], 'fix the & bug')
+      eq(subjects['8'], nil, 'an empty <msg/> has no subject')
+    end,
+  },
+  {
     name = 'metadata_dir names .svn, and the watch there needs no recursion',
     fn = function()
       -- Every baseline-moving operation rewrites `.svn/wc.db`; the pristine
@@ -190,7 +209,44 @@ return {
       eq(result.lines[2].rev, '-', 'a locally modified line has no revision')
       eq(result.lines[2].author, '-')
       eq(result.lines[3].rev, '2')
+      eq(result.lines[1].summary, 'three', 'the subject comes from svn log')
+      eq(result.lines[2].summary, nil, 'an uncommitted line has no subject')
+      eq(result.lines[3].summary, 'three')
       ok(author ~= '' and author ~= '-', 'the working copy has a real author')
+    end,
+  },
+  {
+    name = 'blame fills summaries once per baseline and refreshes after a commit',
+    fn = function()
+      local dir = repo_named('vcs-svn-blame-cache')
+      helpers.write(dir .. '/base.txt', 'one\ntwo\n')
+      helpers.sh({ 'svn', 'commit', '-q', '-m', 'first subject', dir .. '/base.txt' })
+
+      local function blame()
+        return helpers.wait(function(cb)
+          svn.blame(dir, 'base.txt', {}, cb)
+        end)
+      end
+
+      local first = helpers.spawns(function()
+        local err, result = blame()
+        eq(err, nil)
+        eq(result.lines[1].summary, 'first subject')
+      end, dir)
+      eq(#first, 2, 'one blame plus one log')
+
+      local again = helpers.spawns(function()
+        local _, result = blame()
+        eq(result.lines[1].summary, 'first subject')
+      end, dir)
+      eq(#again, 1, 'only blame runs again; the log answer is cached')
+
+      helpers.write(dir .. '/base.txt', 'one\nTWO\n')
+      helpers.sh({ 'svn', 'commit', '-q', '-m', 'second subject', dir .. '/base.txt' })
+      local err, result = blame()
+      eq(err, nil)
+      eq(result.lines[1].summary, 'first subject', 'the unchanged line keeps its commit')
+      eq(result.lines[2].summary, 'second subject', 'the new revision is fetched')
     end,
   },
   {

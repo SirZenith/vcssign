@@ -216,6 +216,28 @@ return {
     end),
   },
   {
+    name = 'the default format drops <summary> for a line with no subject',
+    fn = guarded(function() --[[ no repository needed ]]
+      config.setup({})
+      local with = line('41', os.time({ year = 2020, month = 1, day = 2, hour = 12 }))
+      local without = {
+        rev = '41',
+        author = 'Ada Lovelace',
+        author_name = 'Ada Lovelace',
+        time = with.time,
+        author_time = with.time,
+      }
+      ok(blame.line_text(with):find('add the thing', 1, true) ~= nil, 'subject shown')
+      ok(blame.line_text(without):find('<summary>', 1, true) == nil, 'placeholder dropped')
+      -- Even when the caller says the adapter has a subject, this line's
+      -- absence must win.
+      ok(
+        blame.line_text(without, { has_summary = true }):find('<summary>', 1, true) == nil,
+        'per-line absence wins'
+      )
+    end),
+  },
+  {
     name = 'the inline decoration follows the cursor, one line at a time',
     fn = guarded(function()
       enable_blame()

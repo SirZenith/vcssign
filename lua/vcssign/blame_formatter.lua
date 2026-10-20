@@ -15,9 +15,9 @@ local M = {}
 ---@type string
 M.DEFAULT = ' <author>, <author_time:%R> - <summary> '
 
---- What `DEFAULT` collapses to on a VCS that cannot answer `<summary>` (svn
---- keeps no commit subject in `blame --xml`): leaving the placeholder in would
---- print the literal `<summary>` at the end of every line.
+--- What `DEFAULT` collapses to for a line with no subject (an adapter that
+--- cannot answer `<summary>`, or a commit with an empty message): leaving the
+--- placeholder in would print the literal `<summary>` on screen.
 ---@type string
 M.DEFAULT_NO_SUMMARY = ' <author>, <author_time:%R> '
 
@@ -120,7 +120,7 @@ end
 
 --- The placeholders of one blame line.
 ---
---- Every field a VCS cannot answer is simply absent, so `<summary>` on svn
+--- Every field a VCS cannot answer is simply absent, so a specifier naming it
 --- stays visible; `author` is the one field that is always present, because
 --- `current_line_blame_formatter_nc` (gitsigns' `' <author>'`) leans on it.
 ---@param bl vcssign.BlameLine

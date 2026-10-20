@@ -9,6 +9,10 @@
 ---   * `blame --xml` splits attributes and elements across lines, so the parser
 ---     is structure-tolerant rather than line-oriented (measured: 43.9ms for
 ---     200 lines vs 141.1ms for the plain-text form);
+---   * `blame --xml` carries no log message (subversion's `common.rnc` gives a
+---     `<commit>` only revision/author/date), so one `svn log --xml` per file
+---     baseline fills `<summary>`; if that query fails the author/date answer
+---     still stands;
 ---   * `svn patch` cannot read a patch from stdin — 1.14.5 answers with
 ---     `svn.EXE: invalid option:` — so a temporary file carries it, and because
 ---     a *rejected* hunk still exits 0 (§5.3) the outcome has to be read out of
@@ -330,7 +334,8 @@ end
 --- element for a line that only exists in the working copy, which is how a
 --- locally modified line is recognised (`rev = '-'`, `author = '-'`).  It only
 --- knows the *current* line numbers, so `orig_lnum` mirrors `final_lnum`, and
---- the commit date is the one field of gitsigns' set that svn does report.
+--- the commit date is the one field of gitsigns' set that `blame` itself
+--- reports (`summary` is filled by `M.blame` from a log query).
 ---@param stdout string
 ---@return vcssign.BlameResult
 function M.parse_blame(stdout)
@@ -362,12 +367,102 @@ function M.parse_blame(stdout)
   return { lines = lines, max_lineno = max_lineno }
 end
 
+--- Parse `svn log --xml` into `{[revision] = subject}`.
+---
+--- `blame --xml` cannot answer `<summary>`: subversion's schema gives a
+--- `<commit>` only `revision`, `author` and `date`.  The log is the only place
+--- the message lives.  gitsigns' `<summary>` is the first line of it; an empty
+--- `<msg/>` answers no subject, which the formatter renders through its
+--- no-summary variant.
+---@param xml string
+---@return table<string, string>
+function M.parse_log(xml)
+  local subjects = {}
+  for attrs, body in xml:gmatch('<logentry%s*([^>]*)>(.-)</logentry>') do
+    local rev = attrs:match('revision="(%d+)"')
+    local msg = body:match('<msg[^>]*>(.-)</msg>')
+    if rev and msg then
+      local subject = unescape((msg:gsub('\r\n', '\n'):match('^[^\n]*')))
+      subject = subject:gsub('^%s+', ''):gsub('%s+$', '')
+      if subject ~= '' then
+        subjects[rev] = subject
+      end
+    end
+  end
+  return subjects
+end
+
+--- One log answer per file baseline.  Revision messages are immutable, but a
+--- `switch` can put a different repository behind the same path and revision
+--- number, so the baseline stamp is part of the key; a failed log is not cached.
+---@type table<string, { stamp: string?, subjects: table<string, string> }>
+local log_cache = {}
+
+--- Fill `result.lines[*].summary` from `svn log --xml`, once per baseline.
+---
+--- Enrichment only: `blame` itself already succeeded, so a failed log must
+--- never turn an annotation into an error.  The whole answer is cached by file
+--- and baseline, which keeps the second look (and the second line of the same
+--- buffer) at zero processes.
+---@param root string
+---@param rel string
+---@param result vcssign.BlameResult
+---@param done fun()
+local function fill_summaries(root, rel, result, done)
+  local min_rev, max_rev
+  for _, bl in pairs(result.lines) do
+    local rev = tonumber(bl.rev)
+    if rev then
+      min_rev = math.min(min_rev or rev, rev)
+      max_rev = math.max(max_rev or rev, rev)
+    end
+  end
+  if not min_rev then
+    -- Every line is uncommitted (`rev == '-'`): there is no message to ask for.
+    return done()
+  end
+
+  local stamp = M.baseline_stamp(root)
+  local cache_key = base.normalize(root) .. '\0' .. rel
+  local cached = log_cache[cache_key]
+  if cached and stamp ~= nil and cached.stamp == stamp then
+    for _, bl in pairs(result.lines) do
+      bl.summary = cached.subjects[bl.rev]
+    end
+    return done()
+  end
+
+  local range = min_rev == max_rev and tostring(min_rev) or (max_rev .. ':' .. min_rev)
+  exec.run(
+    build({ 'log', '--xml', '-r', range, '--', abspath(root, rel) }),
+    { cwd = root },
+    function(err, res)
+      if not err then
+        local ok, subjects = pcall(M.parse_log, res.stdout)
+        if ok then
+          log_cache[cache_key] = { stamp = stamp, subjects = subjects }
+          for _, bl in pairs(result.lines) do
+            bl.summary = subjects[bl.rev]
+          end
+        end
+      end
+      -- A failed or unparsable log leaves every line as it was: author/date
+      -- only, which `format_of` already knows how to render.
+      done()
+    end
+  )
+end
+
 --- Per-line attribution, whole file.
 ---
 --- svn has no `-L` line window (`opts` is accepted for interface symmetry and
 --- ignored); the cache that keeps this from costing a process per sign lives in
 --- `blame.lua`.  Blaming the working copy — rather than `-r BASE` — is
 --- deliberate: the uncommitted lines are exactly the ones a user needs marked.
+---
+--- One extra `svn log --xml` (per file baseline, cached in `log_cache`) supplies
+--- the subjects `blame --xml` does not carry; a failure leaves the default
+--- formatter on `DEFAULT_NO_SUMMARY`.
 ---@param root string
 ---@param rel string
 ---@param _opts vcssign.BlameOpts
@@ -381,7 +476,9 @@ function M.blame(root, rel, _opts, cb)
     if not ok then
       return cb('svn: failed to parse blame output: ' .. tostring(result))
     end
-    cb(nil, result)
+    fill_summaries(root, rel, result, function()
+      cb(nil, result)
+    end)
   end)
 end
 

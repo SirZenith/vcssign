@@ -120,7 +120,8 @@ end
 
 --- The format string for one line: the `_nc` variant for a line nobody has
 --- committed yet, and -- for the default format only -- a variant without the
---- subject when the adapter has none (svn does not report `summary`).
+--- subject when the adapter has none or this particular commit message is
+--- empty.
 ---@param bl vcssign.BlameLine
 ---@param has_summary boolean
 ---@return string
@@ -130,7 +131,8 @@ local function format_of(bl, has_summary)
     return cfg.current_line_blame_formatter_nc
   end
   local fmt = cfg.current_line_blame_formatter
-  if fmt == formatter.DEFAULT and not has_summary then
+  local has_line_summary = bl.summary ~= nil and bl.summary ~= ''
+  if fmt == formatter.DEFAULT and (not has_summary or not has_line_summary) then
     return formatter.DEFAULT_NO_SUMMARY
   end
   return fmt
@@ -199,7 +201,8 @@ end
 --- * **ask for the line window** (`-L l,l`), not the whole file — git then
 ---   answers with one line's attribution and parses one line (svn has no line
 ---   window, so its adapter ignores the window and answers the whole file; every
----   later line of that buffer is then free, perf §3.5);
+---   later line of that buffer is then free, perf §3.5, and one cached
+---   `svn log` fills the commit subjects that blame XML does not carry);
 --- * **cache per line number**, keyed by the buffer's `changedtick`, the options
 ---   that shape the answer and the baseline fingerprint — moving the cursor
 ---   costs nothing, because the line it moves to is usually already known;

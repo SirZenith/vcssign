@@ -16,12 +16,14 @@
 --- | external change, one file     | 1        | 2          | 1           | 2          |
 --- | stage one hunk                | 4        | 6          | —           | —          |
 --- | commit one file               | 3        | 4, 0 show  | 2           | 4          |
---- | blame one line / revisit      | 1 / 0    | 1 / 0      | 1 / 0       | 1 / 0      |
+--- | blame one line / revisit      | 1 / 0    | 1 / 0      | 2 / 0       | 2 / 0      |
 ---
 --- Two of these are **per-VCS by nature**, which is why A4 asks for a suite each:
 --- svn has no `cat-file --batch` (one `cat` per modified file is its floor) and
 --- no staging area, while git's count does not depend on the file count.  Do not
---- copy git's numbers onto svn.
+--- copy git's numbers onto svn.  svn's first blame also runs one `svn log` for the
+--- subjects `blame --xml` does not carry; both answers are cached by file
+--- baseline, so a revisit stays at zero.
 local api = vim.api
 
 local actions = require('vcssign.actions')
@@ -70,7 +72,7 @@ local BUDGET = {
   git = { attach = 5, clean = 3, focus = 1, external = 2, stage = 6, commit = 4, blame = 1 },
   -- svn pays one `cat` per modified file (no batch protocol) and has no staging
   -- area, so only its *excess* over "one per file" would be a regression.
-  svn = { attach = 10, clean = 3, focus = 1, external = 2, commit = 4, blame = 1 },
+  svn = { attach = 10, clean = 3, focus = 1, external = 2, commit = 4, blame = 2 },
 }
 
 local KINDS = { 'git', 'svn' }
