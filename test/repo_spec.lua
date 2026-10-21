@@ -1,8 +1,9 @@
 --- M6 Step 2 acceptance: the repository runtime as a *metadata session*.
 ---
---- `Repo` no longer caches a status view (D38): it watches one metadata
---- directory, probes that the repository still exists, and broadcasts the
---- answer.  The four things worth pinning are therefore:
+--- `Repo` caches one status view per metadata stamp (M7/28f97e0): it watches
+--- one metadata directory, retires the view when that stamp moves, and
+--- `note_save` (D51) folds a worktree save into it before the refresh reads
+--- it.  The four things worth pinning are therefore:
 ---
 ---   1. one metadata event reaches subscribers exactly once;
 ---   2. an event storm (or several requests) collapses into one probe;
@@ -943,6 +944,65 @@ return {
           ok(again == entries, 'the same table survived the write')
         end)
         eq(calls, 0, 'a save costs no query at all')
+      end)
+    end),
+  },
+
+  {
+    name = 'a save of a clean file is folded into the view instead of retiring it',
+    fn = guarded(function()
+      local dir = helpers.git_repo('repo-save-note')
+      helpers.with_repo('spec:save-note', dir, function(repo)
+        local path = dir .. '/sub/nested.txt'
+        local _, first = helpers.wait(function(cb)
+          repo:status(cb)
+        end)
+        eq(first[path], nil, 'a clean file is absent from the view')
+
+        local calls = count_status(function()
+          eq(repo:note_save(path, true), 'noted')
+          local _, second = helpers.wait(function(cb)
+            repo:status(cb)
+          end)
+          ok(second == first, 'the same table survived the save')
+          eq(second[path].tracked, true)
+          eq(second[path].worktree, true)
+        end)
+        eq(calls, 0, 'a save does not cost a repository-wide query')
+      end)
+    end),
+  },
+
+  {
+    name = 'a save during a status query waits for it and is not cached as clean',
+    fn = guarded(function()
+      local dir = helpers.git_repo('repo-save-deferred')
+      helpers.write(dir .. '/sub/nested.txt', 'nested\nmore\n')
+      helpers.with_repo('spec:save-deferred', dir, function(repo)
+        local path = dir .. '/sub/nested.txt'
+        local real_status = repo.system.status
+        local held
+        repo.system.status = function(_, cb)
+          held = cb
+        end
+
+        local answered = false
+        repo:status(function()
+          answered = true
+        end)
+        eq(repo:note_save(path, true), 'deferred')
+        eq(answered, false, 'the query is still in flight')
+
+        held(nil, {})
+        eq(answered, true)
+        eq(repo.status_cache, nil, 'the pre-save answer was not cached')
+
+        repo.system.status = real_status
+        local _, fresh = helpers.wait(function(cb)
+          repo:status(cb)
+        end)
+        eq(fresh[path].tracked, true)
+        eq(fresh[path].worktree, true)
       end)
     end),
   },

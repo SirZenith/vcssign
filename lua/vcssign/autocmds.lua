@@ -107,9 +107,10 @@ function M.setup()
   -- The worktree and the index may disagree again the moment the file lands on
   -- disk.  `on_lines` already covers an edit, but `:w` can happen with no text
   -- change at all (a write after an external edit), so the event gets its own
-  -- refresh.
+  -- refresh — after telling the status view that the file moved (D51): the save
+  -- itself moves no metadata, so nothing else would retire the view.
   subscribe('BufWritePost', function(args)
-    attach.refresh(args.buf)
+    attach.note_written(args.buf)
   end)
 
   subscribe('DirChanged', function(args)

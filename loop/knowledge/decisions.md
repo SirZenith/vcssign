@@ -1,8 +1,9 @@
-# 架构决策记录（D1–D50 摘要索引）
+# 架构决策记录（D1–D52 摘要索引）
 
 > 知识文档（`loop/knowledge/`）。来源：`loop/archive/bootstrap/2026-10-16T20-52-42-master-plan.md` §4（D1–D37）与
 > `loop/archive/signs/2026-10-16T23-24-18-line-signs-in-signcolumn.md` §2（D38–D48）与
-> `loop/workspace/signs/2026-10-19T23-53-14-large-repo-status-freeze.md`（D49–D50）。原文抽取，未做改写。
+> `loop/workspace/signs/2026-10-19T23-53-14-large-repo-status-freeze.md`（D49–D50）与
+> `loop/workspace/signs/2026-10-21T14-53-19-signs-vanish-after-save.md`（D51–D52）。原文抽取，未做改写。
 
 **要点**：D1–D37 定下 M0–M5 的骨架——回调链而非 async 框架、`Repo` 只在主循环操作、引用计数、
 不新增依赖、`lua/vcssign/vcs/<name>.lua` 适配器 + registry、侧边栏退役前的 UI 契约等。
@@ -11,6 +12,7 @@ hunk 类型与 gitsigns 对齐 + 双命名空间（D40）、patch 走 stdin（D4
 行尾统一（D43）、键位与 gitsigns 同形（D44）、reset 保护未保存改动（D45）、不引入 async 框架（D46）、
 `culhl` 用原生 `cursorline_hl_group`（D47）、`setup()` 补扫窗口缓冲区（D48）。
 D49–D50 定下 ignored 路径与仓库级 status 的契约：被忽略路径不画 sign，也不进入 status view（D49/D50）。
+D51–D52 定下保存与 status view 的关系，以及 svn「已 add 未提交」文件的空基线。
 
 流水线（M6 Step 12 之后）**代码即事实**：本表只解释「为什么」，不描述现状；现状看 `lua/vcssign/`。
 
@@ -62,9 +64,9 @@ D49–D50 定下 ignored 路径与仓库级 status 的契约：被忽略路径�
 
 ---
 
-*来源：`loop/archive/signs/2026-10-16T23-24-18-line-signs-in-signcolumn.md`，原文 `## §2 关键决策（D38–D48）`；D49–D50 来自 `loop/workspace/signs/2026-10-19T23-53-14-large-repo-status-freeze.md`（标题层级已下移一级）*
+*来源：`loop/archive/signs/2026-10-16T23-24-18-line-signs-in-signcolumn.md`，原文 `## §2 关键决策（D38–D48）`；D49–D50 来自 `loop/workspace/signs/2026-10-19T23-53-14-large-repo-status-freeze.md`；D51–D52 来自 `loop/workspace/signs/2026-10-21T14-53-19-signs-vanish-after-save.md`（标题层级已下移一级）*
 
-### §2 关键决策（D38–D50）
+### §2 关键决策（D38–D52）
 
 | 决策 | 内容 | 理由（为什么） |
 |---|---|---|
@@ -81,3 +83,5 @@ D49–D50 定下 ignored 路径与仓库级 status 的契约：被忽略路径�
 | **D48** | `setup()` 结束前扫一次**窗口里的缓冲区**（`nvim_list_wins` 去重 → `attach.attach`），资格判断仍全部在 `attach.attach` 内 | 懒加载触发挂在 `BufEnter` 上时，插件是在该事件**之后**才配置的，当前文件不会再收到任何事件；只扫可见的窗口而不是全部已加载缓冲区（gitsigns 做的是后者：`"Attach to all open buffers"`），免得为会话里的历史缓冲区白挂仓库；隐藏缓冲区靠自己的 `BufEnter` 补上，不会漏 |
 | **D49** | 被忽略的文件（git `!` / svn `I`）一律不画 VCS 状态：`load_base_status` 见到 `entry.ignored` 就置 `base_text = nil`，与 `attach_to_untracked` 无关；`FileStatus.ignored` 因此有了第一个消费者 | 被忽略是「未跟踪」的**子集**而不是同义词 —— `attach_to_untracked` 回答的是「我还没 `git add` 的文件也让我看到改动」，不是「我明确排除的文件也来报」；gitsigns 的 `ls-files --others --exclude-standard` 同样不给被忽略文件标志 |
 | **D50** | 仓库级 status 不再请求忽略路径：git 去掉 `--ignored=traditional`（显式写 `--ignored=no`），svn 去掉 `--no-ignore`；被忽略路径在 view 中缺席，`load_base_status` 把缺席当 clean，因此仍不画 sign（D49 的行为不变）。新增 `max_status_bytes`（默认 4 MiB）在 `parse_status` 之前拒绝超大输出，并按 baseline stamp 缓存该确定性错误；超限时回落到逐文件 `ls-files`/`show`。 | `git status --porcelain=v2 -uall --ignored=traditional` 会把忽略目录展开成每个文件一条记录：样例仓库 221,955 个文件中 221,385 个被忽略，输出约 17 MB；`parse_status` 在主循环逐条 normalize/建表，直接冻结 Neovim。忽略路径与 clean 路径都不画 sign（D49），所以不需要它们出现在 view 里；需要 `FileStatus.ignored` 的动作应改为按需 `git check-ignore`，而不是让每个 buffer 为 22 万条记录买单。 |
+| **D51** | 保存必须主动告知 status view：`BufWritePost` → `attach.note_written` → `Repo:note_save`。缓存命中时，已有 tracked 条目就地标 `worktree = true`；缺席的 tracked 路径插入合成的 dirty 条目；若 status 查询仍在飞，则丢弃该查询并在它结束后重新查询（`Repo:after_status`）。刷新后若 metadata stamp 未移动且已有基线，直接按已知基线重绘，不再读 `show`。 | view 以 metadata stamp 为键；保存不移动 `wc.db`/`.git/index`，D38 也不监听工作树，于是 `from_buffer` 会把刚保存的缓冲区当作自己的基线，diff 为空、sign 全灭。每次保存都 retire view 会导致每保存一次跑一个仓库级 status（违背 P0-1）；合成 entry 保持「每仓库一次 status」，而「是否真的 dirty」由随后的基线读取裁决。 |
+| **D52** | svn「已 `svn add`、未提交」的文件没有 BASE 节点：`FileStatus.added` 标记它，`load_base_status` 用空基线（`base_text = ''`）渲染整文件 add，不再尝试 `svn cat -r BASE`/`-r HEAD`。 | 该路径在 BASE 和 HEAD 中都不存在，旧实现连续两次 `show` 失败后把 `base_text` 置 nil，sign 在 `svn add` 的瞬间消失。空基线正是 VCS 已知的事实：每一行都是新增；同时省掉两次必然失败的子进程。 |

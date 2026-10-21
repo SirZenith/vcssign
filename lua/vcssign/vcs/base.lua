@@ -72,6 +72,7 @@ local NORMALIZE_OPTS = { expand_env = false }
 ---@field tracked boolean   false for an untracked *or* ignored path
 ---@field staged boolean    the index/BASE differs from HEAD
 ---@field worktree boolean  the worktree differs from the index/BASE
+---@field added boolean?    svn: scheduled for addition, so it has no BASE node
 ---@field ignored boolean?  not under version control because it is ignored
 ---@field dir boolean?      the entry is an ignored directory, not a file
 

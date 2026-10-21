@@ -432,6 +432,9 @@ function M.reset_hunk(target, opts)
     if st.untracked then
       return info('%s is not tracked yet: nothing to discard', t.rel_path)
     end
+    if st.added then
+      return refuse('%s is scheduled for addition: there is no BASE to patch', t.rel_path)
+    end
     if vim.bo[ctx.bufnr].modified then
       return refuse('%s has unsaved changes: save or undo them first', t.rel_path)
     end

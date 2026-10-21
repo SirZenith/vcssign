@@ -295,6 +295,65 @@ function M:_note_status_change(path)
   self:_drop_status()
 end
 
+--- Tell the status view that `path` was written by this editor.
+---
+--- The worktree is not watched (D38), so a save moves nothing the view is
+--- keyed on.  Without this note the view still calls the file clean, and
+--- `load_base_status` takes the just-saved buffer as its own baseline (D51).
+---
+--- A known tracked entry is patched (so one save costs no status query); an
+--- absent path gets a conservative dirty entry when `tracked` says it is a
+--- tracked file, so the next baseline read comes from the repository instead of
+--- the buffer.  An absent untracked/ignored path is left alone: a save cannot
+--- make it tracked.
+---
+--- A query already in flight would answer with the pre-save view and then cache
+--- it.  It is retired here, and the caller waits for its answer before asking a
+--- fresh question (`after_status`).
+---@param path string
+---@param tracked boolean  the attach state's answer; only used for an absent path
+---@return string  `'noted'` (the view was told), `'fresh'` (nothing was cached),
+---                or `'deferred'` (an in-flight query was retired)
+function M:note_save(path, tracked)
+  local cached = self.status_cache
+  if not cached then
+    if self._status_waiters and #self._status_waiters > 0 then
+      self:_drop_status()
+      return 'deferred'
+    end
+    return 'fresh'
+  end
+  local entry = cached[path]
+  if entry then
+    if entry.tracked then
+      entry.worktree = true
+    end
+    return 'noted'
+  end
+  if tracked then
+    cached[path] = { tracked = true, staged = false, worktree = true }
+  end
+  return 'noted'
+end
+
+--- Run `cb` after the status query currently in flight, if any.
+---
+--- `note_save` retires an in-flight answer but cannot cancel it; a caller that
+--- needs a fresh baseline must not join that table (it would be handed the
+--- pre-save view).  With no query in flight this runs `cb` immediately.
+---@param cb fun()
+function M:after_status(cb)
+  local waiters = self._status_waiters
+  if not waiters or #waiters == 0 then
+    return cb()
+  end
+  waiters[#waiters + 1] = {
+    cb = function()
+      pcall(cb)
+    end,
+  }
+end
+
 -- ▏ refresh pipeline ──────────────────────────────────────────────────────────
 
 --- Note a change and coalesce a refresh behind the debounce window.

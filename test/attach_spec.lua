@@ -347,6 +347,32 @@ return {
     end),
   },
   {
+    name = 'svn: a file scheduled for addition diffs against the empty baseline',
+    fn = guarded(function()
+      local dir = helpers.svn_repo('attach-svn-added')
+      local path = dir .. '/new.txt'
+      helpers.write(path, 'one\ntwo\n')
+
+      local bufnr = open(path)
+      local st = attach_now(bufnr)
+      eq(st.untracked, true, 'svn add has not happened yet')
+
+      helpers.sh({ 'svn', 'add', '-q', path })
+      helpers.wait_for(function()
+        return st.tracked == true and st.untracked == false and st.base_text == ''
+      end, 'the scheduled addition to become an add hunk')
+
+      -- No BASE node exists yet, so `svn cat -r BASE` used to fail and the
+      -- whole file lost its signs (D52).  The empty baseline says what the VCS
+      -- knows: every line is an addition.
+      eq(st.added, true)
+      eq(#attach.hunks(bufnr), 1)
+      eq(attach.hunks(bufnr)[1].type, 'add')
+      eq(attach.hunks(bufnr)[1].added.count, 2)
+      eq(signs.sign_count(bufnr), 2)
+    end),
+  },
+  {
     name = 'max_file_length refuses a long buffer',
     fn = guarded(function()
       config.setup({ max_file_length = 2 })

@@ -19,6 +19,7 @@
 | `commands/` | `2026-10-16T17-33-54-commands-and-actions.md` | 已实现、冻结 |
 | `testing/` | `2026-10-16T17-33-54-testing-infra-and-toolchain.md` | 已实现、冻结 |
 | `signs/` | `2026-10-16T23-24-18-line-signs-in-signcolumn.md` | 已实现、冻结 |
+| `signs/` | `2026-10-21T14-53-19-signs-vanish-after-save.md` | 已完成（D51/D52） |
 | `perf/` | `2026-10-19T11-33-42-m7-performance-review.md` | 已完成（M7 七步全部落地），**本文是 `08`；先看 §2.10 前后总表** |
 
 ## 命名与时间戳

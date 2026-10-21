@@ -60,6 +60,7 @@ local M = {}
 ---@field hunks_staged vcssign.Hunk[]      staged layer (HEAD -> buffer), git only
 ---@field tracked boolean?
 ---@field untracked boolean
+---@field added boolean?      svn: scheduled for addition (no BASE node)
 ---@field ignored boolean?     the VCS ignores this path: no baseline, no signs (D49)
 ---@field attached boolean
 ---@field abandoned boolean    the repository went away; a later `attach` rebuilds
@@ -355,6 +356,18 @@ local function load_base_status(st, entries, trusted, done)
     st.base_text = nil
     return done()
   end
+  if entry and entry.added then
+    -- `svn add` before the first commit: the path has no BASE and no HEAD node,
+    -- so both `show` questions fail and the file would lose every sign —
+    -- including the untracked layer it had a moment ago.  The empty baseline
+    -- says exactly what the VCS knows: every line is an addition (D52).
+    st.tracked, st.untracked, st.ignored = true, false, false
+    st.added = true
+    st.base_text = ''
+    -- There is no HEAD node either, and no staging layer (svn); asking for
+    -- one would only add a failed subprocess.
+    return load_head(st, done, false)
+  end
   if entry and not entry.tracked then
     st.tracked, st.untracked, st.ignored = false, true, false
     st.base_text = config.get().attach_to_untracked and '' or nil
@@ -400,6 +413,7 @@ local function load_base(st, done)
   -- moment), so a refresh cannot leave an older `head_text` behind: every
   -- branch below either sets it or leaves it nil.
   st.head_text = nil
+  st.added = false
   -- Recorded *before* the read, not after: if the index moves while `show` is
   -- in flight, the stamp has to stay the older one so the next trigger re-reads
   -- instead of trusting text from a moment it never saw.
@@ -813,6 +827,44 @@ function M.refresh(bufnr, cb)
       cb(nil)
     end
   end)
+end
+
+--- `BufWritePost`: the file landed on disk.
+---
+--- Tell the status view before anything re-reads the baseline (D51): a save
+--- does not move `wc.db` / the index, so no fs event retires the view (D38).
+--- Without the note the view still says clean, `from_buffer` takes the saved
+--- buffer as its own baseline, and every hunk disappears.  When the metadata
+--- did not move there is also nothing to re-read: draw from the baseline the
+--- existing signs already describe, for free.
+---@param bufnr integer
+function M.note_written(bufnr)
+  local st = M._bufs[bufnr]
+  if not st then
+    return M.refresh(bufnr)
+  end
+  if baseline_moved(st) then
+    -- `git add` / `svn commit` moved the baseline; only a re-read is correct.
+    return M.refresh(bufnr)
+  end
+  local repo = st.repo
+  local mode
+  if repo and st.path and st.tracked == true then
+    mode = repo:note_save(st.path, true)
+  end
+  if mode == 'deferred' then
+    -- The in-flight query answers for the pre-save moment.  Wait for it, then
+    -- ask again: joining it would hand this refresh the stale view.
+    return repo:after_status(function()
+      if M._bufs[bufnr] == st and st.attached then
+        M.refresh(bufnr)
+      end
+    end)
+  end
+  if not st.ready or not st.attached or st.base_text == nil then
+    return M.refresh(bufnr)
+  end
+  M._render(st)
 end
 
 --- Run `cb(err, st)` once `bufnr`'s baseline is known.

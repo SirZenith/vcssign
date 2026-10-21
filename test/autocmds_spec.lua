@@ -261,6 +261,32 @@ return {
     end),
   },
   {
+    name = 'a save keeps the signs of a clean file, against its real baseline',
+    fn = guarded(function()
+      reset()
+      autocmds.setup()
+      local dir = helpers.git_repo('autocmd-save-subdir')
+      vim.cmd('edit ' .. vim.fn.fnameescape(dir .. '/sub/nested.txt'))
+      local bufnr = vim.api.nvim_get_current_buf()
+      helpers.wait_for(function()
+        local st = attach.state(bufnr)
+        return st ~= nil and st.attached and st.ready
+      end, 'the buffer to be attached')
+      local st = attach.state(bufnr)
+      eq(st.base_text, 'nested', 'the baseline is BASE, not the buffer')
+
+      vim.api.nvim_buf_set_lines(bufnr, 1, 1, false, { 'one' })
+      vim.cmd('silent write')
+
+      -- The save moves nothing in `.git/index`, so the status view used to
+      -- still call this file clean; `from_buffer` then made the saved text its
+      -- own baseline and every sign disappeared (D51).
+      eq(st.base_text, 'nested', 'a save does not replace the baseline')
+      eq(#attach.hunks(bufnr), 1, 'the hunk survives the save')
+      eq(signs.sign_count(bufnr), 1, 'and so does its sign')
+    end),
+  },
+  {
     name = 'a buffer outside any repository attaches nothing, quietly',
     fn = guarded(function()
       reset()

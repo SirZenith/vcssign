@@ -235,7 +235,7 @@ local SVN_ITEM = {
   missing = { tracked = true, staged = false, worktree = true },
   obstructed = { tracked = true, staged = false, worktree = true },
   incomplete = { tracked = true, staged = false, worktree = true },
-  added = { tracked = true, staged = false, worktree = true },
+  added = { tracked = true, staged = false, worktree = true, added = true },
   replaced = { tracked = true, staged = false, worktree = true },
   deleted = { tracked = true, staged = false, worktree = true },
   unversioned = { tracked = false, staged = false, worktree = false },
