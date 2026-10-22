@@ -64,9 +64,9 @@ D51–D52 定下保存与 status view 的关系，以及 svn「已 add 未提交
 
 ---
 
-*来源：`loop/archive/signs/2026-10-16T23-24-18-line-signs-in-signcolumn.md`，原文 `## §2 关键决策（D38–D48）`；D49–D50 来自 `loop/workspace/signs/2026-10-19T23-53-14-large-repo-status-freeze.md`；D51–D52 来自 `loop/workspace/signs/2026-10-21T14-53-19-signs-vanish-after-save.md`（标题层级已下移一级）*
+*来源：`loop/archive/signs/2026-10-16T23-24-18-line-signs-in-signcolumn.md`，原文 `## §2 关键决策（D38–D48）`；D49–D50 来自 `loop/workspace/signs/2026-10-19T23-53-14-large-repo-status-freeze.md`；D51–D52 来自 `loop/archive/signs/2026-10-21T14-53-19-signs-vanish-after-save.md`；D53 来自 `loop/archive/signs/2026-10-22T10-49-40-signs-vanish-when-the-status-view-predates-the-save.md`（标题层级已下移一级）*
 
-### §2 关键决策（D38–D52）
+### §2 关键决策（D38–D53）
 
 | 决策 | 内容 | 理由（为什么） |
 |---|---|---|
@@ -85,3 +85,4 @@ D51–D52 定下保存与 status view 的关系，以及 svn「已 add 未提交
 | **D50** | 仓库级 status 不再请求忽略路径：git 去掉 `--ignored=traditional`（显式写 `--ignored=no`），svn 去掉 `--no-ignore`；被忽略路径在 view 中缺席，`load_base_status` 把缺席当 clean，因此仍不画 sign（D49 的行为不变）。新增 `max_status_bytes`（默认 4 MiB）在 `parse_status` 之前拒绝超大输出，并按 baseline stamp 缓存该确定性错误；超限时回落到逐文件 `ls-files`/`show`。 | `git status --porcelain=v2 -uall --ignored=traditional` 会把忽略目录展开成每个文件一条记录：样例仓库 221,955 个文件中 221,385 个被忽略，输出约 17 MB；`parse_status` 在主循环逐条 normalize/建表，直接冻结 Neovim。忽略路径与 clean 路径都不画 sign（D49），所以不需要它们出现在 view 里；需要 `FileStatus.ignored` 的动作应改为按需 `git check-ignore`，而不是让每个 buffer 为 22 万条记录买单。 |
 | **D51** | 保存必须主动告知 status view：`BufWritePost` → `attach.note_written` → `Repo:note_save`。缓存命中时，已有 tracked 条目就地标 `worktree = true`；缺席的 tracked 路径插入合成的 dirty 条目；若 status 查询仍在飞，则丢弃该查询并在它结束后重新查询（`Repo:after_status`）。刷新后若 metadata stamp 未移动且已有基线，直接按已知基线重绘，不再读 `show`。 | view 以 metadata stamp 为键；保存不移动 `wc.db`/`.git/index`，D38 也不监听工作树，于是 `from_buffer` 会把刚保存的缓冲区当作自己的基线，diff 为空、sign 全灭。每次保存都 retire view 会导致每保存一次跑一个仓库级 status（违背 P0-1）；合成 entry 保持「每仓库一次 status」，而「是否真的 dirty」由随后的基线读取裁决。 |
 | **D52** | svn「已 `svn add`、未提交」的文件没有 BASE 节点：`FileStatus.added` 标记它，`load_base_status` 用空基线（`base_text = ''`）渲染整文件 add，不再尝试 `svn cat -r BASE`/`-r HEAD`。 | 该路径在 BASE 和 HEAD 中都不存在，旧实现连续两次 `show` 失败后把 `base_text` 置 nil，sign 在 `svn add` 的瞬间消失。空基线正是 VCS 已知的事实：每一行都是新增；同时省掉两次必然失败的子进程。 |
+| **D53** | 保存的登记先于基线判断：`note_written` 先 `Repo:note_save`，再 `baseline_moved`。`note_save` 只给 `status_stamp == _stamp()` 的视图打补丁；过期视图、以及 `tracked == nil` 的路径（attach 未决定，且缺席 entry 无法区分 clean 与 ignored，见 D50）一律退休并返回 `'fresh'`。被保存作废的在飞查询把现有 waiter 标 `stale`，`_query_status` 的 `trusted` 因此为假。`from_buffer` 要求 `trusted`，`rev = 'HEAD'` 只在 `capabilities.staged_signs and staged == false` 时成立。 | `baseline_moved` 回答的是「store 是否还是这个 buffer 读取时的那一个」，不是「view 是否还是这个 buffer 读的那份」：另一个消费者按新戳重填视图之后，保存会被跳过登记并命中「保存前」的干净视图，`from_buffer` 于是把保存后的缓冲区当成自己的基线，diff 为空、sign 全灭。attach 期间 `tracked` 仍是 nil，`st.tracked == true` 的门让同一竞态无处登记；而缺席 entry 在 D50 之后既可能是 clean 也可能是 ignored。`rev = 'HEAD'` 下 `clean` 只说明 worktree 相对 index 干净，index 已 stage 时缓冲区文本并不是 HEAD；svn 的 BASE 是检出修订号，必须在 HEAD 与 BASE 之间重读。`trusted` 不能把 generation 也算进去：查询期间到来的 fs 事件已经包含在答案的 stamp 里（stamp 相等即此意），只有保存带来的是答案之外的时刻。 |

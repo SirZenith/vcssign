@@ -512,4 +512,77 @@ return {
       eq(manager.count(), 0, 'a disabled plugin does not attach anything')
     end),
   },
+  {
+    name = 'a save keeps the signs when the status view was repopulated at a newer stamp',
+    fn = guarded(function()
+      reset()
+      autocmds.setup()
+      local dir = helpers.git_repo('autocmd-save-newer-view')
+      helpers.write(dir .. '/base.txt', 'base\none\ntwo\n')
+      helpers.sh({ 'git', '-C', dir, 'add', 'base.txt' })
+      helpers.sh({ 'git', '-C', dir, 'commit', '-qm', 'three lines' })
+      vim.cmd('edit ' .. vim.fn.fnameescape(dir .. '/base.txt'))
+      local bufnr = vim.api.nvim_get_current_buf()
+      helpers.wait_for(function()
+        local st = attach.state(bufnr)
+        return st ~= nil and st.attached and st.ready
+      end, 'the buffer to be attached')
+      local st = attach.state(bufnr)
+      eq(st.base_text, 'base\none\ntwo', 'the baseline is the index')
+
+      -- Another consumer repopulated the view at the *current* stamp - the one
+      -- a save will ask under - while this buffer still holds an older one.
+      -- The disk is clean, so that view legitimately calls base.txt clean, and
+      -- a save must not let `from_buffer` turn that into "the buffer is the
+      -- baseline" (D53).
+      local repo = st.repo
+      repo:_drop_status()
+      helpers.wait(function(cb)
+        repo:status(cb)
+      end)
+      eq(repo.status_cache[dir .. '/base.txt'], nil, 'the newer view says clean')
+      st.base_stamp = 'older-view'
+
+      -- Edit and save in one turn: a debounced refresh must not re-read the
+      -- baseline in between, or the stale view would be replaced before the
+      -- save sees it.
+      vim.api.nvim_buf_set_lines(bufnr, 1, 2, false, { 'ONE' })
+      vim.cmd('silent write')
+      helpers.wait_for(function()
+        return #attach.hunks(bufnr) == 1
+      end, 'the save to keep the hunk against the real baseline')
+      eq(st.base_text, 'base\none\ntwo\n', 'the save did not replace the baseline')
+      eq(signs.sign_count(bufnr), 1, 'and the sign is still there')
+    end),
+  },
+  {
+    name = 'a save while the attach still decides retires the clean view',
+    fn = guarded(function()
+      reset()
+      autocmds.setup()
+      local dir = helpers.git_repo('autocmd-save-unknown-tracked')
+      vim.cmd('edit ' .. vim.fn.fnameescape(dir .. '/base.txt'))
+      local bufnr = vim.api.nvim_get_current_buf()
+      helpers.wait_for(function()
+        local st = attach.state(bufnr)
+        return st ~= nil and st.attached and st.ready
+      end, 'the buffer to be attached')
+      local st = attach.state(bufnr)
+      eq(st.base_text, 'base', 'the baseline is the index')
+
+      -- The attach window: the view is warm and says base.txt is clean, but
+      -- this buffer does not know yet whether the file is tracked - and an
+      -- absent entry cannot tell "clean" from "ignored" (D50).  A save must
+      -- not let that view baseline the saved text.
+      st.ready = false
+      st.tracked = nil
+      vim.api.nvim_buf_set_lines(bufnr, 1, 2, false, { 'one' })
+      vim.cmd('silent write')
+      helpers.wait_for(function()
+        return #attach.hunks(bufnr) == 1
+      end, 'the save to keep the hunk against the real baseline')
+      eq(st.base_text, 'base\n', 'the save did not replace the baseline')
+      eq(signs.sign_count(bufnr), 1, 'and the sign is still there')
+    end),
+  },
 }

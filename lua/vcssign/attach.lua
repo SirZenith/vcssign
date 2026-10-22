@@ -391,8 +391,18 @@ local function load_base_status(st, entries, trusted, done)
     end
     clean = entry.worktree == false
   end
-  local from_buffer = clean
-    and (st.rev == 'index' or st.rev == 'HEAD')
+  -- `clean` describes the worktree against the index/BASE; it says nothing
+  -- about `rev`.  Under `rev = 'HEAD'` the buffer is a HEAD baseline only when
+  -- the index itself is at HEAD (`staged == false`), and svn must read HEAD
+  -- instead: its BASE is a checkout revision, not the server's HEAD.  An
+  -- untrusted view may be from before the save that caused this read, so it
+  -- cannot rule on either question (D53).
+  local head_at_index = st.rev == 'HEAD'
+    and st.system.capabilities.staged_signs == true
+    and staged == false
+  local from_buffer = trusted
+    and clean
+    and (st.rev == 'index' or head_at_index)
     and api.nvim_buf_is_loaded(st.bufnr)
     and not vim.bo[st.bufnr].modified
   if from_buffer then
@@ -843,14 +853,19 @@ function M.note_written(bufnr)
   if not st then
     return M.refresh(bufnr)
   end
-  if baseline_moved(st) then
-    -- `git add` / `svn commit` moved the baseline; only a re-read is correct.
-    return M.refresh(bufnr)
-  end
   local repo = st.repo
   local mode
-  if repo and st.path and st.tracked == true then
-    mode = repo:note_save(st.path, true)
+  if repo and st.path then
+    -- A save moves nothing `Repo:_stamp()` watches, so the view has to be told
+    -- about the save *before* we ask `baseline_moved`: that answers "is the
+    -- store still the one this buffer was read at?", not "is the view still
+    -- the one this buffer was read from?" - a foreign reader may have
+    -- repopulated the view at a newer stamp while this buffer's `base_stamp`
+    -- stayed older, and skipping the note there lets `from_buffer` baseline
+    -- the saved text (D53).  `tracked` stays `nil` during attach; the view is
+    -- then retired rather than guessed at (an absent entry cannot tell a clean
+    -- file from an ignored one).
+    mode = repo:note_save(st.path, st.tracked)
   end
   if mode == 'deferred' then
     -- The in-flight query answers for the pre-save moment.  Wait for it, then
@@ -860,6 +875,10 @@ function M.note_written(bufnr)
         M.refresh(bufnr)
       end
     end)
+  end
+  if baseline_moved(st) then
+    -- `git add` / `svn commit` moved the baseline; only a re-read is correct.
+    return M.refresh(bufnr)
   end
   if not st.ready or not st.attached or st.base_text == nil then
     return M.refresh(bufnr)

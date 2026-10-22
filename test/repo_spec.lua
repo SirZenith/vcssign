@@ -1006,6 +1006,50 @@ return {
       end)
     end),
   },
+  {
+    name = 'a save against a view from a newer stamp retires it instead of patching it',
+    fn = guarded(function()
+      local dir = helpers.git_repo('repo-save-stale-view')
+      helpers.with_repo('spec:save-stale-view', dir, function(repo)
+        local path = dir .. '/sub/nested.txt'
+        local _, entries = helpers.wait(function(cb)
+          repo:status(cb)
+        end)
+        eq(entries[path], nil, 'a clean file is absent from the view')
+
+        local real_stamp = repo._stamp
+        repo._stamp = function()
+          return 'stamp-two'
+        end
+        local ok, err = pcall(function()
+          eq(repo:note_save(path, true), 'fresh', 'the stale view cannot be patched')
+          eq(repo.status_cache, nil, 'it was retired, not patched')
+        end)
+        repo._stamp = real_stamp
+        repo:_drop_status()
+        if not ok then
+          error(err, 0)
+        end
+      end)
+    end),
+  },
+
+  {
+    name = 'a save that cannot say whether the file is tracked retires the view',
+    fn = guarded(function()
+      local dir = helpers.git_repo('repo-save-unknown-tracked')
+      helpers.with_repo('spec:save-unknown', dir, function(repo)
+        local path = dir .. '/base.txt'
+        local _, entries, trusted = helpers.wait(function(cb)
+          repo:status(cb)
+        end)
+        ok(trusted)
+        eq(entries[path], nil, 'a clean file is absent from the view')
+        eq(repo:note_save(path, nil), 'fresh', 'the unknown path cannot be patched')
+        eq(repo.status_cache, nil, 'the view was retired instead')
+      end)
+    end),
+  },
 
   {
     name = 'a metadata change retires the view, because it can move everything',

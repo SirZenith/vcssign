@@ -224,6 +224,7 @@ end
 ---@class vcssign.StatusWaiter
 ---@field cb fun(err: string?, entries: table<string, vcssign.FileStatus>?, trusted: boolean)
 ---@field stamp string?
+---@field stale boolean?  a save landed while this answer was in flight (D53)
 
 ---@param waiters vcssign.StatusWaiter[]
 function M:_query_status(waiters)
@@ -236,7 +237,10 @@ function M:_query_status(waiters)
     -- on its way), so it is handed out — but never cached, and never trusted
     -- about staging.  Re-querying here would be the alternative; it is not done
     -- because a store the query itself disturbs would then feed itself a loop.
-    local trusted = stamp ~= nil and self:_stamp() == stamp
+    -- A save retires the *view*, and marks the answer already on its way: it
+    -- was computed before the save, so even with the store quiet it can call
+    -- the file clean and let `from_buffer` baseline the saved text (D53).
+    local trusted = stamp ~= nil and self:_stamp() == stamp and not waiters[1].stale
     if trusted and self._status_generation == generation then
       if err then
         if stamp ~= nil and err:find('status output too large', 1, true) then
@@ -305,22 +309,44 @@ end
 --- absent path gets a conservative dirty entry when `tracked` says it is a
 --- tracked file, so the next baseline read comes from the repository instead of
 --- the buffer.  An absent untracked/ignored path is left alone: a save cannot
---- make it tracked.
+--- make it tracked.  `tracked == nil` (the buffer is still attaching) is left
+--- to no guess at all: the view is retired, because an absent entry cannot tell
+--- "clean" from "ignored" there (D50, D53).
 ---
 --- A query already in flight would answer with the pre-save view and then cache
 --- it.  It is retired here, and the caller waits for its answer before asking a
 --- fresh question (`after_status`).
+---
+--- A view that no longer belongs to the current baseline key is retired rather
+--- than patched: patching it would claim to know this file's state from an
+--- answer about a different moment, and the caller would then skip the re-read
+--- that is actually needed (D53).
 ---@param path string
----@param tracked boolean  the attach state's answer; only used for an absent path
----@return string  `'noted'` (the view was told), `'fresh'` (nothing was cached),
----                or `'deferred'` (an in-flight query was retired)
+---@param tracked boolean?  the attach state's answer, `nil` while it is unknown;
+---                         only used for an absent path
+---@return string  `'noted'` (the view was told), `'fresh'` (there is no usable
+---                view; the caller must re-read), or `'deferred'` (an in-flight
+---                query was retired; wait for it, then re-read)
 function M:note_save(path, tracked)
   local cached = self.status_cache
   if not cached then
     if self._status_waiters and #self._status_waiters > 0 then
+      -- The answer already on its way was computed before this save: it can
+      -- still call the file clean even though the store did not move.  Mark
+      -- it untrusted, then retire the view (D53).
+      for _, waiter in ipairs(self._status_waiters) do
+        waiter.stale = true
+      end
       self:_drop_status()
       return 'deferred'
     end
+    return 'fresh'
+  end
+  if self.status_stamp ~= self:_stamp() then
+    -- The view describes a different moment.  Patching it would prove nothing
+    -- about this save, and the caller would then skip the re-read that is
+    -- actually needed (`from_buffer` on a clean entry).  Retire it instead.
+    self:_drop_status()
     return 'fresh'
   end
   local entry = cached[path]
@@ -329,6 +355,14 @@ function M:note_save(path, tracked)
       entry.worktree = true
     end
     return 'noted'
+  end
+  if tracked == nil then
+    -- The attach has not decided yet whether this path is tracked, and an
+    -- absent entry is ambiguous (a clean tracked file looks exactly like an
+    -- ignored one, D50).  Retire the view rather than guess: the next read
+    -- asks a fresh question, and a save cannot be baselined on the answer.
+    self:_drop_status()
+    return 'fresh'
   end
   if tracked then
     cached[path] = { tracked = true, staged = false, worktree = true }

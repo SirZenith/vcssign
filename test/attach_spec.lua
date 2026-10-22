@@ -1095,4 +1095,22 @@ return {
       eq(#attach._bufs[bufnr].hunks_staged, 1, 'and the staged layer still appeared')
     end),
   },
+  {
+    name = 'rev = HEAD keeps a staged hunk against HEAD, not against the buffer',
+    fn = guarded(function()
+      config.setup({ rev = 'HEAD' })
+      local dir = helpers.git_repo('attach-rev-head-staged')
+      helpers.write(dir .. '/base.txt', 'base\none\n')
+      helpers.sh({ 'git', '-C', dir, 'add', 'base.txt' })
+      local bufnr = open(dir .. '/base.txt')
+      local st = attach_now(bufnr)
+      eq(st.base_text, 'base\n', 'the baseline is HEAD, not the staged index')
+      eq(#attach.hunks(bufnr), 1, 'the staged line is still a change')
+      eq(signs.sign_count(bufnr), 1, 'and it has a sign')
+
+      vim.cmd('silent write')
+      eq(st.base_text, 'base\n', 'a save does not replace the HEAD baseline')
+      eq(#attach.hunks(bufnr), 1, 'the hunk survives the save')
+    end),
+  },
 }
